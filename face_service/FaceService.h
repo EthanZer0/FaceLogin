@@ -78,7 +78,7 @@ private:
     // Configuration
     AppConfig m_config;
     LivenessMethod m_livenessMethod = LivenessMethod::Blink;
-    float m_antiSpoofThreshold = 0.50f;
+    float m_antiSpoofThreshold = 0.30f;
 
     bool m_isServiceMode = false;  // set by ServiceMain
 

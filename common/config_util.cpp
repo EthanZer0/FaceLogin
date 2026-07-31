@@ -79,7 +79,7 @@ AppConfig ConfigFromJson(const std::string& json) {
     auto live = jsonGetString(json, "liveness_method");
     if (!live.empty()) cfg.liveness_method = LivenessMethodFromString(live);
     cfg.match_threshold = jsonGetFloat(json, "match_threshold", 0.30f);
-    cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.50f);
+    cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
     return cfg;
 }
 

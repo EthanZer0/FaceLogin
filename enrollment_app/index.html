@@ -248,10 +248,10 @@ body{
     </div>
 
     <div class="field" id="field-antispoof-threshold" style="display:none">
-      <label>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.50</span></label>
-      <input type="range" id="cfg-antispoof-threshold" min="25" max="75" value="50" step="1"
+      <label>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.30</span></label>
+      <input type="range" id="cfg-antispoof-threshold" min="25" max="75" value="30" step="1"
              oninput="document.getElementById('cfg-asthr-val').textContent=(this.value/100).toFixed(2)">
-      <p class="dim" style="margin-top:4px;font-size:11px">阈值越低越宽松（容易通过），越高越严格（更难通过）。默认0.50。</p>
+      <p class="dim" style="margin-top:4px;font-size:11px">阈值越低越宽松（容易通过），越高越严格（更难通过）。默认0.30。</p>
     </div>
 
     <div class="field">
@@ -401,7 +401,7 @@ function loadSettings() {
     var thr = Math.round(100 - (cfg.match_threshold || 0.30) * 100);
     document.getElementById('cfg-threshold').value = thr;
     document.getElementById('cfg-threshold-val').textContent = thr;
-    var asThr = Math.round((cfg.anti_spoof_threshold || 0.50) * 100);
+    var asThr = Math.round((cfg.anti_spoof_threshold || 0.30) * 100);
     document.getElementById('cfg-antispoof-threshold').value = asThr;
     document.getElementById('cfg-asthr-val').textContent = (asThr / 100).toFixed(2);
     onLivenessChange();

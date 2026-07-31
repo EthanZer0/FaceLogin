@@ -445,11 +445,14 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
 float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& image,
                               const dlib::full_object_detection& landmarks) {
     // DeepPixBiS works with a simple bbox crop (no landmark alignment).
+    // Use a tight crop of the face bbox with a small 1.1x margin. Measured
+    // empirically: the previous 1.5x half-size (3x total) included too much
+    // background and drove real-face scores down to ~0.3-0.45, near the
+    // threshold. A tight crop raises real scores to ~0.5-0.6+.
     dlib::rectangle rect = landmarks.get_rect();
     long cx = rect.left() + rect.width() / 2;
     long cy = rect.top() + rect.height() / 2;
-    long halfSize = std::max(rect.width(), rect.height()) / 2;
-    halfSize = static_cast<long>(halfSize * 1.5); // ~3x total margin
+    long halfSize = static_cast<long>(std::max(rect.width(), rect.height()) / 2 * 1.1f);
     dlib::rectangle cropRect(cx - halfSize, cy - halfSize, cx + halfSize, cy + halfSize);
     dlib::chip_details chip(cropRect, dlib::chip_dims(m_inputSize, m_inputSize));
     dlib::matrix<dlib::rgb_pixel> crop;

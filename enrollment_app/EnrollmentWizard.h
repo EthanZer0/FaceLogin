@@ -77,7 +77,7 @@ private:
     // Configuration
     AppConfig m_config;
     LivenessMethod m_livenessMethod = LivenessMethod::Blink;
-    float m_antiSpoofThreshold = 0.50f;
+    float m_antiSpoofThreshold = 0.30f;
 
     // Frame-grab thread (runs off UI thread — GrabFrame + JPEG encode + detection)
     std::thread m_frameThread;

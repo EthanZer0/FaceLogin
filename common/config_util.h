@@ -10,7 +10,7 @@ struct AppConfig {
     std::string    detector               = "scrfd";     // "dlib_hog" / "scrfd"
     LivenessMethod liveness_method        = LivenessMethod::Blink;
     float          match_threshold        = 0.30f;
-    float          anti_spoof_threshold   = 0.50f;       // DeepPixBiS pixel map threshold
+    float          anti_spoof_threshold   = 0.30f;       // DeepPixBiS pixel map threshold
 };
 
 AppConfig LoadConfig(const std::wstring& dataDir);

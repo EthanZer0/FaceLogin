@@ -353,7 +353,7 @@ struct AppConfig {
     std::string    detector               = "scrfd";  // "dlib_hog" / "scrfd"
     LivenessMethod liveness_method        = LivenessMethod::Blink;
     float          match_threshold        = 0.30f;
-    float          anti_spoof_threshold   = 0.50f;
+    float          anti_spoof_threshold   = 0.30f;
 };
 
 enum class LivenessMethod {
@@ -444,7 +444,7 @@ ServiceMain()
 | `detector` | `"scrfd"` | 检测器: dlib_hog / scrfd |
 | `liveness_method` | `"blink"` | 活体方法: blink / antispoof / none |
 | `match_threshold` | 0.30 | 欧氏距离阈值 (越小越严格) |
-| `anti_spoof_threshold` | 0.50 | 反欺诈阈值 (越高越严格) |
+| `anti_spoof_threshold` | 0.30 | 反欺诈阈值 (越高越严格) |
 
 ### 5.3 人脸检测 (`face_detector.h/cpp`)
 

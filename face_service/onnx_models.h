@@ -108,7 +108,7 @@ public:
                   const dlib::full_object_detection& landmarks);
 
     // Thresholded convenience: returns true if face is judged real.
-    bool IsReal(const dlib::matrix<dlib::rgb_pixel>& faceChip, float threshold = 0.5f);
+    bool IsReal(const dlib::matrix<dlib::rgb_pixel>& faceChip, float threshold = 0.3f);
 
     bool IsInitialized() const { return m_initialized; }
 

@@ -46,6 +46,9 @@ static unsigned __stdcall InputDetectionThreadProc(void* pParam) {
     const DWORD timeoutSec = 30;
     DWORD startTick = GetTickCount();
 
+    // Loop forever (until the stop event is signaled).  The 30s timeout does
+    // NOT kill the thread — it only restarts the idle window so a user who
+    // waits longer than 30s before pressing a key can still trigger auth.
     while (true) {
         // Check stop signal (non-blocking)
         DWORD waitResult = WaitForSingleObject(pCred->m_hInputStop, 0);
@@ -54,11 +57,15 @@ static unsigned __stdcall InputDetectionThreadProc(void* pParam) {
             break;
         }
 
-        // Timeout guard
+        // Idle-window timeout: restart the window instead of exiting, so a
+        // late keypress still works. (Previously the thread exited after 30s
+        // of no input, leaving no path to restart it — a later keypress did
+        // nothing.)
         DWORD elapsedMs = GetTickCount() - startTick;
         if (elapsedMs > timeoutSec * 1000) {
-            FACELOGIN_INFO(L"[InputThread] 30s timeout — exiting");
-            break;
+            FACELOGIN_INFO(L"[InputThread] 30s idle — restarting idle window");
+            startTick = GetTickCount();
+            continue;
         }
 
         // Poll GetLastInputInfo
@@ -341,6 +348,11 @@ STDMETHODIMP FaceLoginCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) 
         case State::Failed:
             return SHStrDupW(L"未识别到人脸，请重试或使用密码登录", ppwsz);
         case State::Error:
+            // Show the specific error message from the service (e.g. anti-spoof
+            // rejection) if one was received; otherwise the generic fallback.
+            if (!m_statusText.empty()) {
+                return SHStrDupW(m_statusText.c_str(), ppwsz);
+            }
             return SHStrDupW(L"人脸登录服务不可用", ppwsz);
         default:
             return SHStrDupW(L"", ppwsz);
@@ -512,6 +524,10 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
             }
             else if (result.status == facelogin::ipc::AuthResult::Status::Error) {
                 FACELOGIN_WARN(L"Auth error: %s", result.errorMessage.c_str());
+                // Surface the service's specific error on the lock screen.
+                if (!result.errorMessage.empty()) {
+                    m_statusText = result.errorMessage;
+                }
                 m_state = State::Error;
                 *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
                 return S_OK;
@@ -868,6 +884,11 @@ void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& messa
             m_state = State::Failed;
         } else if (result.status == facelogin::ipc::AuthResult::Status::Error) {
             FACELOGIN_WARN(L"OnPipeResponse: Auth error: %s", result.errorMessage.c_str());
+            // Surface the service's specific error (e.g. "检测到攻击，请使用真实人脸")
+            // on the lock screen instead of the generic "service unavailable".
+            if (!result.errorMessage.empty()) {
+                m_statusText = result.errorMessage;
+            }
             m_state = State::Error;
         }
     } else {
