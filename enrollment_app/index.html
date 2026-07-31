@@ -255,10 +255,10 @@ body{
     </div>
 
     <div class="field">
-      <label>匹配严格度 (Match Strictness): <span id="cfg-threshold-val">55</span></label>
-      <input type="range" id="cfg-threshold" min="20" max="80" value="55" step="1"
+      <label>匹配严格度 (Match Strictness): <span id="cfg-threshold-val">70</span></label>
+      <input type="range" id="cfg-threshold" min="20" max="80" value="70" step="1"
              oninput="document.getElementById('cfg-threshold-val').textContent=this.value">
-      <p class="dim" style="margin-top:4px;font-size:11px">值越高越严格（人脸需更相似才能通过）。默认55。</p>
+      <p class="dim" style="margin-top:4px;font-size:11px">值越高越严格（人脸需更相似才能通过）。默认70。</p>
     </div>
 
     <button class="btn btn-primary" onclick="onSaveSettings()">
@@ -398,7 +398,7 @@ function loadSettings() {
     document.getElementById('cfg-liveness').value = cfg.liveness_method || 'blink';
     // match_threshold is stored as distance (lower = stricter).
     // Convert to UI strictness: strictness = 100 - threshold*100 (higher = stricter).
-    var thr = Math.round(100 - (cfg.match_threshold || 0.45) * 100);
+    var thr = Math.round(100 - (cfg.match_threshold || 0.30) * 100);
     document.getElementById('cfg-threshold').value = thr;
     document.getElementById('cfg-threshold-val').textContent = thr;
     var asThr = Math.round((cfg.anti_spoof_threshold || 0.50) * 100);

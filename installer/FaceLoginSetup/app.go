@@ -119,7 +119,7 @@ func (a *App) Install(installDir string) map[string]interface{} {
 	os.MkdirAll(logDir, 0755)
 	configPath := filepath.Join(dataDir, "config.json")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		defaultCfg := `{"recognition_model":"both","detector":"scrfd","liveness_method":"blink","match_threshold":0.450000}
+		defaultCfg := `{"recognition_model":"both","detector":"scrfd","liveness_method":"blink","match_threshold":0.300000}
 `
 		if err := os.WriteFile(configPath, []byte(defaultCfg), 0644); err != nil {
 			a.emit(60, "写入默认设置", "warn", err.Error())

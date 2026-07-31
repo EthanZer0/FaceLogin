@@ -78,7 +78,7 @@ AppConfig ConfigFromJson(const std::string& json) {
     if (!det.empty()) cfg.detector = det;
     auto live = jsonGetString(json, "liveness_method");
     if (!live.empty()) cfg.liveness_method = LivenessMethodFromString(live);
-    cfg.match_threshold = jsonGetFloat(json, "match_threshold", 0.45f);
+    cfg.match_threshold = jsonGetFloat(json, "match_threshold", 0.30f);
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.50f);
     return cfg;
 }
@@ -98,7 +98,7 @@ AppConfig LoadConfig(const std::wstring& dataDir) {
         FACELOGIN_INFO(L"No config.json found, using defaults + registry");
         AppConfig cfg = DefaultConfig();
         // Fall back to registry match threshold if set
-        float regThresh = 0.45f;
+        float regThresh = 0.30f;
         HKEY hKey;
         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, FACELOGIN_REG_KEY, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
             DWORD val = 0, size = sizeof(val);

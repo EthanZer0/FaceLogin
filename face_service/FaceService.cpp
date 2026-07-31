@@ -576,10 +576,15 @@ bool FaceService::ProcessAuthRequest() {
                 if (method == LivenessMethod::None) {
                     livenessPassed = true;
                 } else if (method == LivenessMethod::AntiSpoof) {
-                    // 3-out-of-5-frame consensus anti-spoof check, 5s timeout
+                    // Anti-spoof consensus check with threshold-driven frame count:
+                    // low threshold (lenient) → fewer checks, high threshold (strict) → more.
+                    int totalChecks = AntiSpoofCheckCount(m_antiSpoofThreshold);
+                    int passRequired = AntiSpoofPassRequired(totalChecks);
+                    FACELOGIN_INFO(L"Anti-spoof: threshold=%.3f → %d checks, %d required",
+                                   m_antiSpoofThreshold, totalChecks, passRequired);
                     auto asStart = std::chrono::steady_clock::now();
                     int passCount = 0, totalChecked = 0;
-                    while (m_running && totalChecked < 5) {
+                    while (m_running && totalChecked < totalChecks) {
                         auto elapsed = std::chrono::steady_clock::now() - asStart;
                         if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= 5) break;
 
@@ -596,9 +601,10 @@ bool FaceService::ProcessAuthRequest() {
 
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     }
-                    livenessPassed = (totalChecked > 0 && passCount >= 3);
+                    livenessPassed = (totalChecked > 0 && passCount >= passRequired);
                     if (!livenessPassed) {
-                        FACELOGIN_WARN(L"Anti-spoof check failed: %d/%d passed", passCount, totalChecked);
+                        FACELOGIN_WARN(L"Anti-spoof check failed: %d/%d passed (need %d)",
+                                       passCount, totalChecked, passRequired);
                     }
                 } else if (method == LivenessMethod::Blink) {
                     LivenessDetector liveness;
@@ -736,7 +742,7 @@ float FaceService::GetMatchThreshold() {
         }
         RegCloseKey(hKey);
     }
-    return 0.45f;
+    return 0.30f;
 }
 
 bool FaceService::Install(const std::wstring& exePath) {

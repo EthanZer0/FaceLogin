@@ -68,7 +68,7 @@ public:
         const dlib::full_object_detection& landmarks);
 
     // Compare two embeddings. Returns Euclidean distance.
-    // Lower = more similar. Threshold typically 0.55-0.6.
+    // Lower = more similar. Threshold typically 0.30-0.45.
     static float Distance(const dlib::matrix<float, 0, 1>& a,
                           const dlib::matrix<float, 0, 1>& b);
 

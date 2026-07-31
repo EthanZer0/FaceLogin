@@ -85,7 +85,7 @@ private:
     // Settings
     std::wstring m_dataDir;
     std::wstring m_modelsDir;
-    float m_matchThreshold = 0.55f;
+    float m_matchThreshold = 0.30f;
     int m_authTimeoutSeconds = 15;
 };
 

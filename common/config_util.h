@@ -9,7 +9,7 @@ struct AppConfig {
     std::string    recognition_model      = "both";      // "dlib" / "onnx" / "both"
     std::string    detector               = "scrfd";     // "dlib_hog" / "scrfd"
     LivenessMethod liveness_method        = LivenessMethod::Blink;
-    float          match_threshold        = 0.45f;
+    float          match_threshold        = 0.30f;
     float          anti_spoof_threshold   = 0.50f;       // DeepPixBiS pixel map threshold
 };
 

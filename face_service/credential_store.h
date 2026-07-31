@@ -82,7 +82,7 @@ public:
         float distance;
     };
     std::optional<MatchResult> FindBestMatch(const float probeEmbedding[128],
-                                              float threshold = 0.55f);
+                                              float threshold = 0.30f);
 
     // Get the number of registered users
     size_t GetUserCount() const { return m_users.size(); }

@@ -547,9 +547,13 @@ bool EnrollmentWizard::CaptureFaceSamples() {
         if (method == LivenessMethod::None) {
             livenessPassed = true;
         } else if (method == LivenessMethod::AntiSpoof) {
+            int totalChecks = AntiSpoofCheckCount(m_antiSpoofThreshold);
+            int passRequired = AntiSpoofPassRequired(totalChecks);
+            FACELOGIN_INFO(L"Enrollment anti-spoof: threshold=%.3f → %d checks, %d required",
+                           m_antiSpoofThreshold, totalChecks, passRequired);
             auto asStart = std::chrono::steady_clock::now();
             int passCount = 0, totalChecked = 0;
-            while (m_capturing && totalChecked < 5) {
+            while (m_capturing && totalChecked < totalChecks) {
                 auto elapsed = std::chrono::steady_clock::now() - asStart;
                 if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= 8) break;
 
@@ -569,7 +573,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                               totalChecked, score, passCount);
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
             }
-            livenessPassed = (totalChecked > 0 && passCount >= 3);
+            livenessPassed = (totalChecked > 0 && passCount >= passRequired);
         } else {
             // blink (default)
             LivenessDetector liveness;
