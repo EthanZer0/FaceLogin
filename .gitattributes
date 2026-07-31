@@ -1,0 +1,3 @@
+# GitHub linguist overrides — force .h headers to be classified as C++
+# (linguist defaults .h to C, but all headers here are C++ with .cpp sources)
+*.h linguist-language=C++
