@@ -1,0 +1,2 @@
+python FaceLoginSetup.py
+pause

@@ -1,0 +1,46 @@
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+// Face icon resource
+IDI_ENROLLMENT_ICON ICON "..\\assets\\facelogin.ico"
+
+// ============================================================================
+// Page 1: Face Capture — 560 x 370
+// ============================================================================
+IDD_PAGE_FACE DIALOGEX 0, 0, 560, 370
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+CAPTION "FaceLogin"
+FONT 8, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_PREVIEW, WC_STATIC, SS_BITMAP | SS_CENTERIMAGE | SS_NOTIFY,
+                    40, 16, 480, 240, WS_EX_STATICEDGE
+    LTEXT           "Samples: 0 / 10", IDC_FACE_COUNT, 40, 268, 200, 16
+    LTEXT           "Position your face within the frame. Ensure good lighting.",
+                    IDC_STATUS_TEXT, 40, 288, 480, 14
+    PUSHBUTTON      "Capture Face", IDC_CAPTURE_BTN, 210, 320, 140, 30, BS_OWNERDRAW
+END
+
+// ============================================================================
+// Page 2: Password — 440 x 220
+// ============================================================================
+IDD_PAGE_PASSWORD DIALOGEX 0, 0, 440, 220
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "FaceLogin"
+FONT 8, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Username", -1, 45, 30, 80, 14
+    EDITTEXT        IDC_USERNAME_EDIT, 135, 28, 260, 24,
+                    ES_AUTOHSCROLL | ES_READONLY
+    LTEXT           "Windows Password", -1, 45, 70, 80, 14
+    EDITTEXT        IDC_PASSWORD_EDIT, 135, 68, 260, 24,
+                    ES_PASSWORD | ES_AUTOHSCROLL
+    LTEXT           "Your password is encrypted locally with DPAPI.",
+                    IDC_PASSWORD_STATUS, 45, 105, 350, 28
+    PUSHBUTTON      "Save & Enroll", IDC_SAVE_BTN, 140, 165, 160, 30, BS_OWNERDRAW
+END
+
+// ============================================================================
+// HTML resource — embedded index.html
+// ============================================================================
+IDR_INDEX_HTML RCDATA "index.html"

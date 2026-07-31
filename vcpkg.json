@@ -1,0 +1,10 @@
+{
+    "name": "facelogin",
+    "version-string": "1.0.0",
+    "description": "Custom face recognition login for Windows 11",
+    "homepage": "https://github.com/your-org/facelogin",
+    "dependencies": [
+        "dlib",
+        "onnxruntime"
+    ]
+}

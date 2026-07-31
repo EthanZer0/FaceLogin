@@ -1,0 +1,54 @@
+# Build output
+build/
+
+# vcpkg packages
+vcpkg_installed/
+vcpkg/
+
+# Model files (large, downloaded separately)
+models/*.dat
+models/*.bz2
+
+# IDE / VS
+.vs/
+*.user
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+CMakeCache.txt
+CMakeFiles/
+
+# Log files
+*.log
+
+# Binary artifacts
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.bmp
+
+# Node (root — only used by scripts/)
+node_modules/
+package-lock.json
+
+# Python cache
+__pycache__/
+
+# Claude Code
+.claude/
+
+# Wails
+installer/FaceLoginSetup/build/
+installer/FaceLoginSetup/frontend/node_modules/
+installer/FaceLoginSetup/frontend/dist/
+
+# Node
+node_modules/
+
+# OS
+Thumbs.db
+.DS_Store

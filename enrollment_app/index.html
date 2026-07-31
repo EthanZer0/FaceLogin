@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FaceLogin Console</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+  background:#fff; color:#000;
+  overflow:hidden;user-select:none;-webkit-user-select:none;
+}
+.screen{display:flex;width:100%;height:100vh;flex-direction:column;align-items:center;
+  position:absolute;top:0;left:0;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity 0s ease}
+.screen.active{opacity:1;pointer-events:auto}
+
+/* ========== Header ========== */
+.header{width:100%;max-width:640px;padding:24px 0 8px;flex-shrink:0}
+.header h1{font-size:24px;font-weight:300;letter-spacing:-0.5px;color:#111827}
+.header p{font-size:13px;color:#9ca3af;font-weight:300}
+
+/* ========== Mode Tabs ========== */
+.tabs{width:100%;max-width:640px;display:flex;gap:24px;border-bottom:1px solid #f3f4f6;flex-shrink:0}
+.tabs span{padding-bottom:8px;font-size:13px;font-weight:400;color:#9ca3af;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s}
+.tabs span:hover{color:#6b7280}
+.tabs span.active{font-weight:500;color:#111827;border-bottom-color:#111827}
+.tabs span.active:hover{color:#111827}
+
+/* ========== Cam Screen ========== */
+#screen-cam{justify-content:flex-start;padding-bottom:12px}
+.cam-body{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;
+  width:100%;max-width:640px}
+.cam-viewport{position:relative;width:100%;aspect-ratio:16/9;flex-shrink:0;
+  border-radius:2px;background:#e5e7eb;overflow:hidden}
+.cam-viewport canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+#face-canvas{z-index:2}
+.status-bar{display:flex;align-items:center;justify-content:space-between;
+  width:100%;margin-top:8px;flex-shrink:0}
+.samples-tag{font-size:13px;font-weight:400;color:#6b7280;padding:4px 0}
+.hint{font-size:12px;color:#9ca3af;text-align:center;margin-top:8px;font-weight:300;flex-shrink:0}
+.btn{
+  border:none;outline:none;cursor:pointer;font-weight:500;font-size:13px;
+  padding:10px 0;margin-top:8px;transition:all .15s;width:100%;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+}
+.btn-primary{background:#111827;color:#fff;flex-shrink:0}
+.btn-primary:hover{background:#1f2937}
+.btn-primary:active{transform:scale(.98)}
+.btn-primary:disabled{opacity:.4;cursor:default;transform:none}
+.btn-secondary{background:#fff;color:#111827;border:1px solid #e5e7eb;flex-shrink:0}
+.btn-secondary:hover{background:#f9fafb}
+
+/* ========== Pwd Screen ========== */
+#screen-pwd{justify-content:flex-start;padding-bottom:12px}
+.pwd-body{width:100%;max-width:640px;padding:16px 0 20px;flex:1}
+.pwd-body h2{font-size:20px;font-weight:300;letter-spacing:-0.3px;color:#111827;margin-bottom:16px}
+.field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.field label{font-size:11px;font-weight:500;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px}
+.field input{
+  border:1px solid #e5e7eb;padding:8px 12px;
+  font-size:13px;outline:none;background:#f9fafb;color:#1f2937;
+  transition:border-color .15s;
+}
+.field input:focus{border-color:#9ca3af;background:#fff}
+.field input[readonly]{color:#6b7280}
+.field select{
+  border:1px solid #e5e7eb;padding:8px 12px;
+  font-size:13px;outline:none;background:#f9fafb;color:#1f2937;
+  transition:border-color .15s;width:100%;
+}
+.field select:focus{border-color:#9ca3af;background:#fff}
+.field input[type=range]{padding:0;height:24px}
+.dim{font-size:12px;color:#9ca3af;line-height:1.5;font-weight:300;margin-bottom:8px}
+
+/* ========== Progress ========== */
+#cap-progress{display:none;width:100%;flex-shrink:0;margin-top:12px}
+.progress-bar{position:relative;height:2px;background:#f3f4f6}
+.progress-bar .fill{position:absolute;top:0;left:0;height:100%;background:#111827;transition:width .3s ease-out}
+.progress-info{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
+.progress-info span{font-size:12px;color:#6b7280}
+
+/* ========== Banner ========== */
+.banner{display:none;align-items:center;justify-content:center;gap:8px;
+  padding:8px 16px;font-size:12px;font-weight:400;width:100%;flex-shrink:0}
+.banner.error{display:flex;background:#fef2f2;color:#dc2626}
+.banner.ok{display:flex;background:#f0fdf4;color:#16a34a}
+
+/* ========== Spinner ========== */
+.spinner{display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);
+  border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+.spinner-dark{display:inline-block;width:18px;height:18px;border:2px solid #e5e7eb;
+  border-top-color:#6b7280;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ========== Loading Overlay ========== */
+.loading-overlay{position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:10px;background:#e5e7eb;
+  z-index:10;transition:opacity .3s}
+.loading-overlay.fade{opacity:0;pointer-events:none}
+.loading-text{font-size:12px;color:#6b7280;font-weight:300}
+
+/* ========== Settings ========== */
+#screen-settings .settings-body{flex:1;min-height:0;overflow-y:auto;padding:16px 0}
+
+/* ========== Logs ========== */
+#screen-logs .logs-body{width:100%;max-width:640px;flex:1;min-height:0;display:flex;flex-direction:column;padding:16px 0}
+.logs-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-shrink:0}
+.logs-toolbar h2{font-size:20px;font-weight:300;letter-spacing:-0.3px;color:#111827}
+.logs-toolbar .btn{width:auto;padding:6px 18px;margin-top:0;font-size:12px}
+.log-viewer{flex:1;min-height:0;overflow-y:auto;background:#f9fafb;border:1px solid #e5e7eb;padding:8px 12px;font-family:"Cascadia Code","Consolas","Courier New",monospace;font-size:11px;line-height:1.6;color:#374151;white-space:pre-wrap;word-break:break-all}
+.log-viewer .log-debug{color:#9ca3af}
+.log-viewer .log-info{color:#111827}
+.log-viewer .log-warn{color:#d97706}
+.log-viewer .log-error{color:#dc2626;font-weight:500}
+
+/* ========== Footer ========== */
+.footer{width:100%;max-width:640px;padding:8px 0;flex-shrink:0;border-top:1px solid #f3f4f6}
+.footer p{font-size:11px;color:#d1d5db}
+</style>
+</head>
+<body>
+
+<!-- ================================================================== -->
+<!-- Camera Screen                                                       -->
+<!-- ================================================================== -->
+<div id="screen-cam" class="screen active">
+  <div class="header">
+    <h1>FaceLogin Console</h1>
+    <p>人脸识别登录系统 · 控制台</p>
+  </div>
+  <div class="tabs">
+    <span class="tab active" onclick="switchTab('cam')">录入</span>
+    <span class="tab" onclick="switchTab('settings')">设置</span>
+    <span class="tab" onclick="switchTab('logs')">日志</span>
+  </div>
+  <div class="cam-body">
+    <div class="banner" id="cam-banner"></div>
+    <div class="cam-viewport" id="viewport">
+      <div class="loading-overlay" id="cam-loading">
+        <div class="spinner-dark"></div>
+        <span class="loading-text">正在启动摄像头...</span>
+      </div>
+      <canvas id="bg-canvas"></canvas>
+      <canvas id="face-canvas"></canvas>
+    </div>
+    <div class="status-bar">
+      <span class="samples-tag" id="samples-tag">Samples: 0 / 10</span>
+    </div>
+    <div class="hint" id="cam-hint">请将面部置于取景框内，确保光线充足。</div>
+    <button class="btn btn-primary" id="btn-capture" onclick="onCapture()">
+      <span class="spinner" id="cap-spinner"></span>
+      开始采集
+    </button>
+    <div id="cap-progress">
+      <div class="progress-bar"><div class="fill" id="cap-fill" style="width:0%"></div></div>
+      <div class="progress-info">
+        <span id="cap-step">采集人脸样本...</span>
+        <span id="cap-pct">0%</span>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><p>FaceLogin Console</p></div>
+</div>
+
+<!-- ================================================================== -->
+<!-- Password Screen                                                     -->
+<!-- ================================================================== -->
+<div id="screen-pwd" class="screen">
+  <div class="header">
+    <h1>FaceLogin Console</h1>
+    <p>人脸识别登录系统 · 控制台</p>
+  </div>
+  <div class="tabs"><span class="tab active">录入</span></div>
+  <div class="pwd-body">
+    <div class="banner" id="pwd-banner"></div>
+    <h2>完成录入</h2>
+    <div class="field">
+      <label>用户名 (UPN)</label>
+      <input type="text" id="fld-user" readonly>
+    </div>
+    <div class="field">
+      <label>账户类型</label>
+      <input type="text" id="fld-acct-type" readonly>
+    </div>
+    <div class="field">
+      <label>SID</label>
+      <input type="text" id="fld-sid" readonly>
+    </div>
+    <div class="field">
+      <label>Windows 密码</label>
+      <input type="password" id="fld-pass" placeholder="输入你的登录密码" autofocus>
+    </div>
+    <p class="dim">你的密码将使用 DPAPI 加密，仅存储在本机。</p>
+    <button class="btn btn-primary" id="btn-save" onclick="onSave()" style="margin-top:8px">
+      <span class="spinner" id="save-spinner"></span>
+      保存并录入
+    </button>
+  </div>
+  <div class="footer"><p>FaceLogin Console</p></div>
+</div>
+
+<!-- ================================================================== -->
+<!-- Settings Screen                                                     -->
+<!-- ================================================================== -->
+<div id="screen-settings" class="screen">
+  <div class="header">
+    <h1>FaceLogin Console</h1>
+    <p>人脸识别登录系统 · 控制台</p>
+  </div>
+  <div class="tabs">
+    <span class="tab" onclick="switchTab('cam')">录入</span>
+    <span class="tab active">设置</span>
+    <span class="tab" onclick="switchTab('logs')">日志</span>
+  </div>
+  <div class="pwd-body settings-body" style="width:100%;max-width:640px">
+    <div class="banner" id="settings-banner"></div>
+    <h2>系统设置</h2>
+    <p class="dim">修改设置后会自动通知后台服务，无需重启。</p>
+
+    <div class="field">
+      <label>识别模型 (Recognition Model)</label>
+      <select id="cfg-recognition">
+        <option value="both">ONNX + dlib (推荐)</option>
+        <option value="onnx">ONNX (InsightFace)</option>
+        <option value="dlib">dlib ResNet-34</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>检测器 (Detector)</label>
+      <select id="cfg-detector">
+        <option value="scrfd">SCRFD ONNX (推荐)</option>
+        <option value="dlib_hog">dlib HOG</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>活体检测 (Liveness Method)</label>
+      <select id="cfg-liveness" onchange="onLivenessChange()">
+        <option value="blink">眨眼检测 (Blink)</option>
+        <option value="antispoof">反欺诈 (Anti-Spoof)</option>
+        <option value="none">无 (None)</option>
+      </select>
+    </div>
+
+    <div class="field" id="field-antispoof-threshold" style="display:none">
+      <label>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.50</span></label>
+      <input type="range" id="cfg-antispoof-threshold" min="25" max="75" value="50" step="1"
+             oninput="document.getElementById('cfg-asthr-val').textContent=(this.value/100).toFixed(2)">
+      <p class="dim" style="margin-top:4px;font-size:11px">阈值越低越宽松（容易通过），越高越严格（更难通过）。默认0.50。</p>
+    </div>
+
+    <div class="field">
+      <label>匹配严格度 (Match Strictness): <span id="cfg-threshold-val">55</span></label>
+      <input type="range" id="cfg-threshold" min="20" max="80" value="55" step="1"
+             oninput="document.getElementById('cfg-threshold-val').textContent=this.value">
+      <p class="dim" style="margin-top:4px;font-size:11px">值越高越严格（人脸需更相似才能通过）。默认55。</p>
+    </div>
+
+    <button class="btn btn-primary" onclick="onSaveSettings()">
+      保存设置
+    </button>
+  </div>
+  <div class="footer"><p>FaceLogin Console</p></div>
+</div>
+
+<!-- ================================================================== -->
+<!-- Logs Screen                                                          -->
+<!-- ================================================================== -->
+<div id="screen-logs" class="screen">
+  <div class="header">
+    <h1>FaceLogin Console</h1>
+    <p>人脸识别登录系统 · 控制台</p>
+  </div>
+  <div class="tabs">
+    <span class="tab" onclick="switchTab('cam')">录入</span>
+    <span class="tab" onclick="switchTab('settings')">设置</span>
+    <span class="tab active">日志</span>
+  </div>
+  <div class="logs-body" style="width:100%;max-width:640px">
+    <div class="logs-toolbar">
+      <h2>运行日志</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="log-source" onchange="refreshLogs()" style="font-size:12px;padding:4px 8px;border:1px solid #e5e7eb;background:#f9fafb">
+          <option value="console">Console</option>
+          <option value="service">Service</option>
+        </select>
+        <button class="btn btn-secondary" onclick="clearLogs()">清空日志</button>
+      </div>
+    </div>
+    <div class="log-viewer" id="log-viewer"></div>
+  </div>
+  <div class="footer"><p>FaceLogin Console</p></div>
+</div>
+
+<script>
+var H = window.chrome.webview.hostObjects.sync.host;
+var viewing = true, lastB64 = '', timer = 0, faceImg = new Image();
+var camReady = false, currentTab = 'cam';
+
+faceImg.onload = function() {
+  var c = document.getElementById('bg-canvas');
+  var vp = document.getElementById('viewport');
+  c.width = vp.clientWidth;
+  c.height = vp.clientHeight;
+  c.getContext('2d').drawImage(faceImg, 0, 0, c.width, c.height);
+  if (!camReady) {
+    camReady = true;
+    document.getElementById('cam-loading').classList.add('fade');
+    setTimeout(function() {
+      var el = document.getElementById('cam-loading');
+      if (el) el.style.display = 'none';
+    }, 350);
+  }
+};
+
+function renderFrame() {
+  if (!viewing) return;
+  try {
+    var b64 = H.GetLatestFrameBase64();
+    if (b64 && b64 !== lastB64) {
+      lastB64 = b64;
+      faceImg.src = b64;
+    }
+    var json = H.GetLatestFacesJson();
+    if (json) drawOverlay(json);
+  } catch(e) {}
+  timer = setTimeout(renderFrame, 33);
+}
+
+function drawOverlay(json) {
+  var canvas = document.getElementById('face-canvas');
+  var vp = document.getElementById('viewport');
+  var ctx = canvas.getContext('2d');
+  canvas.width = vp.clientWidth;
+  canvas.height = vp.clientHeight;
+
+  var faces;
+  try { faces = JSON.parse(json); } catch(e) { return; }
+  if (faces.length === 0) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
+
+  var srcW = 1280, srcH = 720;
+  var cw = canvas.width, ch = canvas.height;
+  var srcRatio = srcW / srcH, dstRatio = cw / ch;
+  var rx, ry, rw, rh;
+  if (srcRatio > dstRatio) { rw = cw; rh = cw / srcRatio; rx = 0; ry = (ch - rh) / 2; }
+  else                     { rh = ch; rw = ch * srcRatio; rx = (cw - rw) / 2; ry = 0; }
+  var sx = rw / srcW, sy = rh / srcH;
+
+  ctx.clearRect(0, 0, cw, ch);
+  ctx.strokeStyle = '#22c55e';
+  ctx.lineWidth = 2;
+  ctx.fillStyle = '#22c55e';
+
+  for (var fi = 0; fi < faces.length; fi++) {
+    var f = faces[fi];
+    ctx.strokeRect(rx + f.x * sx, ry + f.y * sy, f.w * sx, f.h * sy);
+    for (var i = 0; i < f.landmarks.length; i += 2) {
+      ctx.fillRect(rx + f.landmarks[i] * sx - 1, ry + f.landmarks[i + 1] * sy - 1, 2, 2);
+    }
+  }
+}
+
+function switchTab(name) {
+  if (currentTab === name) return;
+  var screens = {cam: 'screen-cam', settings: 'screen-settings', logs: 'screen-logs'};
+  var newScreen = document.getElementById(screens[name]);
+  // Fade out current screen
+  var all = document.querySelectorAll('.screen');
+  for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
+  currentTab = name;
+  newScreen.classList.add('active');
+  var tabNames = {cam: '录入', settings: '设置', logs: '日志'};
+  var allTabs = document.querySelectorAll('.tabs span');
+  for (var i = 0; i < allTabs.length; i++) {
+    allTabs[i].classList.toggle('active', allTabs[i].textContent === tabNames[name]);
+  }
+  if (name === 'settings') loadSettings();
+  if (name === 'logs') refreshLogs();
+}
+
+function onLivenessChange() {
+  var method = document.getElementById('cfg-liveness').value;
+  var field = document.getElementById('field-antispoof-threshold');
+  field.style.display = (method === 'antispoof') ? 'flex' : 'none';
+}
+
+function loadSettings() {
+  try {
+    var json = H.GetConfig();
+    var cfg = JSON.parse(json);
+    document.getElementById('cfg-recognition').value = cfg.recognition_model || 'both';
+    document.getElementById('cfg-detector').value = cfg.detector || 'scrfd';
+    document.getElementById('cfg-liveness').value = cfg.liveness_method || 'blink';
+    // match_threshold is stored as distance (lower = stricter).
+    // Convert to UI strictness: strictness = 100 - threshold*100 (higher = stricter).
+    var thr = Math.round(100 - (cfg.match_threshold || 0.45) * 100);
+    document.getElementById('cfg-threshold').value = thr;
+    document.getElementById('cfg-threshold-val').textContent = thr;
+    var asThr = Math.round((cfg.anti_spoof_threshold || 0.50) * 100);
+    document.getElementById('cfg-antispoof-threshold').value = asThr;
+    document.getElementById('cfg-asthr-val').textContent = (asThr / 100).toFixed(2);
+    onLivenessChange();
+  } catch(e) { showBanner('settings', '读取设置失败: ' + e.message, 'error'); }
+}
+
+function onSaveSettings() {
+  var strictness = parseInt(document.getElementById('cfg-threshold').value);
+  var cfg = {
+    recognition_model: document.getElementById('cfg-recognition').value,
+    detector: document.getElementById('cfg-detector').value,
+    liveness_method: document.getElementById('cfg-liveness').value,
+    // Convert strictness back: threshold = (100 - strictness) / 100
+    match_threshold: (100 - strictness) / 100,
+    anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100
+  };
+  try {
+    var ok = H.SetConfig(JSON.stringify(cfg));
+    if (ok) {
+      showBanner('settings', '设置已保存并通知后台服务。', 'ok');
+      // Update hint text based on liveness method
+      var method = cfg.liveness_method;
+      if (method === 'antispoof') {
+        document.getElementById('cam-hint').textContent = '请保持面部正对摄像头，将进行活体检测。';
+      } else if (method === 'blink') {
+        document.getElementById('cam-hint').textContent = '请将面部置于取景框内，根据提示眨眼确认。';
+      } else {
+        document.getElementById('cam-hint').textContent = '请将面部置于取景框内，确保光线充足。';
+      }
+    } else {
+      showBanner('settings', '保存设置失败。', 'error');
+    }
+  } catch(e) { showBanner('settings', '保存设置失败: ' + e.message, 'error'); }
+}
+
+function onCapture() {
+  var btn = document.getElementById('btn-capture');
+  var spinner = document.getElementById('cap-spinner');
+  var prog = document.getElementById('cap-progress');
+  btn.disabled = true;
+  spinner.style.display = 'inline-block';
+  prog.style.display = 'block';
+
+  // Read config to determine liveness method for UI text
+  var liveMethod = 'blink';
+  try {
+    var cfg = JSON.parse(H.GetConfig());
+    liveMethod = cfg.liveness_method || 'blink';
+  } catch(e) {}
+
+  if (liveMethod === 'antispoof') {
+    document.getElementById('cap-step').textContent = '正在进行活体检测...';
+  } else if (liveMethod === 'blink') {
+    document.getElementById('cap-step').textContent = '请眨眼以确认活体...';
+  } else {
+    document.getElementById('cap-step').textContent = '正在采集...';
+  }
+  document.getElementById('cap-pct').textContent = '';
+  document.getElementById('cap-fill').style.width = '0%';
+
+  H.CaptureFaceSamples();
+
+  var livenessPoll = setInterval(function() {
+    var checking = false;
+    var passed = false;
+    try { checking = H.IsLivenessChecking(); } catch(e) {}
+    try { passed = H.IsLivenessPassed(); } catch(e) {}
+
+    if (!checking) {
+      clearInterval(livenessPoll);
+      if (!passed) {
+        prog.style.display = 'none';
+        btn.disabled = false;
+        spinner.style.display = 'none';
+        document.getElementById('cap-step').textContent = '采集人脸样本...';
+        document.getElementById('cap-pct').textContent = '0%';
+        showBanner('cam', '活体检测失败，请确保是真人并重试。', 'error');
+        return;
+      }
+      document.getElementById('cap-step').textContent = '采集人脸样本...';
+      var samplePoll = setInterval(function() {
+        var n = H.GetSampleCount();
+        var pct = Math.round(n / 10 * 100);
+        document.getElementById('samples-tag').textContent = 'Samples: ' + n + ' / 10';
+        document.getElementById('cap-fill').style.width = pct + '%';
+        document.getElementById('cap-pct').textContent = pct + '%';
+        if (n >= 10) {
+          clearInterval(samplePoll);
+          prog.style.display = 'none';
+          btn.disabled = false;
+          spinner.style.display = 'none';
+
+          viewing = false;
+          clearTimeout(timer);
+          H.StopPreview();
+
+          document.getElementById('screen-cam').classList.remove('active');
+          document.getElementById('screen-pwd').classList.add('active');
+          try { document.getElementById('fld-user').value = H.GetUsername(); } catch(e) {}
+          try { document.getElementById('fld-acct-type').value = H.GetAccountType(); } catch(e) {}
+          try { document.getElementById('fld-sid').value = H.GetUserSid(); } catch(e) {}
+          document.getElementById('fld-pass').focus();
+        }
+      }, 200);
+    }
+  }, 200);
+}
+
+function showBanner(screen, text, type) {
+  var el = document.getElementById(screen + '-banner');
+  el.className = 'banner ' + type;
+  el.textContent = text;
+  setTimeout(function() { el.className = 'banner'; }, 4000);
+}
+
+function onSave() {
+  var pass = document.getElementById('fld-pass').value;
+  if (!pass) { showBanner('pwd', '请输入密码。', 'error'); return; }
+
+  var btn = document.getElementById('btn-save');
+  var spinner = document.getElementById('save-spinner');
+  btn.disabled = true;
+  spinner.style.display = 'inline-block';
+
+  // Defer the synchronous COM call to let the browser paint the spinner first
+  setTimeout(function() {
+    var ok = false;
+    try { ok = H.ValidatePassword(pass); } catch(e) {}
+    if (ok) {
+      try { ok = H.SaveEnrollment(pass); } catch(e) { ok = false; }
+    }
+
+    btn.disabled = false;
+    spinner.style.display = 'none';
+
+    if (ok) {
+      // Return to the camera (main) screen immediately
+      document.getElementById('screen-pwd').classList.remove('active');
+      document.getElementById('screen-cam').classList.add('active');
+      currentTab = 'cam';
+      document.getElementById('fld-pass').value = '';
+      document.getElementById('samples-tag').textContent = 'Samples: 0 / 10';
+      showBanner('cam', '录入成功！可按 Win+L 锁定屏幕测试人脸登录。', 'ok');
+      viewing = true;
+      renderFrame();
+      try { H.StartPreview(); } catch(e) {}
+    } else {
+      showBanner('pwd', '密码错误，请确认是你的 Windows 登录密码。', 'error');
+    }
+  }, 50);
+}
+
+function refreshLogs() {
+  try {
+    var src = document.getElementById('log-source').value;
+    var json;
+    if (src === 'service') {
+      json = H.GetServiceLogLines();
+    } else {
+      json = H.GetLogLines();
+    }
+    if (!json || json.length < 2 || json[0] !== '[') {
+      document.getElementById('log-viewer').innerHTML = '<div class="log-warn">No log data</div>';
+      return;
+    }
+    var lines = JSON.parse(json);
+    var html = '';
+    for (var i = 0; i < lines.length; i++) {
+      var cls = 'log-info';
+      if (lines[i].indexOf('[DEBUG]') >= 0) cls = 'log-debug';
+      else if (lines[i].indexOf('[WARN]') >= 0) cls = 'log-warn';
+      else if (lines[i].indexOf('[ERROR]') >= 0) cls = 'log-error';
+      html += '<div class="' + cls + '">' + escapeHtml(lines[i]) + '</div>';
+    }
+    var viewer = document.getElementById('log-viewer');
+    var atBottom = (viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight) < 60;
+    viewer.innerHTML = html;
+    if (atBottom) viewer.scrollTop = viewer.scrollHeight;
+  } catch(e) {
+    document.getElementById('log-viewer').innerHTML = '<div class="log-error">Error loading logs: ' + e.message + '</div>';
+  }
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function clearLogs() {
+  try { H.ClearLog(); } catch(e) {}
+  document.getElementById('log-viewer').textContent = '';
+}
+
+(function init() {
+  try { document.getElementById('fld-user').value = H.GetUsername(); } catch(e) {}
+  setTimeout(function() {
+    try { if (H.StartPreview()) renderFrame(); } catch(e) {}
+  }, 100);
+  setInterval(function() {
+    if (!viewing) return;
+    try {
+      var n = H.GetSampleCount();
+      document.getElementById('samples-tag').textContent = 'Samples: ' + n + ' / 10';
+    } catch(e) {}
+  }, 300);
+
+  // Auto-refresh log viewer every 2 seconds when logs tab is active
+  setInterval(function() {
+    if (currentTab === 'logs') refreshLogs();
+  }, 2000);
+})();
+</script>
+</body>
+</html>

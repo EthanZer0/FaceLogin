@@ -1,0 +1,36 @@
+#include <initguid.h>
+#include <credentialprovider.h>
+#include "resource.h"
+
+// Include version info
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_DLL
+FILESUBTYPE     0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "FaceLogin"
+            VALUE "FileDescription", "FaceLogin Credential Provider"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "FaceLoginCredentialProvider.dll"
+            VALUE "LegalCopyright", "Copyright (C) 2026"
+            VALUE "OriginalFilename", "FaceLoginCredentialProvider.dll"
+            VALUE "ProductName", "FaceLogin"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+
+// Face icon resource
+IDI_FACELOGIN ICON "..\\assets\\facelogin.ico"
