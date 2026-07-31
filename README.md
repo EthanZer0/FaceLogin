@@ -188,7 +188,7 @@ wails build -clean -platform windows/amd64
 
 ## 开源协议
 
-[MIT License](LICENSE) © 2026 EthanZer0
+[MIT License](LICENSE) © 2026 美国伐木工&EthanZer0
 
 ---
 
