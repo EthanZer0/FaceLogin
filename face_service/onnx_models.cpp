@@ -168,43 +168,67 @@ bool OnnxDetector::Initialize(const std::wstring& modelPath) {
 }
 
 std::vector<float> OnnxDetector::Preprocess(const dlib::matrix<dlib::rgb_pixel>& image,
-                                              int& outWidth, int& outHeight,
-                                              float& scaleX, float& scaleY) {
+                                              float& outScaleX, float& outScaleY) {
     int srcH = static_cast<int>(image.nr());
     int srcW = static_cast<int>(image.nc());
 
-    // SCRFD uses 640x640 input
+    // SCRFD is exported for a fixed 640×640 input. insightface's official
+    // SCRFD detect() does a DIRECT resize (no letterbox, no aspect-preserving
+    // pad) — the 640×640 blob is a full distort of the source frame. Using the
+    // same preprocessing is essential; a letterbox would shift the feature-map
+    // anchors and produce misaligned boxes.
+    //
+    // CRITICAL: because the resize DISTORTS non-square frames (e.g. a 1280×720
+    // camera frame is squeezed into 640×640), the x and y scale factors are
+    // DIFFERENT. Using a single uniform scale here misplaces boxes by the
+    // aspect-ratio difference — for 1280×720 a uniform factor pushes boxes past
+    // the frame edge, so dlib landmark extraction fails and auth times out.
     const int targetSize = 640;
-    float ratio = std::min(static_cast<float>(targetSize) / srcW,
-                           static_cast<float>(targetSize) / srcH);
-    int newW = static_cast<int>(srcW * ratio);
-    int newH = static_cast<int>(srcH * ratio);
-    // Pad to multiples of 32
-    newW = ((newW + 31) / 32) * 32;
-    newH = ((newH + 31) / 32) * 32;
+    outScaleX = static_cast<float>(srcW) / static_cast<float>(targetSize);
+    outScaleY = static_cast<float>(srcH) / static_cast<float>(targetSize);
 
-    outWidth = newW;
-    outHeight = newH;
-    scaleX = static_cast<float>(srcW) / newW;
-    scaleY = static_cast<float>(srcH) / newH;
-
-    // Resize + letterbox
-    dlib::matrix<dlib::rgb_pixel> resized(newH, newW);
+    dlib::matrix<dlib::rgb_pixel> resized(targetSize, targetSize);
     dlib::resize_image(image, resized);
 
-    // BGR planar to NCHW, normalize to [0, 1]
-    std::vector<float> tensor(1 * 3 * newH * newW, 0.0f);
-    for (int y = 0; y < newH; y++) {
-        for (int x = 0; x < newW; x++) {
+    // BGR planar NCHW, normalized to [-1, 1] with (pixel - 127.5) / 128.
+    // insightface normalizes with 128, NOT 255.
+    std::vector<float> tensor(1 * 3 * targetSize * targetSize, 0.0f);
+    for (int y = 0; y < targetSize; y++) {
+        for (int x = 0; x < targetSize; x++) {
             const auto& p = resized(y, x);
-            int base = y * newW + x;
-            tensor[0 * newH * newW + base] = p.blue  / 255.0f;
-            tensor[1 * newH * newW + base] = p.green / 255.0f;
-            tensor[2 * newH * newW + base] = p.red   / 255.0f;
+            int base = y * targetSize + x;
+            tensor[0 * targetSize * targetSize + base] = (static_cast<float>(p.blue)  - 127.5f) / 128.0f;
+            tensor[1 * targetSize * targetSize + base] = (static_cast<float>(p.green) - 127.5f) / 128.0f;
+            tensor[2 * targetSize * targetSize + base] = (static_cast<float>(p.red)   - 127.5f) / 128.0f;
         }
     }
 
     return tensor;
+}
+
+// SCRFD decode helpers (matching insightface's scrfd.py).
+//
+// SCRFD bbox output is distance-based: 4 channels [left, top, right, bottom]
+// in units of stride steps from the anchor center. keypoints output is 10
+// channels (5 points × 2), also relative to the anchor center.
+
+// Convert (center, distance) predictions into a bounding box [x1,y1,x2,y2].
+static inline void DistanceToBbox(float cx, float cy,
+                                  const float* dist,
+                                  float& x1, float& y1, float& x2, float& y2) {
+    x1 = cx - dist[0];
+    y1 = cy - dist[1];
+    x2 = cx + dist[2];
+    y2 = cy + dist[3];
+}
+
+// Convert (center, distance) predictions into a 5-keypoint list (10 floats).
+static inline void DistanceToKps(float cx, float cy,
+                                 const float* dist, float* kps) {
+    for (int k = 0; k < 5; k++) {
+        kps[k * 2]     = cx + dist[k * 2];
+        kps[k * 2 + 1] = cy + dist[k * 2 + 1];
+    }
 }
 
 std::vector<OnnxDetector::Detection> OnnxDetector::Detect(
@@ -213,11 +237,12 @@ std::vector<OnnxDetector::Detection> OnnxDetector::Detect(
     if (!m_initialized) return results;
 
     try {
-        int newW, newH;
-        float scaleX, scaleY;
-        auto input = Preprocess(image, newW, newH, scaleX, scaleY);
+        float scaleX = 0.0f, scaleY = 0.0f;
+        auto input = Preprocess(image, scaleX, scaleY);
 
-        std::array<int64_t, 4> shape = {1, 3, newH, newW};
+        // Fixed 640×640 model input.
+        const int inputSize = 640;
+        std::array<int64_t, 4> shape = {1, 3, inputSize, inputSize};
         Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
             *m_memoryInfo, input.data(), input.size(), shape.data(), shape.size());
 
@@ -229,70 +254,121 @@ std::vector<OnnxDetector::Detection> OnnxDetector::Detect(
             inputNames2, &inputTensor, 1,
             outNames.data(), outNames.size());
 
-        // SCRFD outputs: scores [1, N, 1], bboxes [1, N, 4], kps [1, N, 10]
-        // Actual format depends on specific model. Common format:
-        // output 0: detection boxes [1, N, 4] or [1, N, 5] (x1,y1,x2,y2,score)
-        // output 1: keypoints [1, N, 10]
+        // SCRFD outputs (9 tensors): for each of 3 strides {8, 16, 32}:
+        //   scores  [N, 1]
+        //   bboxes  [N, 4]   (distance-to-center: l,t,r,b in stride units)
+        //   kps     [N, 10]  (5 points × 2, also distance-to-center)
+        // N = (640/stride)² × 2 (num_anchors=2), centers repeated per anchor.
+        constexpr int kStrides[3] = {8, 16, 32};
+        constexpr float kScoreThreshold = 0.5f;
 
-        auto& detOut = outputTensors[0];
-        auto detInfo = detOut.GetTensorTypeAndShapeInfo();
-        auto detShape = detInfo.GetShape();
-        float* detData = detOut.GetTensorMutableData<float>();
+        struct RawDet {
+            float score;
+            float box[4];
+            float kps[10];
+        };
+        std::vector<RawDet> raw;
 
-        size_t numDets = detShape.size() >= 2 ? detShape[1] : 0;
-        if (numDets == 0) return results;
+        for (int s = 0; s < 3; s++) {
+            int stride = kStrides[s];
+            int grid = inputSize / stride;
+            size_t numPts = static_cast<size_t>(grid) * grid;
+            size_t numAnchors = numPts * 2;   // num_anchors = 2
 
-        // Determine format: if shape[2] == 5, it's [x1,y1,x2,y2,score]
-        // if shape[2] == 4, scores are separate
-        size_t detDim = detShape.size() >= 3 ? detShape[2] : 0;
+            float* scoreData = outputTensors[s].GetTensorMutableData<float>();
+            float* boxData   = outputTensors[3 + s].GetTensorMutableData<float>();
+            float* kpsData   = outputTensors[6 + s].GetTensorMutableData<float>();
 
-        float* kpsData = nullptr;
-        if (outputTensors.size() > 1) {
-            kpsData = outputTensors[1].GetTensorMutableData<float>();
+            // Precompute anchor centers for this stride, following insightface's
+            // official scrfd.py exactly:
+            //   anchor_centers = np.stack(np.mgrid[:height, :width][::-1], axis=-1)
+            //                   .reshape(-1, 2) * stride
+            // np.mgrid[:h,:w][::-1] produces ROW-major (x varies fastest = columns
+            // inner loop). Center = (col, row) * stride, NO +0.5 offset.
+            // Both anchors of a cell share this center; output is interleaved:
+            //   index i → cell i/2, anchor i%2.
+            std::vector<float> centerX(numPts), centerY(numPts);
+            for (int r = 0; r < grid; r++) {          // row outer
+                for (int c = 0; c < grid; c++) {      // col inner (x fastest)
+                    centerX[r * grid + c] = c * stride;
+                    centerY[r * grid + c] = r * stride;
+                }
+            }
+
+            for (size_t i = 0; i < numAnchors; i++) {
+                float score = scoreData[i];
+                if (score < kScoreThreshold) continue;
+
+                size_t cell = i / 2;   // both anchors share this cell's center
+                float cx = centerX[cell];
+                float cy = centerY[cell];
+
+                RawDet det;
+                det.score = score;
+
+                // bbox distance is in stride units → multiply by stride.
+                float dist[4] = { boxData[i * 4 + 0] * stride,
+                                  boxData[i * 4 + 1] * stride,
+                                  boxData[i * 4 + 2] * stride,
+                                  boxData[i * 4 + 3] * stride };
+                float x1, y1, x2, y2;
+                DistanceToBbox(cx, cy, dist, x1, y1, x2, y2);
+                det.box[0] = x1; det.box[1] = y1; det.box[2] = x2; det.box[3] = y2;
+
+                // keypoints distance in stride units too.
+                float kd[10];
+                for (int k = 0; k < 10; k++) kd[k] = kpsData[i * 10 + k] * stride;
+                DistanceToKps(cx, cy, kd, det.kps);
+
+                raw.push_back(det);
+            }
         }
 
-        for (size_t i = 0; i < numDets; i++) {
-            float score;
-            float x1, y1, x2, y2;
+        // Non-maximum suppression across all strides (score-descending greedy).
+        std::sort(raw.begin(), raw.end(),
+            [](const RawDet& a, const RawDet& b) { return a.score > b.score; });
 
-            if (detDim >= 5) {
-                // Format: [score, x1, y1, x2, y2] or [x1, y1, x2, y2, score]
-                // Try [x1, y1, x2, y2, score]
-                x1 = detData[i * 5 + 0] * scaleX;
-                y1 = detData[i * 5 + 1] * scaleY;
-                x2 = detData[i * 5 + 2] * scaleX;
-                y2 = detData[i * 5 + 3] * scaleY;
-                score = detData[i * 5 + 4];
-            } else if (detDim >= 4) {
-                x1 = detData[i * 4 + 0] * scaleX;
-                y1 = detData[i * 4 + 1] * scaleY;
-                x2 = detData[i * 4 + 2] * scaleX;
-                y2 = detData[i * 4 + 3] * scaleY;
-                score = 0.5f; // unknown
-            } else {
-                continue;
+        constexpr float kNmsIoU = 0.5f;
+        std::vector<bool> suppressed(raw.size(), false);
+        for (size_t i = 0; i < raw.size(); i++) {
+            if (suppressed[i]) continue;
+            const RawDet& a = raw[i];
+            float ax1 = a.box[0], ay1 = a.box[1], ax2 = a.box[2], ay2 = a.box[3];
+            float aArea = (ax2 - ax1) * (ay2 - ay1) + 1e-5f;
+
+            for (size_t j = i + 1; j < raw.size(); j++) {
+                if (suppressed[j]) continue;
+                const RawDet& b = raw[j];
+                float ix = std::min(ax2, b.box[2]) - std::max(ax1, b.box[0]);
+                float iy = std::min(ay2, b.box[3]) - std::max(ay1, b.box[1]);
+                if (ix <= 0 || iy <= 0) continue;
+                float inter = ix * iy;
+                float bArea = (b.box[2] - b.box[0]) * (b.box[3] - b.box[1]) + 1e-5f;
+                float iou = inter / (aArea + bArea - inter + 1e-5f);
+                if (iou > kNmsIoU) suppressed[j] = true;
             }
+        }
 
-            if (score < 0.5f) continue;
-
+        // Map surviving detections back to source-pixel coordinates. The model
+        // DISTORTS non-square frames, so x and y scale independently.
+        for (size_t i = 0; i < raw.size(); i++) {
+            if (suppressed[i]) continue;
+            const RawDet& d = raw[i];
             Detection det;
-            det.x1 = x1; det.y1 = y1; det.x2 = x2; det.y2 = y2;
-            det.score = score;
-
-            if (kpsData) {
-                for (int k = 0; k < 10; k++) {
-                    det.kps[k] = kpsData[i * 10 + k];
-                    if (k % 2 == 0) det.kps[k] *= scaleX;
-                    else             det.kps[k] *= scaleY;
-                }
-            } else {
-                std::fill(det.kps, det.kps + 10, 0.0f);
+            det.x1 = d.box[0] * scaleX;
+            det.y1 = d.box[1] * scaleY;
+            det.x2 = d.box[2] * scaleX;
+            det.y2 = d.box[3] * scaleY;
+            det.score = d.score;
+            for (int k = 0; k < 5; k++) {
+                det.kps[k * 2]     = d.kps[k * 2]     * scaleX;
+                det.kps[k * 2 + 1] = d.kps[k * 2 + 1] * scaleY;
             }
-
             results.push_back(det);
         }
 
-        // Sort by confidence descending
+        // Sort by confidence descending (already score-sorted after NMS, but
+        // keep it explicit for the public contract).
         std::sort(results.begin(), results.end(),
             [](const Detection& a, const Detection& b) { return a.score > b.score; });
 

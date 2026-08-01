@@ -9,15 +9,22 @@
 
 namespace facelogin {
 
-// L2-normalized face embeddings produce Euclidean distances that grow with
-// the embedding dimension. All thresholds (match 0.30, enrollment consistency
-// 0.45) are calibrated against the 128-D dlib ResNet baseline; the InsightFace
-// ONNX recognizer emits 512-D vectors whose same-person distances are roughly
-// sqrt(512/128) = 2x larger. Scale the baseline so a given "strictness" means
-// the same thing in both metric spaces.
+// Map a base "strictness" threshold to the embedding dimensionality actually
+// in use.
+//
+// The system now uses InsightFace ONNX (512-D) embeddings exclusively (the dlib
+// recognizer was removed). L2-normalized embeddings have Euclidean distance
+// bounded by sqrt(2) ≈ 1.414 regardless of dimension, so sqrt(dim/128) scaling
+// is invalid.
+//
+// For 512-D ONNX we return a fixed 0.80, calibrated from measured data:
+//   same-person matches on this system: 0.14–0.80
+//   other-person photo match:           0.94–0.99
+// (0.80 cleanly separates them; 1.0 admitted a photo.)
+// Any other (legacy) dimension falls back to the base threshold.
 inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
-    if (dim == 0) return baseThreshold;
-    return baseThreshold * std::sqrt(static_cast<float>(dim) / 128.0f);
+    if (dim >= 256) return 0.80f;             // ONNX 512-D: measured safe boundary
+    return baseThreshold;                     // dlib 128-D and unknown: caller base
 }
 
 // Stores and retrieves encrypted user credentials and face embeddings.

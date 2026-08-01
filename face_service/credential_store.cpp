@@ -342,20 +342,23 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
     }
 
     // No stored embedding with a comparable dimensionality.
+    // (e.g. dlib 128-D probe against an ONNX 512-D enrollment — a config/data
+    // mismatch. DEBUG level: fires on every frame and would spam the log.)
     if (bestIdx >= m_users.size()) {
-        FACELOGIN_WARN(L"FindBestMatch: no stored %zu-D embedding (users=%zu)",
-                       probeDim, m_users.size());
+        FACELOGIN_DEBUG(L"FindBestMatch: no stored %zu-D embedding (users=%zu)",
+                        probeDim, m_users.size());
         return std::nullopt;
     }
 
-    // The configured threshold is calibrated for the 128-D dlib baseline.
-    // Scale it to the probe's dimensionality so the same "strictness" applies
-    // in both metric spaces (512-D ONNX same-person distances are ~2x the
-    // 128-D dlib ones for comparable per-coordinate noise).
+    // The base threshold is dlib-calibrated. For 512-D ONNX embeddings,
+    // EmbeddingThresholdForDim returns 0.80, measured to separate same-person
+    // (0.14–0.80) from other-person photos (0.94–0.99). For 128-D dlib it
+    // returns the base unchanged.
+    // (DEBUG level: this runs on every frame and would spam the log.)
     float effThreshold = EmbeddingThresholdForDim(threshold, probeDim);
     if (effThreshold != threshold) {
-        FACELOGIN_INFO(L"FindBestMatch: dim=%zu → threshold %.3f scaled to %.3f",
-                       probeDim, threshold, effThreshold);
+        FACELOGIN_DEBUG(L"FindBestMatch: dim=%zu → threshold %.3f scaled to %.3f",
+                        probeDim, threshold, effThreshold);
     }
 
     // Reject if best match is not meaningfully better than second-best.
