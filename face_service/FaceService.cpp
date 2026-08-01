@@ -433,9 +433,10 @@ bool FaceService::ProcessAuthRequest() {
         return false;
     }
 
-    // Drop initial frames to let camera exposure adjust
+    // Drop initial frames to let camera exposure adjust. 5 frames is enough
+    // (exposure settles within 3-5 frames); 10 frames wasted ~0.3s per auth.
     dlib::matrix<dlib::rgb_pixel> frame;
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 5; i++) {
         grabFrame(frame);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -473,10 +474,14 @@ bool FaceService::ProcessAuthRequest() {
             continue;
         }
 
-        // Face detection + landmarks: prefer SCRFD ONNX, fall back to dlib HOG
-        dlib::matrix<float, 0, 1> embedding;
+        // Face detection + landmarks: prefer SCRFD ONNX, fall back to dlib HOG.
+        // NOTE: the dlib embedding is deliberately NOT computed here. It used to
+        // run on every frame (~150-200ms of ResNet inference) even though the
+        // match uses the ONNX embedding. Now the dlib embedding is computed
+        // lazily, only when the ONNX embedding is unavailable (rare fallback).
         std::optional<CredentialStore::MatchResult> match;
         dlib::full_object_detection landmarks;
+        bool haveLandmarks = false;
 
         if (m_onnxDetector) {
             auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
@@ -487,14 +492,11 @@ bool FaceService::ProcessAuthRequest() {
                                          static_cast<long>(onnxDet->x2),
                                          static_cast<long>(onnxDet->y2));
                 landmarks = m_detector->GetLandmarks(frame, dlibRect);
-                embedding = m_recognizer->ComputeEmbedding(frame, landmarks);
-                if (embedding.size() > 0) {
-                    goto skip_dlib_detect;
-                }
+                haveLandmarks = true;
             }
         }
 
-        {
+        if (!haveLandmarks) {
             auto faces = m_detector->Detect(frame);
             if (faces.empty()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -505,25 +507,32 @@ bool FaceService::ProcessAuthRequest() {
                     return a.rect.area() < b.rect.area();
                 });
             landmarks = largestIt->landmarks;
-            embedding = m_recognizer->ComputeEmbedding(frame, landmarks);
+            haveLandmarks = true;
         }
 
-        skip_dlib_detect:
-        if (embedding.size() == 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(30));
-            continue;
-        }
+        // Embedding + match: prefer ONNX (fast, ~20ms). Compute the dlib
+        // embedding only when the ONNX recognizer is unavailable or fails on
+        // this frame — this is the rare fallback path.
         if (m_onnxRecognizer) {
             auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
             if (!onnxEmb.empty()) {
                 // Enrollment stores ONNX embeddings, so ONNX match alone is sufficient.
                 match = m_store->FindBestMatch(onnxEmb.data(), m_matchThreshold);
             } else {
-                // ONNX failed, use dlib alone
-                match = m_store->FindBestMatch(&embedding(0), m_matchThreshold);
+                // ONNX failed on this frame — fall back to dlib embedding
+                dlib::matrix<float, 0, 1> dlibEmb =
+                    m_recognizer->ComputeEmbedding(frame, landmarks);
+                if (dlibEmb.size() > 0) {
+                    match = m_store->FindBestMatch(&dlibEmb(0), m_matchThreshold);
+                }
             }
         } else {
-            match = m_store->FindBestMatch(&embedding(0), m_matchThreshold);
+            // No ONNX recognizer loaded — dlib only
+            dlib::matrix<float, 0, 1> dlibEmb =
+                m_recognizer->ComputeEmbedding(frame, landmarks);
+            if (dlibEmb.size() > 0) {
+                match = m_store->FindBestMatch(&dlibEmb(0), m_matchThreshold);
+            }
         }
 
         if (match) {
@@ -608,12 +617,15 @@ bool FaceService::ProcessAuthRequest() {
                     }
                 } else if (method == LivenessMethod::Blink) {
                     LivenessDetector liveness;
-                    liveness.Configure(0.20f, 3);
+                    liveness.Configure(kDefaultEarThreshold, kDefaultBlinkFrames);
                     auto livenessStart = std::chrono::steady_clock::now();
                     bool blinked = false;
                     while (m_running) {
                         auto livenessElapsed = std::chrono::steady_clock::now() - livenessStart;
-                        if (std::chrono::duration_cast<std::chrono::seconds>(livenessElapsed).count() >= 5) {
+                        // 8s timeout (was 5s): a user may react to the "blink"
+                        // prompt with a slight delay, and the detection loop only
+                        // runs at ~6fps. 5s was too tight for a comfortable blink.
+                        if (std::chrono::duration_cast<std::chrono::seconds>(livenessElapsed).count() >= 8) {
                             FACELOGIN_WARN(L"Liveness check timed out \u2014 no blink detected");
                             break;
                         }
@@ -636,7 +648,7 @@ bool FaceService::ProcessAuthRequest() {
                     m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
                         method == LivenessMethod::AntiSpoof ?
                         L"\u68c0\u6d4b\u5230\u653b\u51fb\uff0c\u8bf7\u4f7f\u7528\u771f\u5b9e\u4eba\u8138" :
-                        L"\u672a\u68c0\u6d4b\u5230\u7728\u773c\uff0c\u8bf7\u91cd\u8bd5"));
+                        L"\u672a\u68c0\u6d4b\u5230\u7728\u773c\uff0c\u8bf7\u52a8\u4f5c\u660e\u786e\u5730\u95ed\u773c\u518d\u7741\u5f00\u91cd\u8bd5"));
                     FlushFileBuffers(m_pipeServer->GetHandle());
                     {
                         wchar_t dummy[64]; DWORD bytesRead = 0;
