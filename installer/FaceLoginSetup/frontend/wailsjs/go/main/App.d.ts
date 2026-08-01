@@ -3,6 +3,8 @@
 
 export function GetDefaultPaths():Promise<Record<string, string>>;
 
+export function GetUpgradeNotice():Promise<Record<string, any>>;
+
 export function Install(arg1:string):Promise<Record<string, any>>;
 
 export function IsInstalled():Promise<boolean>;

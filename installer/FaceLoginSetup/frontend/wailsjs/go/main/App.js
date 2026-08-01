@@ -6,6 +6,10 @@ export function GetDefaultPaths() {
   return window['go']['main']['App']['GetDefaultPaths']();
 }
 
+export function GetUpgradeNotice() {
+  return window['go']['main']['App']['GetUpgradeNotice']();
+}
+
 export function Install(arg1) {
   return window['go']['main']['App']['Install'](arg1);
 }

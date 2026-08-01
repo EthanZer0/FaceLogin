@@ -74,6 +74,14 @@ func (a *App) IsInstalled() bool {
 	return internal.DirExists(installDir)
 }
 
+// GetUpgradeNotice returns the per-release "what's new" announcement content,
+// or an empty map when this release has no announcement (or this is a fresh
+// first-time install, not an upgrade). The frontend calls this after an
+// install completes and shows a popup if non-empty.
+func (a *App) GetUpgradeNotice() map[string]interface{} {
+	return internal.GetUpgradeNotice()
+}
+
 // Install runs the full installation.
 func (a *App) Install(installDir string) map[string]interface{} {
 	var err error

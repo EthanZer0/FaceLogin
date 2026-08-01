@@ -1,6 +1,6 @@
 <script lang="ts" setup>
-import { ref, onMounted } from 'vue'
-import { GetDefaultPaths, Install, Uninstall, PickDirectory, IsInstalled } from '../wailsjs/go/main/App'
+import { ref, computed, onMounted } from 'vue'
+import { GetDefaultPaths, Install, Uninstall, PickDirectory, IsInstalled, GetUpgradeNotice } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime'
 
 const installDir = ref('')
@@ -14,6 +14,17 @@ const resultMessage = ref('')
 const resultSuccess = ref(false)
 const showResult = ref(false)
 const alreadyInstalled = ref(false)
+
+// Upgrade notice ("what's new") popup state
+const notice = ref<any>(null)
+const showNotice = ref(false)
+
+// Notice body lines, filtered to non-empty (rendered as bullets)
+const noticeLines = computed(() =>
+  notice.value && notice.value.body
+    ? (notice.value.body as string).split('\n').filter((l: string) => l.trim() !== '')
+    : []
+)
 
 onMounted(async () => {
   const paths = await GetDefaultPaths()
@@ -56,6 +67,16 @@ async function doInstall() {
   resultSuccess.value = result.success
   showResult.value = true
   running.value = false
+
+  // After a successful UPGRADE install, check for a per-release "what's new"
+  // announcement and show it as a popup. Fresh installs get none.
+  if (result.success && alreadyInstalled.value) {
+    const n = await GetUpgradeNotice()
+    if (n && n.title) {
+      notice.value = n
+      showNotice.value = true
+    }
+  }
 }
 
 async function doUninstall() {
@@ -188,6 +209,56 @@ async function doUninstall() {
     <!-- Footer -->
     <div class="px-8 py-4 border-t border-gray-100">
       <p class="text-xs text-gray-300">Windows 人脸识别登录</p>
+    </div>
+  </div>
+
+  <!-- Upgrade notice popup ("what's new") — only after a successful upgrade -->
+  <div
+    v-if="showNotice && notice"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+    @click.self="showNotice = false"
+  >
+    <div class="w-[90%] max-w-md bg-white shadow-xl border border-gray-100 flex flex-col max-h-[80vh]">
+      <!-- Header -->
+      <div class="px-6 pt-5 pb-3 border-b border-gray-100 flex items-start justify-between gap-4">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] font-semibold uppercase tracking-wider bg-gray-900 text-white px-1.5 py-0.5">
+              v{{ notice.version }}
+            </span>
+            <span class="text-xs text-gray-400 font-light">新版本公告</span>
+          </div>
+          <h2 class="mt-2 text-lg font-medium text-gray-900">{{ notice.title }}</h2>
+        </div>
+        <button
+          class="text-gray-400 hover:text-gray-600 text-xl leading-none pt-0.5"
+          @click="showNotice = false"
+          title="关闭"
+        >×</button>
+      </div>
+
+      <!-- Body: one bullet per line -->
+      <div class="px-6 py-4 overflow-y-auto">
+        <ul class="space-y-2.5">
+          <li
+            v-for="(line, i) in noticeLines"
+            :key="i"
+            class="flex gap-2.5 text-sm text-gray-700 leading-relaxed"
+          >
+            <span class="text-gray-300 mt-0.5 flex-shrink-0">•</span>
+            <span>{{ line }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Footer -->
+      <div class="px-6 py-4 border-t border-gray-100 flex justify-end">
+        <button
+          class="px-4 py-1.5 text-sm font-medium bg-gray-900 text-white
+                 hover:bg-gray-800 transition-colors"
+          @click="showNotice = false"
+        >知道了</button>
+      </div>
     </div>
   </div>
 </template>

@@ -38,20 +38,42 @@ func main() {
 	// =========================================================================
 	// Custom action area — PER-RELEASE upgrade actions.
 	//
-	// When a release changes the app's default parameters and wants existing
-	// installs to pick up the new defaults, enable the switch and list the
-	// affected keys. This runs ONLY for this release; future releases leave
-	// it OFF so their installs never re-apply stale overrides.
+	// Two independent, version-scoped switches live here:
 	//
-	//   internal.ConfigUpgradeEnabled = true   // enable this release's actions
+	//   A) Config upgrade  — force-sync changed default parameters onto
+	//      existing installs (see internal/config.go).
+	//   B) Upgrade notice  — show a "what's new" popup after an upgrade
+	//      install completes (see internal/notice.go). Only shown when the
+	//      install is an upgrade (a previous version is already installed),
+	//      never on a fresh first-time install.
+	//
+	// Both default to OFF. Each release that needs an action turns the
+	// relevant switch ON here; future releases leave them OFF so stale
+	// overrides/announcements never re-apply.
+	//
+	//   internal.ConfigUpgradeEnabled = true   // A: sync thresholds
 	//   internal.ConfigUpgradeForcedDefaults = map[string]any{
 	//       "match_threshold":      0.30,   // threshold changed in this release
 	//       "anti_spoof_threshold": 0.30,
 	//   }
 	//
+	//   internal.NoticeEnabled  = true            // B: announcement popup
+	//   internal.NoticeVersion  = "1.2.0"         // badge shown in the popup
+	//   internal.NoticeTitle    = "FaceLogin 1.2.0 更新说明"
+	//   internal.NoticeBody     = "行1\n行2\n行3"  // one bullet per line
+	//
 	// v1.0.1: threshold defaults changed (match strictness 70 / anti-spoof 0.30).
 	// =========================================================================
 	internal.ConfigUpgradeEnabled = true
+
+	// =========================================================================
+	// B) Upgrade notice — placeholder content for verifying the popup mechanic.
+	// Replace with the real release notes before shipping.
+	// =========================================================================
+	internal.NoticeEnabled = true
+	internal.NoticeVersion = "1.1.0"
+	internal.NoticeTitle = "FaceLogin 1.1.0 更新说明"
+	internal.NoticeBody = "这是占位公告，用于验证弹窗机制。\n正式发布前请替换为真实更新内容。\n例如：升级后请重新录入人脸以适配新识别引擎。"
 
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
