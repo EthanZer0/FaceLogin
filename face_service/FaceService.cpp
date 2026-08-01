@@ -517,13 +517,15 @@ bool FaceService::ProcessAuthRequest() {
             auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
             if (!onnxEmb.empty()) {
                 // Enrollment stores ONNX embeddings, so ONNX match alone is sufficient.
-                match = m_store->FindBestMatch(onnxEmb.data(), m_matchThreshold);
+                // Pass the true dimensionality (512-D) so FindBestMatch compares
+                // against same-dimension stored embeddings only.
+                match = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
             } else {
                 // ONNX failed on this frame — fall back to dlib embedding
                 dlib::matrix<float, 0, 1> dlibEmb =
                     m_recognizer->ComputeEmbedding(frame, landmarks);
                 if (dlibEmb.size() > 0) {
-                    match = m_store->FindBestMatch(&dlibEmb(0), m_matchThreshold);
+                    match = m_store->FindBestMatch(&dlibEmb(0), static_cast<size_t>(dlibEmb.size()), m_matchThreshold);
                 }
             }
         } else {
@@ -531,7 +533,7 @@ bool FaceService::ProcessAuthRequest() {
             dlib::matrix<float, 0, 1> dlibEmb =
                 m_recognizer->ComputeEmbedding(frame, landmarks);
             if (dlibEmb.size() > 0) {
-                match = m_store->FindBestMatch(&dlibEmb(0), m_matchThreshold);
+                match = m_store->FindBestMatch(&dlibEmb(0), static_cast<size_t>(dlibEmb.size()), m_matchThreshold);
             }
         }
 
@@ -670,12 +672,12 @@ bool FaceService::ProcessAuthRequest() {
                             if (m_onnxRecognizer) {
                                 auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(verifyFrame, verifyFace->landmarks);
                                 if (!onnxEmb.empty()) {
-                                    verifyMatch = m_store->FindBestMatch(onnxEmb.data(), m_matchThreshold);
+                                    verifyMatch = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
                                 }
                             } else {
                                 auto verifyEmbedding = m_recognizer->ComputeEmbedding(verifyFrame, verifyFace->landmarks);
                                 if (verifyEmbedding.size() > 0) {
-                                    verifyMatch = m_store->FindBestMatch(&verifyEmbedding(0), m_matchThreshold);
+                                    verifyMatch = m_store->FindBestMatch(&verifyEmbedding(0), static_cast<size_t>(verifyEmbedding.size()), m_matchThreshold);
                                 }
                             }
                             if (!verifyMatch) {

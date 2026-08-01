@@ -5,15 +5,27 @@
 #include <vector>
 #include <optional>
 #include <cstdint>
+#include <cmath>
 
 namespace facelogin {
+
+// L2-normalized face embeddings produce Euclidean distances that grow with
+// the embedding dimension. All thresholds (match 0.30, enrollment consistency
+// 0.45) are calibrated against the 128-D dlib ResNet baseline; the InsightFace
+// ONNX recognizer emits 512-D vectors whose same-person distances are roughly
+// sqrt(512/128) = 2x larger. Scale the baseline so a given "strictness" means
+// the same thing in both metric spaces.
+inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
+    if (dim == 0) return baseThreshold;
+    return baseThreshold * std::sqrt(static_cast<float>(dim) / 128.0f);
+}
 
 // Stores and retrieves encrypted user credentials and face embeddings.
 //
 // File format (PROGRAMDATA/FaceLogin/data/users.dat):
 //   Header:
 //     Magic:  4 bytes ("FLOG")
-//     Version: 4 bytes (uint32, currently 2)
+//     Version: 4 bytes (uint32, currently 3)
 //     Count:   4 bytes (uint32, number of records)
 //   Records (Count times):
 //     Username length: 4 bytes (uint32, in wchar_t units)
@@ -24,10 +36,14 @@ namespace facelogin {
 //     SID:             N*2 bytes (UTF-16LE)               ← V2
 //     Password length: 4 bytes (uint32, in bytes, encrypted)
 //     Password:        N bytes (DPAPI encrypted)
-//     Embedding:       512 bytes (128 floats * 4 bytes)
+//     Embedding length: 4 bytes (uint32, in floats)       ← V3
+//     Embedding:       D*4 bytes (D floats * 4 bytes)     ← V3 (was fixed 128)
 //
 // V1 backward compat: version=1 records omit UPN/SID fields.
 // On load, V1 records are auto-upgraded by looking up the SID/UPN from SAM.
+// V2 backward compat: version=2 records store a fixed 128-float embedding.
+// On load, V2 embeddings are kept as-is (128-D); re-enrollment is required
+// to obtain a 512-D embedding (the InsightFace ONNX recognizer's native size).
 //
 // The file is protected by ACLs (SYSTEM + Administrators only).
 // Passwords are encrypted with DPAPI CRYPTPROTECT_LOCAL_MACHINE.
@@ -37,7 +53,7 @@ struct UserRecord {
     std::wstring upn;      // UserPrincipalName (e.g. "john@outlook.com"), V2
     std::wstring sid;      // Security Identifier (e.g. "S-1-5-21-..."), V2
     std::vector<uint8_t> encryptedPassword;  // DPAPI encrypted
-    float embedding[128];                     // 128-D face embedding
+    std::vector<float> embedding;            // D-D embedding (128 for dlib, 512 for ONNX), V3
 };
 
 class CredentialStore {
@@ -63,7 +79,7 @@ public:
                  const std::wstring& upn,
                  const std::wstring& sid,
                  const std::vector<uint8_t>& encryptedPassword,
-                 const float embedding[128]);
+                 const std::vector<float>& embedding);
 
     // Delete a user from the in-memory database.
     // Call SaveDatabase() to persist.
@@ -81,7 +97,11 @@ public:
         std::wstring password;  // Decrypted — zero after use!
         float distance;
     };
-    std::optional<MatchResult> FindBestMatch(const float probeEmbedding[128],
+    // probeDim is the number of floats in probeEmbedding (128 for dlib,
+    // 512 for InsightFace ONNX). Only stored embeddings of the same
+    // dimensionality are compared; others are skipped as non-comparable.
+    std::optional<MatchResult> FindBestMatch(const float probeEmbedding[],
+                                              size_t probeDim,
                                               float threshold = 0.30f);
 
     // Get the number of registered users

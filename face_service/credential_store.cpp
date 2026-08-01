@@ -9,7 +9,7 @@
 namespace facelogin {
 
 static constexpr uint32_t FILE_MAGIC = 0x474F4C46; // "FLOG" in little-endian
-static constexpr uint32_t FILE_VERSION = 2;
+static constexpr uint32_t FILE_VERSION = 3;
 
 // Helper: try to look up SID and UPN from a username.
 // Used for upgrading V1 databases on the fly.
@@ -95,7 +95,7 @@ bool CredentialStore::LoadDatabase() {
         FACELOGIN_ERROR(L"Invalid database file (bad magic: 0x%08X)", magic);
         return false;
     }
-    if (version != FILE_VERSION && version != 1) {
+    if (version != FILE_VERSION && version != 2 && version != 1) {
         FACELOGIN_ERROR(L"Unsupported database version: %u", version);
         return false;
     }
@@ -154,8 +154,21 @@ bool CredentialStore::LoadDatabase() {
         rec.encryptedPassword.resize(passLen);
         file.read(reinterpret_cast<char*>(rec.encryptedPassword.data()), passLen);
 
-        // Embedding (128 floats)
-        file.read(reinterpret_cast<char*>(rec.embedding), 128 * sizeof(float));
+        // Embedding — V3 stores a length-prefixed vector; V1/V2 store 128 floats.
+        if (version >= 3) {
+            uint32_t embLen = 0;
+            file.read(reinterpret_cast<char*>(&embLen), sizeof(embLen));
+            // Sanity range: 64..4096 floats (covers 128-D dlib and 512-D ONNX)
+            if (embLen < 64 || embLen > 4096) {
+                FACELOGIN_ERROR(L"Invalid embedding length: %u", embLen);
+                return false;
+            }
+            rec.embedding.resize(embLen);
+            file.read(reinterpret_cast<char*>(rec.embedding.data()), embLen * sizeof(float));
+        } else {
+            rec.embedding.resize(128);
+            file.read(reinterpret_cast<char*>(rec.embedding.data()), 128 * sizeof(float));
+        }
 
         if (file.good()) {
             // V1 → V2 upgrade: look up SID/UPN for existing records
@@ -226,12 +239,16 @@ bool CredentialStore::SaveDatabase() {
         file.write(reinterpret_cast<const char*>(&passLen), sizeof(passLen));
         file.write(reinterpret_cast<const char*>(rec.encryptedPassword.data()), passLen);
 
-        // Embedding
-        file.write(reinterpret_cast<const char*>(rec.embedding), 128 * sizeof(float));
+        // Embedding (length-prefixed, V3)
+        uint32_t embLen = static_cast<uint32_t>(rec.embedding.size());
+        file.write(reinterpret_cast<const char*>(&embLen), sizeof(embLen));
+        if (embLen > 0) {
+            file.write(reinterpret_cast<const char*>(rec.embedding.data()), embLen * sizeof(float));
+        }
     }
 
     file.close();
-    FACELOGIN_INFO(L"Saved %zu user(s) to database (v2)", m_users.size());
+    FACELOGIN_INFO(L"Saved %zu user(s) to database (v3)", m_users.size());
     return true;
 }
 
@@ -239,7 +256,7 @@ bool CredentialStore::AddUser(const std::wstring& username,
                                const std::wstring& upn,
                                const std::wstring& sid,
                                const std::vector<uint8_t>& encryptedPassword,
-                               const float embedding[128]) {
+                               const std::vector<float>& embedding) {
     // Check if user already exists (match by SID if available, then username)
     auto it = m_users.end();
     if (!sid.empty()) {
@@ -260,17 +277,19 @@ bool CredentialStore::AddUser(const std::wstring& username,
         it->upn = upn;
         it->sid = sid;
         it->encryptedPassword = encryptedPassword;
-        memcpy(it->embedding, embedding, 128 * sizeof(float));
-        FACELOGIN_INFO(L"Updated existing user: %s (SID=%s)", username.c_str(), sid.c_str());
+        it->embedding = embedding;
+        FACELOGIN_INFO(L"Updated existing user: %s (SID=%s, emb=%zu-D)",
+                      username.c_str(), sid.c_str(), embedding.size());
     } else {
         UserRecord rec;
         rec.username = username;
         rec.upn = upn;
         rec.sid = sid;
         rec.encryptedPassword = encryptedPassword;
-        memcpy(rec.embedding, embedding, 128 * sizeof(float));
+        rec.embedding = embedding;
         m_users.push_back(std::move(rec));
-        FACELOGIN_INFO(L"Added new user: %s (SID=%s)", username.c_str(), sid.c_str());
+        FACELOGIN_INFO(L"Added new user: %s (SID=%s, emb=%zu-D)",
+                      username.c_str(), sid.c_str(), embedding.size());
     }
 
     return true;
@@ -291,18 +310,23 @@ bool CredentialStore::DeleteUser(const std::wstring& username) {
 }
 
 std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
-    const float probeEmbedding[128], float threshold) {
+    const float probeEmbedding[], size_t probeDim, float threshold) {
 
-    if (m_users.empty()) {
+    if (m_users.empty() || probeDim == 0 || probeEmbedding == nullptr) {
         return std::nullopt;
     }
 
     float bestDist = 1e10f, secondBestDist = 1e10f;
-    size_t bestIdx = 0;
+    size_t bestIdx = m_users.size();
 
     for (size_t i = 0; i < m_users.size(); i++) {
+        // Skip stored embeddings that don't match the probe's dimensionality.
+        // dlib (128-D) and InsightFace ONNX (512-D) embeddings live in
+        // different metric spaces — comparing them would be meaningless.
+        if (m_users[i].embedding.size() != probeDim) continue;
+
         float sum = 0.0f;
-        for (int j = 0; j < 128; j++) {
+        for (size_t j = 0; j < probeDim; j++) {
             float diff = probeEmbedding[j] - m_users[i].embedding[j];
             sum += diff * diff;
         }
@@ -315,6 +339,23 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
         } else if (dist < secondBestDist) {
             secondBestDist = dist;
         }
+    }
+
+    // No stored embedding with a comparable dimensionality.
+    if (bestIdx >= m_users.size()) {
+        FACELOGIN_WARN(L"FindBestMatch: no stored %zu-D embedding (users=%zu)",
+                       probeDim, m_users.size());
+        return std::nullopt;
+    }
+
+    // The configured threshold is calibrated for the 128-D dlib baseline.
+    // Scale it to the probe's dimensionality so the same "strictness" applies
+    // in both metric spaces (512-D ONNX same-person distances are ~2x the
+    // 128-D dlib ones for comparable per-coordinate noise).
+    float effThreshold = EmbeddingThresholdForDim(threshold, probeDim);
+    if (effThreshold != threshold) {
+        FACELOGIN_INFO(L"FindBestMatch: dim=%zu → threshold %.3f scaled to %.3f",
+                       probeDim, threshold, effThreshold);
     }
 
     // Reject if best match is not meaningfully better than second-best.
@@ -331,7 +372,7 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
         }
     }
 
-    if (bestDist < threshold) {
+    if (bestDist < effThreshold) {
         MatchResult best;
         best.distance = bestDist;
         best.upn = m_users[bestIdx].upn;

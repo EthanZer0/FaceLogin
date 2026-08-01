@@ -630,32 +630,38 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 landmarks = face->landmarks;
             }
 
-            auto embedding = m_recognizer->ComputeEmbedding(frame, landmarks);
-            if (embedding.size() == 0) {
-                if (++failCount > 300) { m_capturing = false; break; }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                continue;
-            }
-
-            // If ONNX is available, prefer its embedding for enrollment.
-            // Falls back to dlib embedding if ONNX fails.
-            if (m_onnxRecognizer) {
+            // Compute the embedding from the PRIMARY recognizer only.
+            // Prefer InsightFace ONNX (512-D); fall back to dlib (128-D) only
+            // when ONNX is unavailable. Never mix the two spaces in one set.
+            //
+            // (Previously the code computed the dlib embedding unconditionally
+            // (~150ms/帧) AND truncated the ONNX 512-D vector to 128 floats
+            // before storing — so ONNX-enrolled faces could never match at
+            // auth time. Both defects are fixed here.)
+            const bool useOnnx = (m_onnxRecognizer != nullptr);
+            dlib::matrix<float, 0, 1> emb;
+            if (useOnnx) {
                 auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
-                if (!onnxEmb.empty()) {
-                    // Store ONNX embedding as dlib::matrix for compatibility with SaveEnrollment
-                    dlib::matrix<float, 0, 1> onnxMatrix(128);
-                    for (size_t k = 0; k < onnxEmb.size() && k < 128; k++)
-                        onnxMatrix(k) = onnxEmb[k];
-                    m_embeddings.push_back(std::move(onnxMatrix));
-                    m_samplesCollected = ++i;
-                    failCount = 0;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                if (onnxEmb.empty()) {
+                    if (++failCount > 300) { m_capturing = false; break; }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    continue;
+                }
+                // Store the FULL 512-D embedding (no truncation).
+                emb.set_size(static_cast<long>(onnxEmb.size()));
+                for (size_t k = 0; k < onnxEmb.size(); k++)
+                    emb(static_cast<long>(k)) = onnxEmb[k];
+            } else {
+                emb = m_recognizer->ComputeEmbedding(frame, landmarks);
+                if (emb.size() == 0) {
+                    if (++failCount > 300) { m_capturing = false; break; }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     continue;
                 }
             }
 
             failCount = 0;
-            m_embeddings.push_back(std::move(embedding));
+            m_embeddings.push_back(std::move(emb));
             m_samplesCollected = ++i;
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
         }
@@ -713,8 +719,13 @@ bool EnrollmentWizard::SaveEnrollment(const std::wstring& password) {
     if (m_embeddings.empty()) { FACELOGIN_ERROR(L"No face samples"); return false; }
 
     // Embedding consistency check: verify all samples are from the same person.
-    // Compute average pairwise distance — if it exceeds 0.45, reject.
-    // Different people produce distances typically > 0.55-0.6, same person < 0.35.
+    // Compute average pairwise distance — if it exceeds the cap, reject.
+    // Different people produce distances typically > 0.55-0.6 (128-D dlib),
+    // same person < 0.35 (128-D dlib).
+    //
+    // The 0.45 cap is calibrated for 128-D embeddings. If this enrollment
+    // used the InsightFace ONNX recognizer (512-D), distances scale up ~2x,
+    // so the cap is scaled to match — same "strictness" in both spaces.
     {
         double totalDist = 0.0;
         int pairs = 0;
@@ -730,9 +741,11 @@ bool EnrollmentWizard::SaveEnrollment(const std::wstring& password) {
             }
         }
         double avgPairDist = (pairs > 0) ? totalDist / pairs : 0.0;
-        double maxAllowed = 0.45;
-        FACELOGIN_INFO(L"Enrollment consistency: avg pairwise dist=%.4f (max=%.3f, %d pairs)",
-                      avgPairDist, maxAllowed, pairs);
+        // All samples share one dimensionality (enrollment uses one recognizer).
+        size_t dim = m_embeddings.empty() ? 0 : static_cast<size_t>(m_embeddings[0].size());
+        float maxAllowed = EmbeddingThresholdForDim(0.45f, dim);
+        FACELOGIN_INFO(L"Enrollment consistency: avg pairwise dist=%.4f (max=%.3f, %d pairs, %zu-D)",
+                      avgPairDist, maxAllowed, pairs, dim);
         if (avgPairDist > maxAllowed) {
             FACELOGIN_ERROR(L"Embedding consistency check failed: avg pairwise dist %.4f > %.3f. "
                            L"Samples may be from different faces.", avgPairDist, maxAllowed);
@@ -740,11 +753,18 @@ bool EnrollmentWizard::SaveEnrollment(const std::wstring& password) {
         }
     }
 
-    dlib::matrix<float, 0, 1> avgEmbedding(128);
-    avgEmbedding = 0;
-    for (const auto& emb : m_embeddings)
-        avgEmbedding += emb;
-    avgEmbedding /= static_cast<float>(m_embeddings.size());
+    // Average the samples. Initialize to the samples' dimensionality — the
+    // matrix adds require matching sizes (dlib asserts otherwise).
+    dlib::matrix<float, 0, 1> avgEmbedding;
+    if (!m_embeddings.empty()) {
+        avgEmbedding.set_size(m_embeddings[0].size());
+        avgEmbedding = 0;
+        for (const auto& emb : m_embeddings) {
+            if (emb.size() != avgEmbedding.size()) continue;  // defensive
+            avgEmbedding += emb;
+        }
+        avgEmbedding /= static_cast<float>(m_embeddings.size());
+    }
 
     auto protectedPassword = DpapiUtil::Protect(
         reinterpret_cast<const uint8_t*>(password.c_str()),
@@ -753,13 +773,15 @@ bool EnrollmentWizard::SaveEnrollment(const std::wstring& password) {
     if (protectedPassword.empty()) { FACELOGIN_ERROR(L"DPAPI encryption failed"); return false; }
 
     m_store.LoadDatabase();
-    float ef[128];
+    // Copy the average embedding into a plain float vector (full dimensionality —
+    // 512-D for ONNX, 128-D for dlib). Never truncate.
+    std::vector<float> ef(static_cast<size_t>(avgEmbedding.size()));
     for (long i = 0; i < avgEmbedding.size(); i++)
-        ef[i] = avgEmbedding(i);
+        ef[static_cast<size_t>(i)] = avgEmbedding(static_cast<long>(i));
     m_store.AddUser(m_username, m_upn, m_sid, protectedPassword, ef);
     if (!m_store.SaveDatabase()) { FACELOGIN_ERROR(L"Failed to save database"); return false; }
 
-    FACELOGIN_INFO(L"Enrollment saved for: %s", m_username.c_str());
+    FACELOGIN_INFO(L"Enrollment saved for: %s (emb=%zu-D)", m_username.c_str(), ef.size());
 
     // Notify service to reload database
     HANDLE hPipe = CreateFileW(ipc::PIPE_NAME, GENERIC_WRITE, 0, nullptr,
