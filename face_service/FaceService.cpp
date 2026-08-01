@@ -201,33 +201,24 @@ bool FaceService::Initialize() {
         return false;
     }
 
-    // Try loading SCRFD ONNX detector (primary).
-    // Falls back to dlib HOG if ONNX model is unavailable.
+    // Load SCRFD ONNX detector (the only detector).
     m_onnxDetector = std::make_unique<OnnxDetector>();
     std::wstring onnxDetPath = m_modelsDir + L"\\det_500m.onnx";
     if (m_onnxDetector->Initialize(onnxDetPath)) {
         FACELOGIN_INFO(L"SCRFD detector loaded");
     } else {
-        FACELOGIN_WARN(L"SCRFD detector failed, using dlib HOG");
-        m_onnxDetector.reset();
-    }
-
-    m_recognizer = std::make_unique<FaceRecognizer>();
-    std::wstring recModelPath = m_modelsDir + L"\\dlib_face_recognition_resnet_model_v1.dat";
-    if (!m_recognizer->Initialize(recModelPath)) {
-        FACELOGIN_ERROR(L"Failed to initialize face recognizer");
+        FACELOGIN_ERROR(L"SCRFD detector failed to load — face detection unavailable");
         return false;
     }
 
-    // Try loading InsightFace ONNX model (primary recognizer).
-    // Falls back to dlib if ONNX model is unavailable.
+    // Try loading InsightFace ONNX model (the only recognizer).
     m_onnxRecognizer = std::make_unique<OnnxRecognizer>();
     std::wstring onnxRecPath = m_modelsDir + L"\\w600k_mbf.onnx";
     if (m_onnxRecognizer->Initialize(onnxRecPath)) {
         FACELOGIN_INFO(L"ONNX recognizer loaded — using InsightFace buffalo_s");
     } else {
-        FACELOGIN_WARN(L"ONNX recognizer failed, using dlib only");
-        m_onnxRecognizer.reset();
+        FACELOGIN_ERROR(L"ONNX recognizer failed to load — recognition unavailable");
+        return false;
     }
 
     // Try loading anti-spoof model (MiniFASNetV2).
@@ -260,20 +251,9 @@ bool FaceService::Initialize() {
     m_livenessMethod = m_config.liveness_method;
     m_antiSpoofThreshold = m_config.anti_spoof_threshold;
 
-    // Apply detector preference
-    if (m_config.detector == "dlib_hog") {
-        FACELOGIN_INFO(L"Config: forcing dlib HOG detector");
-        m_onnxDetector.reset();
-    }
-
-    // Apply recognizer preference
-    if (m_config.recognition_model == "dlib") {
-        FACELOGIN_INFO(L"Config: using dlib recognizer only");
-        m_onnxRecognizer.reset();
-    } else if (m_config.recognition_model == "onnx" && (!m_onnxRecognizer || !m_onnxRecognizer->IsInitialized())) {
-        FACELOGIN_WARN(L"Config: ONNX recognizer requested but unavailable");
-    }
-    // "both" = keep both loaded (ONNX preferred for matching)
+    // dlib recognizer/detector were removed — the system is now pure ONNX.
+    // recognition_model/detector config values are ignored (only onnx/scrfd
+    // are supported; anything else logs a warning for backwards compat).
 
     // Validate liveness method — fall back if model unavailable
     if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
@@ -317,6 +297,10 @@ void FaceService::Run() {
             m_matchThreshold = m_config.match_threshold;
             m_livenessMethod = m_config.liveness_method;
             m_antiSpoofThreshold = m_config.anti_spoof_threshold;
+
+            // dlib recognizer/detector were removed — recognition_model and
+            // detector config values are ignored (pure ONNX now).
+
             // Retry loading anti-spoof model if configured and not yet loaded
             if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
                 m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
@@ -331,7 +315,8 @@ void FaceService::Run() {
             }
             m_pipeServer->WriteMessage(ipc::MSG_CONFIG_RELOAD_OK);
             m_pipeServer->Disconnect();
-            FACELOGIN_INFO(L"Configuration reloaded: live=%hs thr=%.2f",
+            FACELOGIN_INFO(L"Configuration reloaded: rec=%hs det=%hs live=%hs thr=%.2f",
+                          m_config.recognition_model.c_str(), m_config.detector.c_str(),
                           m_livenessMethod == LivenessMethod::Blink ? "blink" :
                           m_livenessMethod == LivenessMethod::AntiSpoof ? "antispoof" : "none",
                           m_matchThreshold);
@@ -474,67 +459,34 @@ bool FaceService::ProcessAuthRequest() {
             continue;
         }
 
-        // Face detection + landmarks: prefer SCRFD ONNX, fall back to dlib HOG.
-        // NOTE: the dlib embedding is deliberately NOT computed here. It used to
-        // run on every frame (~150-200ms of ResNet inference) even though the
-        // match uses the ONNX embedding. Now the dlib embedding is computed
-        // lazily, only when the ONNX embedding is unavailable (rare fallback).
+        // Face detection + landmarks: SCRFD detects, dlib shape predictor
+        // (GetLandmarks) extracts 68 points for alignment + blink.
         std::optional<CredentialStore::MatchResult> match;
         dlib::full_object_detection landmarks;
         bool haveLandmarks = false;
 
-        if (m_onnxDetector) {
-            auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
-            if (onnxDet) {
-                // SCRFD gives bbox — use dlib shape predictor for landmarks
-                dlib::rectangle dlibRect(static_cast<long>(onnxDet->x1),
-                                         static_cast<long>(onnxDet->y1),
-                                         static_cast<long>(onnxDet->x2),
-                                         static_cast<long>(onnxDet->y2));
-                landmarks = m_detector->GetLandmarks(frame, dlibRect);
-                haveLandmarks = true;
-            }
-        }
-
-        if (!haveLandmarks) {
-            auto faces = m_detector->Detect(frame);
-            if (faces.empty()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                continue;
-            }
-            auto largestIt = std::max_element(faces.begin(), faces.end(),
-                [](const FaceWithLandmarks& a, const FaceWithLandmarks& b) {
-                    return a.rect.area() < b.rect.area();
-                });
-            landmarks = largestIt->landmarks;
+        auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
+        if (onnxDet) {
+            // SCRFD gives bbox — use dlib shape predictor for landmarks
+            dlib::rectangle dlibRect(static_cast<long>(onnxDet->x1),
+                                     static_cast<long>(onnxDet->y1),
+                                     static_cast<long>(onnxDet->x2),
+                                     static_cast<long>(onnxDet->y2));
+            landmarks = m_detector->GetLandmarks(frame, dlibRect);
             haveLandmarks = true;
         }
 
-        // Embedding + match: prefer ONNX (fast, ~20ms). Compute the dlib
-        // embedding only when the ONNX recognizer is unavailable or fails on
-        // this frame — this is the rare fallback path.
-        if (m_onnxRecognizer) {
-            auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
-            if (!onnxEmb.empty()) {
-                // Enrollment stores ONNX embeddings, so ONNX match alone is sufficient.
-                // Pass the true dimensionality (512-D) so FindBestMatch compares
-                // against same-dimension stored embeddings only.
-                match = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
-            } else {
-                // ONNX failed on this frame — fall back to dlib embedding
-                dlib::matrix<float, 0, 1> dlibEmb =
-                    m_recognizer->ComputeEmbedding(frame, landmarks);
-                if (dlibEmb.size() > 0) {
-                    match = m_store->FindBestMatch(&dlibEmb(0), static_cast<size_t>(dlibEmb.size()), m_matchThreshold);
-                }
-            }
-        } else {
-            // No ONNX recognizer loaded — dlib only
-            dlib::matrix<float, 0, 1> dlibEmb =
-                m_recognizer->ComputeEmbedding(frame, landmarks);
-            if (dlibEmb.size() > 0) {
-                match = m_store->FindBestMatch(&dlibEmb(0), static_cast<size_t>(dlibEmb.size()), m_matchThreshold);
-            }
+        if (!haveLandmarks) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            continue;
+        }
+
+        // Embedding + match: ONNX (the only recognizer).
+        auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
+        if (!onnxEmb.empty()) {
+            // Pass the true dimensionality (512-D) so FindBestMatch compares
+            // against same-dimension stored embeddings only.
+            match = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
         }
 
         if (match) {
@@ -548,10 +500,19 @@ bool FaceService::ProcessAuthRequest() {
                 continue;
             }
         } else {
+            // Soft consensus: a miss DECAYS the counter by 1 instead of fully
+            // resetting to 0. A single intermittent bad frame (motion, blink,
+            // momentary profile turn, partial occlusion) then no longer forces
+            // a full 3-frame restart — the user's slightly moving face stays
+            // matched and auth completes in ~1-2s instead of timing out.
+            //
+            // Security is preserved: this only relaxes the frame-consensus;
+            // the blink liveness check AND the post-liveness final match verify
+            // still run before credentials are released.
             if (consecutiveMatches > 0) {
-                FACELOGIN_INFO(L"Match lost after %d consecutive hits", consecutiveMatches);
+                consecutiveMatches--;
+                FACELOGIN_INFO(L"Match lost — counter decayed to %d", consecutiveMatches);
             }
-            consecutiveMatches = 0;
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
@@ -602,10 +563,19 @@ bool FaceService::ProcessAuthRequest() {
                         dlib::matrix<dlib::rgb_pixel> asFrame;
                         if (!grabFrame(asFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
 
-                        auto asFace = m_detector->DetectLargestFace(asFrame);
-                        if (!asFace) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
+                        // Detect with SCRFD, extract 68-point landmarks.
+                        dlib::full_object_detection asLandmarks;
+                        auto asDet = m_onnxDetector->DetectLargestFace(asFrame);
+                        if (asDet) {
+                            dlib::rectangle asRect(static_cast<long>(asDet->x1),
+                                                   static_cast<long>(asDet->y1),
+                                                   static_cast<long>(asDet->x2),
+                                                   static_cast<long>(asDet->y2));
+                            asLandmarks = m_detector->GetLandmarks(asFrame, asRect);
+                        }
+                        if (asLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
 
-                        float score = m_antiSpoof->Predict(asFrame, asFace->landmarks);
+                        float score = m_antiSpoof->Predict(asFrame, asLandmarks);
                         totalChecked++;
                         if (score >= m_antiSpoofThreshold) passCount++; // config-driven threshold
                         FACELOGIN_INFO(L"Anti-spoof frame %d: score=%.3f (pass=%d)", totalChecked, score, passCount);
@@ -633,9 +603,18 @@ bool FaceService::ProcessAuthRequest() {
                         }
                         dlib::matrix<dlib::rgb_pixel> livenessFrame;
                         if (!grabFrame(livenessFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
-                        auto livenessFace = m_detector->DetectLargestFace(livenessFrame);
-                        if (!livenessFace) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
-                        if (liveness.ProcessFrame(livenessFace->landmarks)) {
+                        // Detect with SCRFD, extract 68-point landmarks for EAR.
+                        dlib::full_object_detection livenessLandmarks;
+                        auto livenessDet = m_onnxDetector->DetectLargestFace(livenessFrame);
+                        if (livenessDet) {
+                            dlib::rectangle lRect(static_cast<long>(livenessDet->x1),
+                                                  static_cast<long>(livenessDet->y1),
+                                                  static_cast<long>(livenessDet->x2),
+                                                  static_cast<long>(livenessDet->y2));
+                            livenessLandmarks = m_detector->GetLandmarks(livenessFrame, lRect);
+                        }
+                        if (livenessLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
+                        if (liveness.ProcessFrame(livenessLandmarks)) {
                             blinked = true;
                             FACELOGIN_INFO(L"Blink detected");
                             break;
@@ -662,37 +641,69 @@ bool FaceService::ProcessAuthRequest() {
 
                 FACELOGIN_INFO(L"Liveness passed \u2014 verifying match");
 
-                // Final match verify (for blink/antispoof \u2014 prevents face-swap)
+                // Final match verify (for blink/antispoof \u2014 prevents face-swap).
+                //
+                // Uses the SAME SCRFD detector as the recognition stage so the
+                // two stages agree on face position. Retries over a short window:
+                // the frame right after a blink is often mid-motion and its
+                // box/embedding is noisy, so a single frame is unreliable. We
+                // keep grabbing until a frame both detects a face AND matches
+                // (or ~2s elapses).
                 if (method != LivenessMethod::None) {
-                    dlib::matrix<dlib::rgb_pixel> verifyFrame;
-                    if (grabFrame(verifyFrame)) {
-                        auto verifyFace = m_detector->DetectLargestFace(verifyFrame);
-                        if (verifyFace) {
-                            std::optional<CredentialStore::MatchResult> verifyMatch;
-                            if (m_onnxRecognizer) {
-                                auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(verifyFrame, verifyFace->landmarks);
-                                if (!onnxEmb.empty()) {
-                                    verifyMatch = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
-                                }
-                            } else {
-                                auto verifyEmbedding = m_recognizer->ComputeEmbedding(verifyFrame, verifyFace->landmarks);
-                                if (verifyEmbedding.size() > 0) {
-                                    verifyMatch = m_store->FindBestMatch(&verifyEmbedding(0), static_cast<size_t>(verifyEmbedding.size()), m_matchThreshold);
-                                }
-                            }
-                            if (!verifyMatch) {
-                                FACELOGIN_WARN(L"Final match verify failed \u2014 face swap detected");
-                                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
-                                    L"\u6d3b\u4f53\u9a8c\u8bc1\u671f\u95f4\u4eba\u8138\u4e0d\u5339\u914d\uff0c\u8bf7\u91cd\u8bd5"));
-                                FlushFileBuffers(m_pipeServer->GetHandle());
-                                {
-                                    wchar_t dummy[64]; DWORD bytesRead = 0;
-                                    ReadFile(m_pipeServer->GetHandle(), dummy, sizeof(dummy), &bytesRead, nullptr);
-                                }
-                                SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
-                                return false;
-                            }
+                    auto verifyStart = std::chrono::steady_clock::now();
+                    bool verifyOk = false;
+                    while (m_running && !verifyOk) {
+                        auto vElapsed = std::chrono::steady_clock::now() - verifyStart;
+                        if (std::chrono::duration_cast<std::chrono::seconds>(vElapsed).count() >= 2) break;
+
+                        dlib::matrix<dlib::rgb_pixel> verifyFrame;
+                        if (!grabFrame(verifyFrame)) {
+                            if (!m_running) break;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
                         }
+
+                        // Detect with SCRFD (primary), same as the recognition loop.
+                        dlib::full_object_detection verifyLandmarks;
+                        auto det = m_onnxDetector->DetectLargestFace(verifyFrame);
+                        if (det) {
+                            dlib::rectangle r(static_cast<long>(det->x1),
+                                              static_cast<long>(det->y1),
+                                              static_cast<long>(det->x2),
+                                              static_cast<long>(det->y2));
+                            verifyLandmarks = m_detector->GetLandmarks(verifyFrame, r);
+                        }
+                        if (verifyLandmarks.num_parts() == 0) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+
+                        std::optional<CredentialStore::MatchResult> verifyMatch;
+                        auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(verifyFrame, verifyLandmarks);
+                        if (!onnxEmb.empty()) {
+                            verifyMatch = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
+                        }
+
+                        if (verifyMatch) {
+                            verifyOk = true;
+                            // Use the verified match for the credential (fresh, same identity).
+                            match = verifyMatch;
+                            break;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                    }
+
+                    if (!verifyOk) {
+                        FACELOGIN_WARN(L"Final match verify failed \u2014 face swap detected");
+                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
+                            L"\u6d3b\u4f53\u9a8c\u8bc1\u671f\u95f4\u4eba\u8138\u4e0d\u5339\u914d\uff0c\u8bf7\u91cd\u8bd5"));
+                        FlushFileBuffers(m_pipeServer->GetHandle());
+                        {
+                            wchar_t dummy[64]; DWORD bytesRead = 0;
+                            ReadFile(m_pipeServer->GetHandle(), dummy, sizeof(dummy), &bytesRead, nullptr);
+                        }
+                        SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
+                        return false;
                     }
                 }
             }

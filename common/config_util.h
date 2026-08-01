@@ -6,8 +6,11 @@
 namespace facelogin {
 
 struct AppConfig {
-    std::string    recognition_model      = "both";      // "dlib" / "onnx" / "both"
-    std::string    detector               = "scrfd";     // "dlib_hog" / "scrfd"
+    // dlib recognizer/detector were removed — the system is pure ONNX.
+    // recognition_model and detector are retained for config.json backwards
+    // compatibility but ignored at runtime (only "onnx"/"scrfd" are valid).
+    std::string    recognition_model      = "onnx";      // retained for compat
+    std::string    detector               = "scrfd";     // retained for compat
     LivenessMethod liveness_method        = LivenessMethod::Blink;
     float          match_threshold        = 0.30f;
     float          anti_spoof_threshold   = 0.30f;       // DeepPixBiS pixel map threshold

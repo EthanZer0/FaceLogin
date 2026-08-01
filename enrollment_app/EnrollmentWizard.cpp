@@ -225,7 +225,6 @@ EnrollmentWizard::EnrollmentWizard() {
 
     m_webcam     = std::make_unique<WebcamCapture>();
     m_detector   = std::make_unique<FaceDetector>();
-    m_recognizer = std::make_unique<FaceRecognizer>();
     m_store.SetDataDir(m_dataDir);
 
     m_config = LoadConfig(m_dataDir);
@@ -254,33 +253,29 @@ bool EnrollmentWizard::StartPreview() {
 
     std::wstring modelsDir = m_dataDir + L"\\models";
     std::wstring shapePath = modelsDir + L"\\shape_predictor_68_face_landmarks.dat";
-    std::wstring recPath   = modelsDir + L"\\dlib_face_recognition_resnet_model_v1.dat";
 
     if (!m_detector->Initialize(shapePath)) {
         FACELOGIN_ERROR(L"Failed to load shape predictor");
         m_webcam->Shutdown();
         return false;
     }
-    if (!m_recognizer->Initialize(recPath)) {
-        FACELOGIN_ERROR(L"Failed to load recognition model");
+
+    // Load SCRFD ONNX detector (the only detector).
+    m_onnxDetector = std::make_unique<OnnxDetector>();
+    std::wstring detPath = modelsDir + L"\\det_500m.onnx";
+    if (!m_onnxDetector->Initialize(detPath)) {
+        FACELOGIN_ERROR(L"SCRFD detector failed to load — enrollment unavailable");
         m_webcam->Shutdown();
         return false;
     }
 
-    // Try loading SCRFD ONNX detector
-    m_onnxDetector = std::make_unique<OnnxDetector>();
-    std::wstring detPath = modelsDir + L"\\det_500m.onnx";
-    if (!m_onnxDetector->Initialize(detPath)) {
-        FACELOGIN_WARN(L"SCRFD detector unavailable, using dlib HOG");
-        m_onnxDetector.reset();
-    }
-
-    // Try loading InsightFace ONNX model
+    // Load InsightFace ONNX recognizer (the only recognizer).
     m_onnxRecognizer = std::make_unique<OnnxRecognizer>();
     std::wstring onnxPath = modelsDir + L"\\w600k_mbf.onnx";
     if (!m_onnxRecognizer->Initialize(onnxPath)) {
-        FACELOGIN_WARN(L"ONNX recognizer unavailable, using dlib only");
-        m_onnxRecognizer.reset();
+        FACELOGIN_ERROR(L"ONNX recognizer failed to load — enrollment unavailable");
+        m_webcam->Shutdown();
+        return false;
     }
 
     // Try loading anti-spoof model
@@ -291,15 +286,8 @@ bool EnrollmentWizard::StartPreview() {
         m_antiSpoof.reset();
     }
 
-    // Apply config preferences
-    if (m_config.detector == "dlib_hog") {
-        FACELOGIN_INFO(L"Config: using dlib HOG detector");
-        m_onnxDetector.reset();
-    }
-    if (m_config.recognition_model == "dlib") {
-        FACELOGIN_INFO(L"Config: using dlib recognizer only");
-        m_onnxRecognizer.reset();
-    }
+    // dlib recognizer/detector were removed — pure ONNX. recognition_model
+    // and detector config values are ignored.
 
     // Validate liveness method
     if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
@@ -325,8 +313,22 @@ bool EnrollmentWizard::StartPreview() {
             }
 
             std::string b64 = EncodeJPEGBase64(frame);
-            auto faces = m_detector->Detect(frame);
-            std::string faceJson = FacesToJson(faces);
+            // Preview overlay: detect the face with SCRFD and show its box.
+            std::string faceJson = "[]";
+            if (m_onnxDetector) {
+                auto det = m_onnxDetector->DetectLargestFace(frame);
+                if (det) {
+                    std::vector<facelogin::FaceWithLandmarks> faces;
+                    FaceWithLandmarks fwl;
+                    fwl.rect = dlib::rectangle(static_cast<long>(det->x1),
+                                               static_cast<long>(det->y1),
+                                               static_cast<long>(det->x2),
+                                               static_cast<long>(det->y2));
+                    fwl.landmarks = m_detector->GetLandmarks(frame, fwl.rect);
+                    faces.push_back(std::move(fwl));
+                    faceJson = FacesToJson(faces);
+                }
+            }
 
             {
                 std::lock_guard<std::mutex> lock(m_frameCacheMutex);
@@ -367,6 +369,20 @@ std::string EnrollmentWizard::GetLatestFrameBase64() {
 std::string EnrollmentWizard::GetLatestFacesJson() {
     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
     return m_latestFacesJson;
+}
+
+// Atomically return BOTH the current frame (JPEG base64) and its face overlay
+// JSON. The frame thread updates them together under the same lock, so reading
+// them in one call guarantees they belong to the SAME frame. The frontend uses
+// this to draw the background and overlay from matching frames — otherwise the
+// overlay could come from a newer frame than the displayed image, causing the
+// face box/landmarks to drift from the visible face.
+std::string EnrollmentWizard::GetLatestFrameAndFaces() {
+    std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+    std::string result = m_latestFrameB64;
+    result += "\x1E";  // record separator
+    result += m_latestFacesJson;
+    return result;
 }
 
 // ============================================================================
@@ -544,10 +560,19 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                     if (m_latestFrame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                     frame = m_latestFrame;
                 }
-                auto face = m_detector->DetectLargestFace(frame);
-                if (!face) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
+                // Detect with SCRFD, extract 68-point landmarks.
+                dlib::full_object_detection asLandmarks;
+                auto asDet = m_onnxDetector->DetectLargestFace(frame);
+                if (asDet) {
+                    dlib::rectangle asRect(static_cast<long>(asDet->x1),
+                                           static_cast<long>(asDet->y1),
+                                           static_cast<long>(asDet->x2),
+                                           static_cast<long>(asDet->y2));
+                    asLandmarks = m_detector->GetLandmarks(frame, asRect);
+                }
+                if (asLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
 
-                float score = m_antiSpoof->Predict(frame, face->landmarks);
+                float score = m_antiSpoof->Predict(frame, asLandmarks);
                 totalChecked++;
                 if (score >= m_antiSpoofThreshold) passCount++; // config-driven threshold
                 FACELOGIN_INFO(L"Enrollment anti-spoof frame %d: score=%.3f (pass=%d)",
@@ -573,9 +598,18 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                     if (m_latestFrame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                     frame = m_latestFrame;
                 }
-                auto face = m_detector->DetectLargestFace(frame);
-                if (!face) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
-                if (liveness.ProcessFrame(face->landmarks)) {
+                // Detect with SCRFD, extract 68-point landmarks for EAR.
+                dlib::full_object_detection livenessLandmarks;
+                auto livenessDet = m_onnxDetector->DetectLargestFace(frame);
+                if (livenessDet) {
+                    dlib::rectangle lRect(static_cast<long>(livenessDet->x1),
+                                          static_cast<long>(livenessDet->y1),
+                                          static_cast<long>(livenessDet->x2),
+                                          static_cast<long>(livenessDet->y2));
+                    livenessLandmarks = m_detector->GetLandmarks(frame, lRect);
+                }
+                if (livenessLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
+                if (liveness.ProcessFrame(livenessLandmarks)) {
                     blinked = true;
                     FACELOGIN_INFO(L"Enrollment: blink detected");
                 }
@@ -608,57 +642,34 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 frame = m_latestFrame;
             }
 
-            // Prefer SCRFD for detection, fall back to dlib HOG
+            // Detect with SCRFD (the only detector), extract 68-point landmarks.
             dlib::full_object_detection landmarks;
-            if (m_onnxDetector) {
-                auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
-                if (onnxDet) {
-                    dlib::rectangle rect(static_cast<long>(onnxDet->x1),
-                                         static_cast<long>(onnxDet->y1),
-                                         static_cast<long>(onnxDet->x2),
-                                         static_cast<long>(onnxDet->y2));
-                    landmarks = m_detector->GetLandmarks(frame, rect);
-                }
+            auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
+            if (onnxDet) {
+                dlib::rectangle rect(static_cast<long>(onnxDet->x1),
+                                     static_cast<long>(onnxDet->y1),
+                                     static_cast<long>(onnxDet->x2),
+                                     static_cast<long>(onnxDet->y2));
+                landmarks = m_detector->GetLandmarks(frame, rect);
             }
             if (landmarks.num_parts() == 0) {
-                auto face = m_detector->DetectLargestFace(frame);
-                if (!face) {
-                    if (++failCount > 300) { m_capturing = false; break; }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    continue;
-                }
-                landmarks = face->landmarks;
+                if (++failCount > 300) { m_capturing = false; break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
             }
 
-            // Compute the embedding from the PRIMARY recognizer only.
-            // Prefer InsightFace ONNX (512-D); fall back to dlib (128-D) only
-            // when ONNX is unavailable. Never mix the two spaces in one set.
-            //
-            // (Previously the code computed the dlib embedding unconditionally
-            // (~150ms/帧) AND truncated the ONNX 512-D vector to 128 floats
-            // before storing — so ONNX-enrolled faces could never match at
-            // auth time. Both defects are fixed here.)
-            const bool useOnnx = (m_onnxRecognizer != nullptr);
-            dlib::matrix<float, 0, 1> emb;
-            if (useOnnx) {
-                auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
-                if (onnxEmb.empty()) {
-                    if (++failCount > 300) { m_capturing = false; break; }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    continue;
-                }
-                // Store the FULL 512-D embedding (no truncation).
-                emb.set_size(static_cast<long>(onnxEmb.size()));
-                for (size_t k = 0; k < onnxEmb.size(); k++)
-                    emb(static_cast<long>(k)) = onnxEmb[k];
-            } else {
-                emb = m_recognizer->ComputeEmbedding(frame, landmarks);
-                if (emb.size() == 0) {
-                    if (++failCount > 300) { m_capturing = false; break; }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    continue;
-                }
+            // Compute the embedding with InsightFace ONNX (the only recognizer).
+            // Store the FULL 512-D embedding (no truncation).
+            auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
+            if (onnxEmb.empty()) {
+                if (++failCount > 300) { m_capturing = false; break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
             }
+            dlib::matrix<float, 0, 1> emb;
+            emb.set_size(static_cast<long>(onnxEmb.size()));
+            for (size_t k = 0; k < onnxEmb.size(); k++)
+                emb(static_cast<long>(k)) = onnxEmb[k];
 
             failCount = 0;
             m_embeddings.push_back(std::move(emb));
@@ -720,12 +731,11 @@ bool EnrollmentWizard::SaveEnrollment(const std::wstring& password) {
 
     // Embedding consistency check: verify all samples are from the same person.
     // Compute average pairwise distance — if it exceeds the cap, reject.
-    // Different people produce distances typically > 0.55-0.6 (128-D dlib),
-    // same person < 0.35 (128-D dlib).
+    // Same-person distances are typically well below 0.80 (the ONNX boundary);
+    // different people exceed it.
     //
-    // The 0.45 cap is calibrated for 128-D embeddings. If this enrollment
-    // used the InsightFace ONNX recognizer (512-D), distances scale up ~2x,
-    // so the cap is scaled to match — same "strictness" in both spaces.
+    // The cap is calibrated via EmbeddingThresholdForDim: 512-D InsightFace
+    // ONNX uses 0.80 (measured same-person boundary, see credential_store.h).
     {
         double totalDist = 0.0;
         int pairs = 0;

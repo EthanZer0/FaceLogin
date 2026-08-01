@@ -4,8 +4,6 @@
 #include <memory>
 #include <dlib/matrix.h>
 
-#include "../face_service/face_detector.h"
-#include "../face_service/face_recognizer.h"
 #include "../face_service/webcam_capture.h"
 
 namespace facelogin {

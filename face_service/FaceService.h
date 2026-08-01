@@ -6,7 +6,6 @@
 #include <atomic>
 
 #include "face_detector.h"
-#include "face_recognizer.h"
 #include "liveness_detector.h"
 #include "liveness_types.h"
 #include "onnx_models.h"
@@ -66,11 +65,10 @@ private:
 
     // Components
     std::unique_ptr<PipeServer> m_pipeServer;
-    std::unique_ptr<FaceDetector> m_detector;           // dlib HOG (fallback)
-    std::unique_ptr<OnnxDetector> m_onnxDetector;       // SCRFD (primary)
-    std::unique_ptr<FaceRecognizer> m_recognizer;       // dlib fallback
-    std::unique_ptr<OnnxRecognizer> m_onnxRecognizer; // InsightFace (primary)
-    std::unique_ptr<OnnxAntiSpoof>  m_antiSpoof;       // MiniFASNetV2 (optional)
+    std::unique_ptr<FaceDetector> m_detector;           // 68-point shape predictor (landmarks)
+    std::unique_ptr<OnnxDetector> m_onnxDetector;       // SCRFD (face detection)
+    std::unique_ptr<OnnxRecognizer> m_onnxRecognizer;   // InsightFace (recognition)
+    std::unique_ptr<OnnxAntiSpoof>  m_antiSpoof;        // MiniFASNetV2 (optional)
     std::unique_ptr<WebcamCapture>   m_webcamMF;   // Media Foundation (standalone)
     std::unique_ptr<WebcamCaptureDS> m_webcamDS;   // DirectShow (service mode)
     std::unique_ptr<CredentialStore> m_store;

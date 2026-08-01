@@ -2,7 +2,6 @@ add_executable(FaceLoginService
     main.cpp
     FaceService.cpp
     face_detector.cpp
-    face_recognizer.cpp
     liveness_detector.cpp
     onnx_models.cpp
     webcam_capture.cpp

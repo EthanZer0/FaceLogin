@@ -11,7 +11,6 @@
 #include <dlib/pixel.h>
 
 #include "../face_service/face_detector.h"
-#include "../face_service/face_recognizer.h"
 #include "../face_service/liveness_detector.h"
 #include "../face_service/liveness_types.h"
 #include "../face_service/onnx_models.h"
@@ -57,6 +56,8 @@ public:
     // Per-frame data for JS canvas rendering (pull model — JS calls these from rAF)
     std::string GetLatestFrameBase64(); // JPEG base64, ~200KB
     std::string GetLatestFacesJson();   // [{x,y,w,h,landmarks:[{x,y},...]},...]
+    // Atomically returns "<frame base64>\x1E<faces json>" from the SAME frame.
+    std::string GetLatestFrameAndFaces();
 
     bool IsPreviewRunning() const { return m_previewRunning; }
     std::wstring GetDataDir() const { return m_dataDir; }
@@ -67,10 +68,9 @@ private:
 
     // Camera & face processing
     std::unique_ptr<WebcamCapture>  m_webcam;
-    std::unique_ptr<FaceDetector>   m_detector;
-    std::unique_ptr<OnnxDetector>   m_onnxDetector;
-    std::unique_ptr<FaceRecognizer> m_recognizer;
-    std::unique_ptr<OnnxRecognizer> m_onnxRecognizer;
+    std::unique_ptr<FaceDetector>   m_detector;       // 68-point shape predictor
+    std::unique_ptr<OnnxDetector>   m_onnxDetector;   // SCRFD detection
+    std::unique_ptr<OnnxRecognizer> m_onnxRecognizer; // InsightFace recognition
     std::unique_ptr<OnnxAntiSpoof>  m_antiSpoof;
     CredentialStore m_store;
 
