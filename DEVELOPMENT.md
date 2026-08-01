@@ -490,8 +490,9 @@ EAR = (||P2-P6|| + ||P3-P5||) / (2 * ||P1-P4||)
 
 **参数**:
 - 闭眼阈值: EAR < 0.20
-- 确认帧数: 连续 4 帧
+- 确认帧数: 连续 2 帧 (闭合阶段; 之后需连续 2 帧睁眼去抖)
 - 正常 EAR 范围: 睁开 ~0.22-0.30, 闭合 ~0.12-0.17
+- 参数由 `liveness_detector.h` 的 `kDefaultEarThreshold` / `kDefaultBlinkFrames` 定义，认证与注册两端共用
 
 ### 5.6 ONNX 模型 (`onnx_models.h/cpp`)
 

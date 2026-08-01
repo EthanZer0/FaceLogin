@@ -30,8 +30,14 @@ void Logger::SetLogFile(const std::wstring& path) {
             CreateDirectoryW(dir.c_str(), nullptr);
         }
     }
+    m_logPath = path;
+    // If an existing log already exceeds the cap (e.g. from a run before
+    // rotation existed), rotate it now. CheckRotation works on the path,
+    // independent of m_hFile, so it is safe to call before opening.
+    CheckRotation();
     if (m_hFile != INVALID_HANDLE_VALUE) {
         CloseHandle(m_hFile);
+        m_hFile = INVALID_HANDLE_VALUE;
     }
     m_hFile = CreateFileW(path.c_str(), FILE_APPEND_DATA,
                           FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -126,6 +132,13 @@ void Logger::Error(const wchar_t* format, ...) {
 
 void Logger::WriteToFile(const std::wstring& line) {
     EnterCriticalSection(&m_cs);
+    CheckRotation();
+    // If rotation just closed the handle, reopen before writing.
+    if (m_hFile == INVALID_HANDLE_VALUE && !m_logPath.empty()) {
+        m_hFile = CreateFileW(m_logPath.c_str(), FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
     if (m_hFile != INVALID_HANDLE_VALUE) {
         DWORD written;
         WriteFile(m_hFile, line.c_str(),
@@ -134,6 +147,60 @@ void Logger::WriteToFile(const std::wstring& line) {
         FlushFileBuffers(m_hFile);
     }
     LeaveCriticalSection(&m_cs);
+}
+
+// Rotate the log file with a day-based retention window. The log file keeps
+// its original name — when the existing file's creation date is older than
+// kMaxLogDays days (i.e. it was started before today minus the window), it is
+// deleted and a fresh file is created at the same path, capping total disk
+// usage to roughly the last kMaxLogDays days of logs. Works on m_logPath
+// directly, so it is safe to call before m_hFile is opened (e.g. from
+// SetLogFile). On rotation the handle is closed and left INVALID; the caller
+// reopens it. Callers must hold m_cs.
+void Logger::CheckRotation() {
+    if (m_logPath.empty())
+        return;
+
+    // Check the file on disk (independent of the open handle).
+    WIN32_FILE_ATTRIBUTE_DATA attrs = {};
+    if (!GetFileAttributesExW(m_logPath.c_str(), GetFileExInfoStandard, &attrs))
+        return;  // file doesn't exist yet — nothing to rotate
+
+    // Use the file's creation time to mark the day its log content starts.
+    FILETIME created = attrs.ftCreationTime;
+    FILETIME localFt;
+    FileTimeToLocalFileTime(&created, &localFt);
+    SYSTEMTIME createdSt;
+    FileTimeToSystemTime(&localFt, &createdSt);
+
+    // Today's date.
+    SYSTEMTIME nowSt;
+    GetLocalTime(&nowSt);
+
+    // Exact calendar-day difference via serial (Julian-day) numbers.
+    // Convert Y/M/D → day count since an epoch, then subtract.
+    auto serial = [](int year, int month, int day) -> int {
+        // All inputs are years 1601+, so no negative / special-case needed.
+        int a = (14 - month) / 12;
+        int y = year + 4800 - a;
+        int m = month + 12 * a - 3;
+        return day + (153 * m + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32045;
+    };
+    int days = serial(nowSt.wYear, nowSt.wMonth, nowSt.wDay)
+             - serial(createdSt.wYear, createdSt.wMonth, createdSt.wDay);
+    if (days < kMaxLogDays)
+        return;  // still within the retention window
+
+    // Close the current handle so the deletion succeeds on Windows.
+    if (m_hFile != INVALID_HANDLE_VALUE) {
+        CloseHandle(m_hFile);
+        m_hFile = INVALID_HANDLE_VALUE;
+    }
+
+    // Delete the stale log; the caller reopens a fresh file at the same path.
+    // NOTE: no FACELOGIN_INFO here — it would re-enter the critical section
+    // we already hold and deadlock.
+    DeleteFileW(m_logPath.c_str());
 }
 
 void Logger::AppendToRingBuffer(const std::wstring& line) {

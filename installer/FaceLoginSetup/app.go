@@ -112,18 +112,19 @@ func (a *App) Install(installDir string) map[string]interface{} {
 	}); err != nil {
 		return result(false, fmt.Sprintf("复制文件失败: %v", err))
 	}
-	// Step 4.5: Create data/ and log/ directories, write default config.json
+	// Step 4.5: Create data/ and log/ directories, ensure config.json defaults
 	dataDir := filepath.Join(installDir, "data")
 	logDir := filepath.Join(installDir, "log")
 	os.MkdirAll(dataDir, 0755)
 	os.MkdirAll(logDir, 0755)
 	configPath := filepath.Join(dataDir, "config.json")
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		defaultCfg := `{"recognition_model":"both","detector":"scrfd","liveness_method":"blink","match_threshold":0.300000,"anti_spoof_threshold":0.300000}
-`
-		if err := os.WriteFile(configPath, []byte(defaultCfg), 0644); err != nil {
-			a.emit(60, "写入默认设置", "warn", err.Error())
-		}
+	// Selectively force the adjusted default parameters (match/anti-spoof
+	// thresholds) onto any existing config, and create a default config when
+	// none exists. Other user settings are preserved.
+	if err := internal.EnsureConfigDefaults(configPath); err != nil {
+		a.emit(60, "写入默认设置", "warn", err.Error())
+	} else {
+		a.emit(60, "写入默认设置", "done", "")
 	}
 
 	a.emit(60, "复制文件", "done", "")

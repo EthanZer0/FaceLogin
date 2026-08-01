@@ -35,6 +35,24 @@ func main() {
 		os.Exit(0)
 	}
 
+	// =========================================================================
+	// Custom action area — PER-RELEASE upgrade actions.
+	//
+	// When a release changes the app's default parameters and wants existing
+	// installs to pick up the new defaults, enable the switch and list the
+	// affected keys. This runs ONLY for this release; future releases leave
+	// it OFF so their installs never re-apply stale overrides.
+	//
+	//   internal.ConfigUpgradeEnabled = true   // enable this release's actions
+	//   internal.ConfigUpgradeForcedDefaults = map[string]any{
+	//       "match_threshold":      0.30,   // threshold changed in this release
+	//       "anti_spoof_threshold": 0.30,
+	//   }
+	//
+	// v1.0.1: threshold defaults changed (match strictness 70 / anti-spoof 0.30).
+	// =========================================================================
+	internal.ConfigUpgradeEnabled = true
+
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
 

@@ -5,6 +5,7 @@
 #include <vector>
 #include <deque>
 #include <mutex>
+#include <cstdint>
 
 namespace facelogin {
 
@@ -43,10 +44,21 @@ private:
     void AppendToRingBuffer(const std::wstring& line);
 
     HANDLE m_hFile = INVALID_HANDLE_VALUE;
+    std::wstring m_logPath;        // current log file path (for rotation)
     LogLevel m_minLevel = LogLevel::Info;
     bool m_debugOutput = false;
     CRITICAL_SECTION m_cs{};
     bool m_csInitialized = false;
+
+    // Log rotation: rotate on calendar-day boundaries and keep logs for a
+    // bounded number of days. The log file keeps its original name — when it
+    // crosses into a new day AND the existing file is older than the retention
+    // window, it is deleted and a fresh file is started, capping disk usage.
+    // A file is created anew each day the process writes, so an old file's
+    // creation time marks the day it was started.
+    static constexpr int kMaxLogDays = 3;   // keep up to 3 days of logs
+
+    void CheckRotation();   // rotate if m_logPath is stale (older than kMaxLogDays)
 
     // Ring buffer for UI log viewer (cursor wraps when full)
     static constexpr size_t RING_SIZE = 2000;

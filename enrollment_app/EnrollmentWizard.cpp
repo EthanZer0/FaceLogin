@@ -50,10 +50,8 @@ EnrollmentWizard::EnrollmentWizard() {
         DWORD size = ARRAYSIZE(username);
         if (!GetUserNameW(username, &size)) {
             DWORD err = GetLastError();
-            FACELOGIN_ERROR(L"[DEBUG] GetUserNameW FAILED: err=%lu", err);
+            FACELOGIN_ERROR(L"GetUserNameW FAILED: err=%lu", err);
             username[0] = L'\0';
-        } else {
-            FACELOGIN_INFO(L"[DEBUG] GetUserNameW OK: \"%s\"", username);
         }
         m_username = username;
     }
@@ -70,23 +68,22 @@ EnrollmentWizard::EnrollmentWizard() {
             if (pfn) {
                 if (pfn(8 /* NameUserPrincipal */, upnBuf.data(), &upnSize)) {
                     m_upn = upnBuf.data();
-                    FACELOGIN_INFO(L"[DEBUG] GetUserNameExW NameUserPrincipal OK: \"%s\"", m_upn.c_str());
                 } else {
                     DWORD err = GetLastError();
-                    FACELOGIN_INFO(L"[DEBUG] GetUserNameExW NameUserPrincipal FAILED: err=%lu", err);
+                    FACELOGIN_WARN(L"GetUserNameExW NameUserPrincipal FAILED: err=%lu", err);
                 }
             } else {
-                FACELOGIN_ERROR(L"[DEBUG] GetUserNameExW not found in secur32.dll");
+                FACELOGIN_ERROR(L"GetUserNameExW not found in secur32.dll");
             }
             // Also try NameSamCompatible to see what we get
             {
                 ULONG samSize = 256;
                 std::vector<wchar_t> samBuf(samSize);
                 if (pfn && pfn(2 /* NameSamCompatible */, samBuf.data(), &samSize)) {
-                    FACELOGIN_INFO(L"[DEBUG] GetUserNameExW NameSamCompatible: \"%s\"", samBuf.data());
+                    // SAM-compatible name captured (not logged — may contain PII)
                 } else {
                     DWORD err = GetLastError();
-                    FACELOGIN_INFO(L"[DEBUG] GetUserNameExW NameSamCompatible FAILED: err=%lu", err);
+                    FACELOGIN_WARN(L"GetUserNameExW NameSamCompatible FAILED: err=%lu", err);
                 }
             }
             // Try NameDisplay
@@ -94,15 +91,15 @@ EnrollmentWizard::EnrollmentWizard() {
                 ULONG dispSize = 256;
                 std::vector<wchar_t> dispBuf(dispSize);
                 if (pfn && pfn(3 /* NameDisplay */, dispBuf.data(), &dispSize)) {
-                    FACELOGIN_INFO(L"[DEBUG] GetUserNameExW NameDisplay: \"%s\"", dispBuf.data());
+                    // Display name captured (not logged — may contain PII)
                 } else {
                     DWORD err = GetLastError();
-                    FACELOGIN_INFO(L"[DEBUG] GetUserNameExW NameDisplay FAILED: err=%lu", err);
+                    FACELOGIN_WARN(L"GetUserNameExW NameDisplay FAILED: err=%lu", err);
                 }
             }
             FreeLibrary(hSecur32);
         } else {
-            FACELOGIN_ERROR(L"[DEBUG] LoadLibrary secur32.dll FAILED: err=%lu", GetLastError());
+            FACELOGIN_ERROR(L"LoadLibrary secur32.dll FAILED: err=%lu", GetLastError());
         }
     }
 
@@ -128,7 +125,6 @@ EnrollmentWizard::EnrollmentWizard() {
                     RegQueryValueExW(hStored, L"UPN", nullptr, nullptr,
                         reinterpret_cast<LPBYTE>(emailName), &emailSize);
                     if (emailName[0] != L'\0') {
-                        FACELOGIN_INFO(L"[DEBUG] StoredIdentities UPN: \"%s\"", emailName);
                         if (m_upn.empty()) {
                             m_upn = emailName;
                         }
@@ -159,14 +155,10 @@ EnrollmentWizard::EnrollmentWizard() {
                     RegQueryValueExW(hEntry, L"Sid", nullptr, nullptr,
                         reinterpret_cast<LPBYTE>(sidValue), &sidSize);
 
-                    FACELOGIN_INFO(L"[DEBUG] IdentityStore entry: idName=\"%s\" sid=\"%s\"",
-                                  identityName, sidValue);
-
                     if (identityName[0] != L'\0' && wcschr(identityName, L'@')) {
                         // This is an MSA email UPN
                         if (m_upn.empty()) {
                             m_upn = identityName;
-                            FACELOGIN_INFO(L"[DEBUG] Got UPN from IdentityStore: \"%s\"", m_upn.c_str());
                         }
                     }
                     RegCloseKey(hEntry);
@@ -187,7 +179,6 @@ EnrollmentWizard::EnrollmentWizard() {
         DWORD sidSize = 0, domainSize = 0;
         SID_NAME_USE sidType;
         std::wstring lookupName = m_upn.empty() ? m_username : m_upn;
-        FACELOGIN_INFO(L"[DEBUG] LookupAccountNameW lookup=\"%s\"", lookupName.c_str());
 
         LookupAccountNameW(nullptr, lookupName.c_str(),
                            nullptr, &sidSize, nullptr, &domainSize, &sidType);
@@ -201,18 +192,14 @@ EnrollmentWizard::EnrollmentWizard() {
                 if (ConvertSidToStringSidW(reinterpret_cast<PSID>(sidBuf.data()), &sidStr)) {
                     m_sid = sidStr;
                     LocalFree(sidStr);
-                    FACELOGIN_INFO(L"[DEBUG] SID resolved: %s", m_sid.c_str());
                 }
             } else {
                 DWORD err = GetLastError();
-                FACELOGIN_INFO(L"[DEBUG] LookupAccountNameW(UPN) FAILED: err=%lu", err);
+                FACELOGIN_WARN(L"LookupAccountNameW(UPN) FAILED: err=%lu", err);
             }
-        } else {
-            FACELOGIN_INFO(L"[DEBUG] LookupAccountNameW(UPN) returned sidSize=0");
         }
 
         if (m_sid.empty()) {
-            FACELOGIN_INFO(L"[DEBUG] Falling back to SAM username lookup: \"%s\"", m_username.c_str());
             DWORD sidSize2 = 0, domainSize2 = 0;
             SID_NAME_USE sidType2;
             LookupAccountNameW(nullptr, m_username.c_str(),
@@ -227,20 +214,14 @@ EnrollmentWizard::EnrollmentWizard() {
                     if (ConvertSidToStringSidW(reinterpret_cast<PSID>(sidBuf2.data()), &sidStr)) {
                         m_sid = sidStr;
                         LocalFree(sidStr);
-                        FACELOGIN_INFO(L"[DEBUG] SID resolved via SAM: %s", m_sid.c_str());
                     }
                 } else {
                     DWORD err = GetLastError();
-                    FACELOGIN_INFO(L"[DEBUG] LookupAccountNameW(SAM) FAILED: err=%lu", err);
+                    FACELOGIN_WARN(L"LookupAccountNameW(SAM) FAILED: err=%lu", err);
                 }
-            } else {
-                FACELOGIN_INFO(L"[DEBUG] LookupAccountNameW(SAM) returned sidSize=0");
             }
         }
     }
-
-    FACELOGIN_INFO(L"[DEBUG] FINAL: username=\"%s\" UPN=\"%s\" SID=\"%s\" type=\"%s\"",
-                  m_username.c_str(), m_upn.c_str(), m_sid.c_str(), m_accountType.c_str());
 
     m_webcam     = std::make_unique<WebcamCapture>();
     m_detector   = std::make_unique<FaceDetector>();
@@ -577,7 +558,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
         } else {
             // blink (default)
             LivenessDetector liveness;
-            liveness.Configure(0.20f, 3);
+            liveness.Configure(kDefaultEarThreshold, kDefaultBlinkFrames);
             auto livenessStart = std::chrono::steady_clock::now();
             bool blinked = false;
             while (m_capturing && !blinked) {
@@ -703,29 +684,23 @@ std::string EnrollmentWizard::GetUserUpn() const {
 }
 
 bool EnrollmentWizard::ValidatePassword(const std::wstring& password) {
-    FACELOGIN_INFO(L"[DEBUG] ValidatePassword: trying user=\"%s\" UPN=\"%s\"",
-                  m_username.c_str(), m_upn.c_str());
     HANDLE hToken = nullptr;
     BOOL ok = LogonUserW(m_username.c_str(), L".", password.c_str(),
                          LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &hToken);
     if (ok && hToken) {
-        FACELOGIN_INFO(L"[DEBUG] ValidatePassword: local SAM logon success");
         CloseHandle(hToken);
         return true;
     }
-    FACELOGIN_INFO(L"[DEBUG] ValidatePassword: local SAM logon failed (err=%lu), trying UPN...",
-                  GetLastError());
 
     // If LogonUser fails and we have a UPN (MSA account), try with UPN
     if (!m_upn.empty() && m_upn.find(L'@') != std::wstring::npos) {
         ok = LogonUserW(m_upn.c_str(), L".", password.c_str(),
                          LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &hToken);
         if (ok && hToken) {
-            FACELOGIN_INFO(L"[DEBUG] ValidatePassword: UPN logon success");
             CloseHandle(hToken);
             return true;
         }
-        FACELOGIN_INFO(L"[DEBUG] ValidatePassword: UPN logon also failed (err=%lu)",
+        FACELOGIN_WARN(L"ValidatePassword: UPN logon also failed (err=%lu)",
                       GetLastError());
     }
 
