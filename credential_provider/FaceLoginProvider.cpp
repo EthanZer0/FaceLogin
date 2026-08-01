@@ -84,8 +84,11 @@ static DWORD ReadUserCountFromDatabase() {
     file.read(reinterpret_cast<char*>(&version), sizeof(version));
     file.read(reinterpret_cast<char*>(&count), sizeof(count));
 
-    // Accept v1 and v2 databases (v2 adds SID/UPN fields)
-    if (magic != 0x474F4C46 || (version != 1 && version != 2)) {  // "FLOG"
+    // Accept v1..v3 databases. The header fields this function reads
+    // (magic / version / count) are identical across v1, v2 and v3 —
+    // v2 added SID/UPN fields, v3 made the embedding length-prefixed,
+    // but neither changes the header layout.
+    if (magic != 0x474F4C46 || (version < 1 || version > 3)) {  // "FLOG"
         return 0;  // Invalid database → treat as no users
     }
 
