@@ -11,6 +11,7 @@ PipeClient::PipeClient() {
     InitializeCriticalSection(&m_cs);
     m_csInitialized = true;
     m_hDataReady = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    m_hReadStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 }
 
 PipeClient::~PipeClient() {
@@ -18,6 +19,10 @@ PipeClient::~PipeClient() {
     if (m_hDataReady) {
         CloseHandle(m_hDataReady);
         m_hDataReady = nullptr;
+    }
+    if (m_hReadStop) {
+        CloseHandle(m_hReadStop);
+        m_hReadStop = nullptr;
     }
     if (m_csInitialized) {
         DeleteCriticalSection(&m_cs);
@@ -132,21 +137,30 @@ bool PipeClient::IsTerminalMessage(const std::wstring& msg) {
 DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
     PipeClient* self = static_cast<PipeClient*>(param);
 
+    // Poll the pipe for data instead of blocking forever on ReadFile.
+    // A permanently-blocked synchronous ReadFile is NOT canceled by
+    // CloseHandle (cancel-on-close only works for OVERLAPPED I/O), so a
+    // thread stuck there would keep the pipe's client file object alive
+    // and the server could never observe the disconnect. We instead check
+    // PeekNamedPipe + the stop event in a short loop and exit promptly.
     while (true) {
-        ZeroMemory(self->m_readBuffer, sizeof(self->m_readBuffer));
+        // Stop signal (set by Disconnect) — exit without touching the pipe.
+        if (WaitForSingleObject(self->m_hReadStop, 0) == WAIT_OBJECT_0) {
+            FACELOGIN_INFO(L"Background read: stop signaled — exiting");
+            break;
+        }
 
-        DWORD bytesRead = 0;
-        BOOL result = ReadFile(self->m_hPipe,
-                               self->m_readBuffer,
-                               static_cast<DWORD>(sizeof(self->m_readBuffer) - sizeof(wchar_t)),
-                               &bytesRead,
-                               nullptr);  // blocking — no OVERLAPPED
-
-        bool success = (result && bytesRead > 0);
-
-        if (!success) {
+        DWORD bytesAvail = 0, totalBytes = 0;
+        if (PeekNamedPipe(self->m_hPipe, nullptr, 0, nullptr, &bytesAvail, &totalBytes)) {
+            if (bytesAvail == 0) {
+                // Connected but idle — wait briefly, keep polling.
+                Sleep(50);
+                continue;
+            }
+        } else {
             DWORD err = GetLastError();
-            if (err == ERROR_BROKEN_PIPE) {
+            if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
+                err == ERROR_PIPE_NOT_CONNECTED) {
                 FACELOGIN_INFO(L"Background read: pipe broken by server");
             } else {
                 FACELOGIN_WARN(L"Background read failed: %lu", err);
@@ -159,6 +173,35 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
             LeaveCriticalSection(&self->m_cs);
             SetEvent(self->m_hDataReady);
             // Notify — connection lost unexpectedly
+            if (self->m_onResponse) {
+                self->m_onResponse(false, L"");
+            }
+            break;
+        }
+
+        // Data is available — ReadFile returns immediately.
+        ZeroMemory(self->m_readBuffer, sizeof(self->m_readBuffer));
+        DWORD bytesRead = 0;
+        BOOL result = ReadFile(self->m_hPipe,
+                               self->m_readBuffer,
+                               static_cast<DWORD>(sizeof(self->m_readBuffer) - sizeof(wchar_t)),
+                               &bytesRead,
+                               nullptr);
+
+        bool success = (result && bytesRead > 0);
+        if (!success) {
+            DWORD err = GetLastError();
+            if (err == ERROR_BROKEN_PIPE) {
+                FACELOGIN_INFO(L"Background read: pipe broken by server");
+            } else {
+                FACELOGIN_WARN(L"Background read failed: %lu", err);
+            }
+            EnterCriticalSection(&self->m_cs);
+            self->m_readSuccess = false;
+            self->m_bytesRead = 0;
+            self->m_connected = false;
+            LeaveCriticalSection(&self->m_cs);
+            SetEvent(self->m_hDataReady);
             if (self->m_onResponse) {
                 self->m_onResponse(false, L"");
             }
@@ -210,6 +253,7 @@ void PipeClient::StartBackgroundRead(OnResponseCallback onResponse,
 
     // Reset state
     ResetEvent(m_hDataReady);
+    ResetEvent(m_hReadStop);
     m_bytesRead = 0;
     m_readSuccess = false;
     ZeroMemory(m_readBuffer, sizeof(m_readBuffer));
@@ -256,13 +300,21 @@ bool PipeClient::CheckResponse(std::wstring& outMessage) {
 }
 
 void PipeClient::Disconnect() {
+    // Signal the read thread to stop FIRST. It polls the stop event every
+    // ~50ms, so it exits promptly. (A permanently-blocked synchronous ReadFile
+    // would NOT be canceled by CloseHandle — cancel-on-close only works for
+    // OVERLAPPED I/O — leaving a "zombie" thread that keeps the pipe's client
+    // file object alive, so the server never sees the disconnect.)
+    if (m_hReadStop) {
+        SetEvent(m_hReadStop);
+    }
+
     if (m_hPipe != INVALID_HANDLE_VALUE) {
         CloseHandle(m_hPipe);
         m_hPipe = INVALID_HANDLE_VALUE;
     }
     m_connected = false;
 
-    // CloseHandle will unblock the background ReadFile.
     CleanupReadThread();
 
     m_bytesRead = 0;

@@ -420,12 +420,7 @@ bool FaceService::ProcessAuthRequest() {
         FACELOGIN_WARN(L"No registered users");
         m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"\u6ca1\u6709\u6ce8\u518c\u7528\u6237"));
         FlushFileBuffers(m_pipeServer->GetHandle());
-        {
-            wchar_t dummy[64];
-            DWORD bytesRead = 0;
-            ReadFile(m_pipeServer->GetHandle(), dummy, sizeof(dummy),
-                     &bytesRead, nullptr);
-        }
+        m_pipeServer->DrainOutput(5000);
         return false;
     }
 
@@ -450,17 +445,20 @@ bool FaceService::ProcessAuthRequest() {
     static constexpr int CONSENSUS_FRAMES = 3;
 
     while (m_running) {
+        // Abort early if the client (LogonUI) has gone away — e.g. the user
+        // switched to password/fingerprint unlock. Otherwise we'd keep the
+        // camera on until the timeout.
+        if (m_pipeServer->IsClientDisconnected()) {
+            FACELOGIN_INFO(L"Client disconnected during auth — aborting, releasing camera");
+            return false;
+        }
+
         auto elapsed = std::chrono::steady_clock::now() - startTime;
         if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= m_authTimeoutSeconds) {
             FACELOGIN_INFO(L"Authentication timed out");
             m_pipeServer->WriteMessage(ipc::MSG_AUTH_TIMEOUT);
             FlushFileBuffers(m_pipeServer->GetHandle());
-            if (m_running) {
-                wchar_t dummy[64];
-                DWORD bytesRead = 0;
-                ReadFile(m_pipeServer->GetHandle(), dummy, sizeof(dummy),
-                         &bytesRead, nullptr);
-            }
+            m_pipeServer->DrainOutput(5000);
             return false;
         }
 
@@ -568,6 +566,11 @@ bool FaceService::ProcessAuthRequest() {
                     auto asStart = std::chrono::steady_clock::now();
                     int passCount = 0, totalChecked = 0;
                     while (m_running && totalChecked < totalChecks) {
+                        if (m_pipeServer->IsClientDisconnected()) {
+                            FACELOGIN_INFO(L"Client disconnected during anti-spoof — aborting");
+                            SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
+                            return false;
+                        }
                         auto elapsed = std::chrono::steady_clock::now() - asStart;
                         if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= 5) break;
 
@@ -604,6 +607,11 @@ bool FaceService::ProcessAuthRequest() {
                     auto livenessStart = std::chrono::steady_clock::now();
                     bool blinked = false;
                     while (m_running) {
+                        if (m_pipeServer->IsClientDisconnected()) {
+                            FACELOGIN_INFO(L"Client disconnected during blink check — aborting");
+                            SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
+                            return false;
+                        }
                         auto livenessElapsed = std::chrono::steady_clock::now() - livenessStart;
                         // 8s timeout (was 5s): a user may react to the "blink"
                         // prompt with a slight delay, and the detection loop only
@@ -642,10 +650,7 @@ bool FaceService::ProcessAuthRequest() {
                         L"\u68c0\u6d4b\u5230\u653b\u51fb\uff0c\u8bf7\u4f7f\u7528\u771f\u5b9e\u4eba\u8138" :
                         L"\u672a\u68c0\u6d4b\u5230\u7728\u773c\uff0c\u8bf7\u52a8\u4f5c\u660e\u786e\u5730\u95ed\u773c\u518d\u7741\u5f00\u91cd\u8bd5"));
                     FlushFileBuffers(m_pipeServer->GetHandle());
-                    {
-                        wchar_t dummy[64]; DWORD bytesRead = 0;
-                        ReadFile(m_pipeServer->GetHandle(), dummy, sizeof(dummy), &bytesRead, nullptr);
-                    }
+                    m_pipeServer->DrainOutput(5000);
                     SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                     return false;
                 }
@@ -664,6 +669,11 @@ bool FaceService::ProcessAuthRequest() {
                     auto verifyStart = std::chrono::steady_clock::now();
                     bool verifyOk = false;
                     while (m_running && !verifyOk) {
+                        if (m_pipeServer->IsClientDisconnected()) {
+                            FACELOGIN_INFO(L"Client disconnected during final verify — aborting");
+                            SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
+                            return false;
+                        }
                         auto vElapsed = std::chrono::steady_clock::now() - verifyStart;
                         if (std::chrono::duration_cast<std::chrono::seconds>(vElapsed).count() >= 2) break;
 
@@ -709,10 +719,7 @@ bool FaceService::ProcessAuthRequest() {
                         m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
                             L"\u6d3b\u4f53\u9a8c\u8bc1\u671f\u95f4\u4eba\u8138\u4e0d\u5339\u914d\uff0c\u8bf7\u91cd\u8bd5"));
                         FlushFileBuffers(m_pipeServer->GetHandle());
-                        {
-                            wchar_t dummy[64]; DWORD bytesRead = 0;
-                            ReadFile(m_pipeServer->GetHandle(), dummy, sizeof(dummy), &bytesRead, nullptr);
-                        }
+                        m_pipeServer->DrainOutput(5000);
                         SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                         return false;
                     }
@@ -737,12 +744,21 @@ bool FaceService::ProcessAuthRequest() {
             WriteRegDword(REGVAL_USER_LOGGED_IN, 1);
             FACELOGIN_INFO(L"UserLoggedIn=1 written after auth success");
 
-            {
-                wchar_t dummy[64];
-                DWORD bytesRead = 0;
-                ReadFile(m_pipeServer->GetHandle(), dummy, sizeof(dummy),
-                         &bytesRead, nullptr);
+            // Stop the capture graph NOW (camera LED off) before the bounded
+            // pipe drain below. The graph keeps streaming during auth; pausing
+            // it immediately after success frees the camera without waiting for
+            // the full teardown.
+            if (m_isServiceMode && m_webcamDS) {
+                m_webcamDS->Pause();
+            } else if (!m_isServiceMode && m_webcamMF) {
+                m_webcamMF->Shutdown();
             }
+
+            // Bounded drain: wait briefly for the client to consume the
+            // AUTH_SUCCESS message, then return. The old code did an
+            // unbounded ReadFile(dummy) here — if the client closed the pipe
+            // or never read, the service blocked forever and SCM killed it.
+            m_pipeServer->DrainOutput(5000);
             break;
         }
 

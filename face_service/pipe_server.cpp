@@ -173,14 +173,51 @@ bool PipeServer::WaitForClient(DWORD timeoutMs) {
 }
 
 bool PipeServer::ReadMessage(std::wstring& outMessage, DWORD timeoutMs) {
-    (void)timeoutMs;
     if (!m_connected || m_hPipe == INVALID_HANDLE_VALUE) return false;
 
-    // Synchronous read on a message-mode pipe.
-    // Reads exactly one message (up to buffer size).
+    // Bounded synchronous read on a message-mode pipe. ReadFile on a sync
+    // pipe would block forever if the client never sends/never disconnects,
+    // so we first poll PeekNamedPipe for either available data or a broken
+    // connection, up to timeoutMs.
+    DWORD bytesAvail = 0, totalBytes = 0;
+    for (DWORD waited = 0; waited < timeoutMs; ) {
+        if (PeekNamedPipe(m_hPipe, nullptr, 0, nullptr, &bytesAvail, &totalBytes)) {
+            if (bytesAvail > 0) {
+                // Data ready — the ReadFile below returns immediately.
+                break;
+            }
+            // Connected but idle — wait briefly, keep polling.
+            DWORD sleepMs = (timeoutMs - waited < 50) ? (timeoutMs - waited) : 50;
+            Sleep(sleepMs);
+            waited += sleepMs;
+            continue;
+        }
+        // PeekNamedPipe failed — client closed its end or pipe is broken.
+        DWORD err = GetLastError();
+        if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
+            err == ERROR_PIPE_NOT_CONNECTED) {
+            FACELOGIN_INFO(L"Pipe broken by client while waiting for message");
+            m_connected = false;
+            return false;
+        }
+        FACELOGIN_ERROR(L"PeekNamedPipe failed: %lu", err);
+        m_connected = false;
+        return false;
+    }
+
+    // If we timed out with no data, treat as disconnect (caller will clean up).
+    DWORD bytesAvailAfter = 0, totalBytesAfter = 0;
+    if (!PeekNamedPipe(m_hPipe, nullptr, 0, nullptr, &bytesAvailAfter, &totalBytesAfter)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
+            err == ERROR_PIPE_NOT_CONNECTED) {
+            m_connected = false;
+        }
+        return false;
+    }
+
     wchar_t buffer[ipc::PIPE_BUFFER_SIZE / sizeof(wchar_t)] = {};
     DWORD bytesRead = 0;
-
     BOOL result = ReadFile(m_hPipe, buffer,
                            static_cast<DWORD>(sizeof(buffer) - sizeof(wchar_t)),
                            &bytesRead, nullptr);
@@ -205,6 +242,42 @@ bool PipeServer::ReadMessage(std::wstring& outMessage, DWORD timeoutMs) {
     return true;
 }
 
+// Bounded "wait for the client to drain what we wrote". Previously the code
+// did an unbounded ReadFile(dummy) after every WriteMessage to handshake the
+// disconnect; if the client never read or never closed, the service blocked
+// forever (SCM killed it → 7034, no crash event). We poll PeekNamedPipe:
+// when no bytes remain to be read, the client has consumed everything (or
+// closed its end) and it is safe to Disconnect().
+bool PipeServer::DrainOutput(DWORD timeoutMs) {
+    if (!m_connected || m_hPipe == INVALID_HANDLE_VALUE) return true;
+
+    DWORD bytesAvail = 0, totalBytes = 0;
+    for (DWORD waited = 0; waited < timeoutMs; ) {
+        if (PeekNamedPipe(m_hPipe, nullptr, 0, nullptr, &bytesAvail, &totalBytes)) {
+            if (bytesAvail == 0) {
+                // All output consumed (or client already closed). Done.
+                return true;
+            }
+            DWORD sleepMs = (timeoutMs - waited < 50) ? (timeoutMs - waited) : 50;
+            Sleep(sleepMs);
+            waited += sleepMs;
+            continue;
+        }
+        // PeekNamedPipe failed → client closed its end. Fine, nothing to drain.
+        DWORD err = GetLastError();
+        if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
+            err == ERROR_PIPE_NOT_CONNECTED) {
+            m_connected = false;
+            return true;
+        }
+        FACELOGIN_ERROR(L"DrainOutput: PeekNamedPipe failed: %lu", err);
+        return false;
+    }
+    // Timed out with unread bytes still pending — do NOT block further.
+    FACELOGIN_WARN(L"DrainOutput: timed out with unread bytes pending");
+    return false;
+}
+
 bool PipeServer::WriteMessage(const std::wstring& message) {
     if (!m_connected || m_hPipe == INVALID_HANDLE_VALUE) return false;
 
@@ -226,6 +299,20 @@ bool PipeServer::WriteMessage(const std::wstring& message) {
     }
 
     return true;
+}
+
+bool PipeServer::IsClientDisconnected() const {
+    if (!m_connected || m_hPipe == INVALID_HANDLE_VALUE) return true;
+
+    // PeekNamedPipe with null buffers never blocks and reports the pipe state.
+    // ERROR_BROKEN_PIPE / ERROR_NO_DATA => client closed its end.
+    DWORD bytesAvail = 0, bytesLeft = 0;
+    if (PeekNamedPipe(m_hPipe, nullptr, 0, nullptr, &bytesAvail, &bytesLeft)) {
+        return false; // still connected
+    }
+    DWORD err = GetLastError();
+    return err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
+           err == ERROR_PIPE_NOT_CONNECTED;
 }
 
 void PipeServer::Disconnect() {

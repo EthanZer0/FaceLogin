@@ -68,6 +68,7 @@ private:
     // Background blocking read
     HANDLE m_hReadThread = nullptr;
     HANDLE m_hDataReady = nullptr;       // manual-reset: set when response arrives
+    HANDLE m_hReadStop = nullptr;        // manual-reset: signaled to stop the read thread
     wchar_t m_readBuffer[4096] = {};
     DWORD  m_bytesRead = 0;
     bool   m_readSuccess = false;
