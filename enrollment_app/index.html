@@ -221,22 +221,8 @@ body{
     <h2>系统设置</h2>
     <p class="dim">修改设置后会自动通知后台服务，无需重启。</p>
 
-    <div class="field">
-      <label>识别模型 (Recognition Model)</label>
-      <select id="cfg-recognition">
-        <option value="both">ONNX + dlib (推荐)</option>
-        <option value="onnx">ONNX (InsightFace)</option>
-        <option value="dlib">dlib ResNet-34</option>
-      </select>
-    </div>
-
-    <div class="field">
-      <label>检测器 (Detector)</label>
-      <select id="cfg-detector">
-        <option value="scrfd">SCRFD ONNX (推荐)</option>
-        <option value="dlib_hog">dlib HOG</option>
-      </select>
-    </div>
+    <!-- 识别模型 (Recognition Model) and 检测器 (Detector) were removed:
+         dlib was dropped, the system is now pure ONNX (InsightFace + SCRFD). -->
 
     <div class="field">
       <label>活体检测 (Liveness Method)</label>
@@ -299,15 +285,11 @@ body{
 
 <script>
 var H = window.chrome.webview.hostObjects.sync.host;
-var viewing = true, lastB64 = '', timer = 0, faceImg = new Image();
+var viewing = true, lastB64 = '', lastFacesJson = '', timer = 0, faceImg = new Image();
 var camReady = false, currentTab = 'cam';
 
 faceImg.onload = function() {
-  var c = document.getElementById('bg-canvas');
-  var vp = document.getElementById('viewport');
-  c.width = vp.clientWidth;
-  c.height = vp.clientHeight;
-  c.getContext('2d').drawImage(faceImg, 0, 0, c.width, c.height);
+  drawBackgroundAndOverlay();
   if (!camReady) {
     camReady = true;
     document.getElementById('cam-loading').classList.add('fade');
@@ -318,16 +300,34 @@ faceImg.onload = function() {
   }
 };
 
+// Draw the background image AND its paired overlay (same frame). The background
+// stretches to fill the viewport; the overlay uses the same stretch mapping so
+// the face box/landmarks always line up with the visible face.
+function drawBackgroundAndOverlay() {
+  var c = document.getElementById('bg-canvas');
+  var vp = document.getElementById('viewport');
+  var cw = vp.clientWidth, ch = vp.clientHeight;
+  c.width = cw;
+  c.height = ch;
+  c.getContext('2d').drawImage(faceImg, 0, 0, cw, ch);
+  drawOverlay(lastFacesJson);
+}
+
 function renderFrame() {
   if (!viewing) return;
   try {
-    var b64 = H.GetLatestFrameBase64();
+    // Get the frame AND its face overlay atomically (same frame, no desync).
+    var combined = H.GetLatestFrameAndFaces();
+    var sep = combined.indexOf('\x1e');
+    var b64 = sep > 0 ? combined.substring(0, sep) : combined;
+    lastFacesJson = sep > 0 ? combined.substring(sep + 1) : '';
     if (b64 && b64 !== lastB64) {
       lastB64 = b64;
-      faceImg.src = b64;
+      faceImg.src = b64;   // async load; onload redraws bg + overlay
+    } else if (faceImg.complete) {
+      // Frame unchanged but canvas may be stale (e.g. window resize) — redraw.
+      drawBackgroundAndOverlay();
     }
-    var json = H.GetLatestFacesJson();
-    if (json) drawOverlay(json);
   } catch(e) {}
   timer = setTimeout(renderFrame, 33);
 }
@@ -343,13 +343,16 @@ function drawOverlay(json) {
   try { faces = JSON.parse(json); } catch(e) { return; }
   if (faces.length === 0) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
 
-  var srcW = 1280, srcH = 720;
+  // Use the ACTUAL video frame size (from the loaded image), NOT a hardcoded
+  // 1280x720 — the camera may negotiate a different resolution. And stretch to
+  // the canvas exactly like the background does (drawImage fills the canvas),
+  // so the overlay always lines up with the visible face regardless of window
+  // aspect. A contain/letterbox mapping here would drift from the stretched
+  // background whenever the viewport isn't exactly 16:9.
+  var srcW = faceImg.naturalWidth || 1280;
+  var srcH = faceImg.naturalHeight || 720;
   var cw = canvas.width, ch = canvas.height;
-  var srcRatio = srcW / srcH, dstRatio = cw / ch;
-  var rx, ry, rw, rh;
-  if (srcRatio > dstRatio) { rw = cw; rh = cw / srcRatio; rx = 0; ry = (ch - rh) / 2; }
-  else                     { rh = ch; rw = ch * srcRatio; rx = (cw - rw) / 2; ry = 0; }
-  var sx = rw / srcW, sy = rh / srcH;
+  var sx = cw / srcW, sy = ch / srcH;
 
   ctx.clearRect(0, 0, cw, ch);
   ctx.strokeStyle = '#22c55e';
@@ -358,9 +361,9 @@ function drawOverlay(json) {
 
   for (var fi = 0; fi < faces.length; fi++) {
     var f = faces[fi];
-    ctx.strokeRect(rx + f.x * sx, ry + f.y * sy, f.w * sx, f.h * sy);
+    ctx.strokeRect(f.x * sx, f.y * sy, f.w * sx, f.h * sy);
     for (var i = 0; i < f.landmarks.length; i += 2) {
-      ctx.fillRect(rx + f.landmarks[i] * sx - 1, ry + f.landmarks[i + 1] * sy - 1, 2, 2);
+      ctx.fillRect(f.landmarks[i] * sx - 1, f.landmarks[i + 1] * sy - 1, 2, 2);
     }
   }
 }
@@ -393,8 +396,6 @@ function loadSettings() {
   try {
     var json = H.GetConfig();
     var cfg = JSON.parse(json);
-    document.getElementById('cfg-recognition').value = cfg.recognition_model || 'both';
-    document.getElementById('cfg-detector').value = cfg.detector || 'scrfd';
     document.getElementById('cfg-liveness').value = cfg.liveness_method || 'blink';
     // match_threshold is stored as distance (lower = stricter).
     // Convert to UI strictness: strictness = 100 - threshold*100 (higher = stricter).
@@ -411,8 +412,8 @@ function loadSettings() {
 function onSaveSettings() {
   var strictness = parseInt(document.getElementById('cfg-threshold').value);
   var cfg = {
-    recognition_model: document.getElementById('cfg-recognition').value,
-    detector: document.getElementById('cfg-detector').value,
+    // recognition_model/detector are fixed to onnx/scrfd (dlib was removed);
+    // they're not sent here — the service and config defaults handle them.
     liveness_method: document.getElementById('cfg-liveness').value,
     // Convert strictness back: threshold = (100 - strictness) / 100
     match_threshold: (100 - strictness) / 100,
