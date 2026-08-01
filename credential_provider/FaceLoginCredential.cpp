@@ -537,20 +537,14 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
 
     // If we have credentials ready, pack and return them
     if (m_state == State::Ready && !m_password.empty()) {
-        // ---- DEBUG: log what we're about to pack ----
-        FACELOGIN_INFO(L"[DEBUG] PackCred: domain=\"%s\", username=\"%s\", passwordLen=%zu",
-                      m_domain.c_str(), m_username.c_str(), m_password.size());
-        // Also dump password as printable characters for debug (first 10 chars only)
-        std::wstring pwdPreview = m_password.substr(0, m_password.size() < 20 ? m_password.size() : 20);
-        FACELOGIN_INFO(L"[DEBUG] PackCred: password preview=\"%s\"", pwdPreview.c_str());
-
+        // NOTE: never log the password or any part of it — it is a credential.
         HRESULT hr = PackCredentials(pcpcs);
         if (SUCCEEDED(hr)) {
             *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-            FACELOGIN_INFO(L"[DEBUG] PackCred SUCCESS: cbSerialization=%lu, ulAuthPackage=%lu",
+            FACELOGIN_INFO(L"PackCred SUCCESS: cbSerialization=%lu, ulAuthPackage=%lu",
                           pcpcs->cbSerialization, pcpcs->ulAuthenticationPackage);
         } else {
-            FACELOGIN_ERROR(L"[DEBUG] PackCred FAILED: hr=0x%08X", hr);
+            FACELOGIN_ERROR(L"PackCred FAILED: hr=0x%08X", hr);
         }
         return hr;
     }
@@ -839,36 +833,13 @@ void FaceLoginCredential::OnPipeStatus(const std::wstring& message) {
 
 void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& message) {
     if (success) {
-        // ---- DEBUG: log first 100 chars of raw message as hex ----
-        std::wstring hexPreview;
-        for (size_t i = 0; i < message.size() && i < 40; i++) {
-            wchar_t buf[8];
-            swprintf(buf, 7, L"%04X ", (unsigned short)message[i]);
-            hexPreview += buf;
-        }
-        FACELOGIN_INFO(L"[DEBUG] OnPipeResponse RAW %zu bytes hex: %s",
-                      message.size(), hexPreview.c_str());
         auto result = facelogin::ipc::ParseAuthMessage(message);
 
         if (result.status == facelogin::ipc::AuthResult::Status::Success) {
             FACELOGIN_INFO(L"OnPipeResponse: Auth success: domain=%s, username=%s (SID=%s, UPN=%s)",
                           result.domain.c_str(), result.username.c_str(),
                           result.sid.c_str(), result.upn.c_str());
-            // ---- DEBUG: log password length and first 4 chars hex ----
-            FACELOGIN_INFO(L"[DEBUG] Password length=%zu, first bytes: %02X %02X %02X %02X",
-                          result.password.size(),
-                          result.password.size() > 0 ? (unsigned char)(result.password[0]) : 0,
-                          result.password.size() > 1 ? (unsigned char)(result.password[1]) : 0,
-                          result.password.size() > 2 ? (unsigned char)(result.password[2]) : 0,
-                          result.password.size() > 3 ? (unsigned char)(result.password[3]) : 0);
-            // ---- DEBUG: detailed password info ----
-            size_t pwLen = result.password.size();
-            FACELOGIN_INFO(L"[DEBUG] Parsed: pwd length=%zu, last char=0x%04X",
-                          pwLen, pwLen > 0 ? (unsigned)result.password[pwLen-1] : 0);
-            size_t realLen = result.password.find(L'\0');
-            if (realLen != std::wstring::npos && pwLen > realLen + 1) {
-                FACELOGIN_INFO(L"[DEBUG] Password has embedded null at pos %zu", realLen);
-            }
+            // NOTE: the password itself is never logged — only metadata.
             m_sid = result.sid;
             m_upn = result.upn;
             m_domain = result.domain;
