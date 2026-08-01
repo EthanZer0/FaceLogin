@@ -1,5 +1,3 @@
-# FaceLogin — Windows 人脸识别登录系统
-
 <p align="center">
   <img src="assets/logo.png" alt="FaceLogin Logo" width="200">
 </p>
