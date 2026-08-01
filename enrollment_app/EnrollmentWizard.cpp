@@ -20,6 +20,16 @@
 
 namespace facelogin {
 
+// Helper: convert UTF-8 string to wide string (for config camera_device)
+static std::wstring Utf8ToWstr(const std::string& s) {
+    if (s.empty()) return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (len <= 0) return L"";
+    std::wstring ws(len - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &ws[0], len);
+    return ws;
+}
+
 EnrollmentWizard::EnrollmentWizard() {
     std::wstring regData = ReadRegString(REGVAL_DATA_PATH, L"");
     if (!regData.empty()) {
@@ -246,8 +256,9 @@ EnrollmentWizard::~EnrollmentWizard() {
 bool EnrollmentWizard::StartPreview() {
     if (m_previewRunning) return true;
 
-    if (!m_webcam->Initialize(1280, 720)) {
-        FACELOGIN_ERROR(L"Failed to initialize webcam");
+    if (!m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+        FACELOGIN_ERROR(L"Failed to initialize webcam%s",
+                        m_config.camera_device.empty() ? L"" : L" (configured device)");
         return false;
     }
 
@@ -808,6 +819,34 @@ bool EnrollmentWizard::SaveEnrollment(const std::wstring& password) {
 }
 
 // ============================================================================
+// Camera device enumeration
+// ============================================================================
+
+std::string EnrollmentWizard::GetCameraList() {
+    auto devices = WebcamCapture::ListCameras();
+    std::ostringstream js;
+    js << "[";
+    for (size_t i = 0; i < devices.size(); i++) {
+        if (i > 0) js << ",";
+        // JSON-escape name/path (device paths contain backslashes).
+        auto esc = [](const std::wstring& ws) -> std::string {
+            std::string out;
+            for (wchar_t ch : ws) {
+                if (ch == L'"' || ch == L'\\') out.push_back('\\');
+                char mb[4] = {};
+                int n = WideCharToMultiByte(CP_UTF8, 0, &ch, 1, mb, 4, nullptr, nullptr);
+                if (n > 0) out.append(mb, static_cast<size_t>(n));
+            }
+            return out;
+        };
+        js << "{\"path\":\"" << esc(devices[i].devicePath)
+           << "\",\"name\":\"" << esc(devices[i].friendlyName) << "\"}";
+    }
+    js << "]";
+    return js.str();
+}
+
+// ============================================================================
 // Configuration
 // ============================================================================
 
@@ -823,6 +862,9 @@ bool EnrollmentWizard::SetConfig(const std::string& json) {
         (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
         FACELOGIN_WARN(L"SetConfig: anti-spoof configured but model not available; saved anyway (will fall back at runtime)");
     }
+
+    bool cameraChanged = (newConfig.camera_device != m_config.camera_device);
+
     if (!SaveConfig(m_dataDir, newConfig)) {
         FACELOGIN_ERROR(L"Failed to save config.json");
         return false;
@@ -852,6 +894,14 @@ bool EnrollmentWizard::SetConfig(const std::string& json) {
                   m_config.recognition_model.c_str(), m_config.detector.c_str(),
                   LivenessMethodToString(m_config.liveness_method).c_str(),
                   m_config.match_threshold);
+
+    // If the camera selection changed and the preview is running, restart the
+    // preview so the new camera takes effect immediately.
+    if (cameraChanged && m_previewRunning) {
+        FACELOGIN_INFO(L"Camera selection changed — restarting preview");
+        RestartPreview();
+    }
+
     return true;
 }
 

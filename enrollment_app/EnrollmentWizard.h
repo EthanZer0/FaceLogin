@@ -48,6 +48,11 @@ public:
     bool SetConfig(const std::string& json);
     bool RestartPreview();
 
+    // Camera device enumeration for the settings UI.
+    // Returns JSON: [{path, name}, ...] — path is the stable symbolic link,
+    // name is the friendly display name.
+    std::string GetCameraList();
+
     // Log viewer
     std::string GetLogLines();
     std::string GetServiceLogLines();

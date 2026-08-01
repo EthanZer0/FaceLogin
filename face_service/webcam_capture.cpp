@@ -47,7 +47,8 @@ void WebcamCapture::ShutdownMF() {
     }
 }
 
-bool WebcamCapture::Initialize(int preferredWidth, int preferredHeight) {
+bool WebcamCapture::Initialize(int preferredWidth, int preferredHeight,
+                               const std::wstring& devicePath) {
     if (m_initialized) return true;
 
     m_width = preferredWidth;
@@ -58,8 +59,8 @@ bool WebcamCapture::Initialize(int preferredWidth, int preferredHeight) {
         return false;
     }
 
-    if (!FindFirstCamera(&m_pSource)) {
-        FACELOGIN_ERROR(L"No webcam found");
+    if (!FindCamera(devicePath, &m_pSource)) {
+        FACELOGIN_ERROR(L"No webcam found%s", devicePath.empty() ? L"" : L" for configured device");
         ShutdownMF();
         return false;
     }
@@ -90,7 +91,53 @@ bool WebcamCapture::Initialize(int preferredWidth, int preferredHeight) {
     return true;
 }
 
-bool WebcamCapture::FindFirstCamera(IMFMediaSource** ppSource) {
+// Enumerate all video capture devices via Media Foundation. Each entry carries
+// the stable symbolic link (devicePath) and the friendly display name.
+std::vector<CameraDeviceInfo> WebcamCapture::ListCameras() {
+    std::vector<CameraDeviceInfo> devices;
+
+    if (!InitializeMF()) {
+        FACELOGIN_ERROR(L"MF: failed to initialize for camera enumeration");
+        return devices;
+    }
+
+    IMFAttributes* pAttributes = nullptr;
+    HRESULT hr = MFCreateAttributes(&pAttributes, 1);
+    if (SUCCEEDED(hr)) {
+        pAttributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+                             MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+
+        IMFActivate** ppDevices = nullptr;
+        UINT32 count = 0;
+        hr = MFEnumDeviceSources(pAttributes, &ppDevices, &count);
+        if (SUCCEEDED(hr)) {
+            for (UINT32 i = 0; i < count; i++) {
+                CameraDeviceInfo info;
+                LPWSTR path = nullptr, name = nullptr;
+                if (SUCCEEDED(ppDevices[i]->GetAllocatedString(
+                        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, &path, nullptr))) {
+                    info.devicePath = path;
+                    CoTaskMemFree(path);
+                }
+                if (SUCCEEDED(ppDevices[i]->GetAllocatedString(
+                        MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &name, nullptr))) {
+                    info.friendlyName = name;
+                    CoTaskMemFree(name);
+                }
+                devices.push_back(std::move(info));
+                ppDevices[i]->Release();
+            }
+            CoTaskMemFree(ppDevices);
+        }
+        pAttributes->Release();
+    }
+
+    ShutdownMF();
+    return devices;
+}
+
+bool WebcamCapture::FindCamera(const std::wstring& devicePath,
+                               IMFMediaSource** ppSource) {
     *ppSource = nullptr;
 
     IMFAttributes* pAttributes = nullptr;
@@ -111,9 +158,30 @@ bool WebcamCapture::FindFirstCamera(IMFMediaSource** ppSource) {
         return false;
     }
 
-    FACELOGIN_INFO(L"Found %u video device(s)", count);
+    FACELOGIN_INFO(L"Found %u video device(s), looking for %s",
+                   count, devicePath.empty() ? L"first" : devicePath.c_str());
 
-    hr = ppDevices[0]->ActivateObject(IID_PPV_ARGS(ppSource));
+    // First pass: match the configured device by symbolic link.
+    int selected = -1;
+    if (!devicePath.empty()) {
+        for (UINT32 i = 0; i < count; i++) {
+            LPWSTR path = nullptr;
+            if (SUCCEEDED(ppDevices[i]->GetAllocatedString(
+                    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, &path, nullptr))) {
+                bool match = (devicePath == path);
+                CoTaskMemFree(path);
+                if (match) { selected = static_cast<int>(i); break; }
+            }
+        }
+        if (selected < 0) {
+            FACELOGIN_WARN(L"Configured camera not found in device list — falling back to first");
+        }
+    }
+
+    // Fallback: first device (existing behavior when devicePath is empty).
+    if (selected < 0) selected = 0;
+
+    hr = ppDevices[selected]->ActivateObject(IID_PPV_ARGS(ppSource));
 
     for (UINT32 i = 0; i < count; i++) {
         ppDevices[i]->Release();
@@ -143,62 +211,87 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
         return true;
     }
 
-    FACELOGIN_WARN(L"NV12 not supported by camera, using native format");
+    // NV12 was rejected. There is no "reset to native format" form of
+    // SetCurrentMediaType: pMediaType must be a valid IMFMediaType, and passing
+    // NULL fails with E_INVALIDARG (0x80070057). A failed SetCurrentMediaType
+    // leaves the camera's native type in effect, so the robust fallback is to
+    // pick a *native* type we know how to convert (NV12/YUY2) and set it
+    // directly — a native type is always accepted.
+    FACELOGIN_WARN(L"NV12 not supported by camera (hr=0x%08X), falling back", hr);
 
-    hr = m_pReader->SetCurrentMediaType(
-        (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, nullptr);
-    if (FAILED(hr)) {
-        FACELOGIN_ERROR(L"Failed to reset to native format: 0x%08X", hr);
+    IMFMediaType* pBestNative = nullptr;
+    UINT32 bestW = 0, bestH = 0;
+    bool bestIsNV12 = false;
+    UINT32 mjpgW = 0, mjpgH = 0;   // last-resort MJPEG size
+
+    for (DWORD i = 0; ; ++i) {
+        IMFMediaType* pNative = nullptr;
+        hr = m_pReader->GetNativeMediaType(
+            MF_SOURCE_READER_FIRST_VIDEO_STREAM, i, &pNative);
+        if (FAILED(hr)) break;   // MF_E_NO_MORE_TYPES ends the list
+
+        GUID subtype = GUID_NULL;
+        UINT32 w = 0, h = 0;
+        pNative->GetGUID(MF_MT_SUBTYPE, &subtype);
+        MFGetAttributeSize(pNative, MF_MT_FRAME_SIZE, &w, &h);
+
+        if (subtype == MFVideoFormat_NV12) {
+            if (pBestNative) pBestNative->Release();
+            pBestNative = pNative;   // transfer ownership
+            bestW = w; bestH = h; bestIsNV12 = true;
+            break;                   // NV12 is the best possible outcome
+        }
+        if (subtype == MFVideoFormat_YUY2 && !pBestNative) {
+            pBestNative = pNative;   // transfer ownership; keep scanning for NV12
+            bestW = w; bestH = h; bestIsNV12 = false;
+            continue;
+        }
+        if (subtype == MFVideoFormat_MJPG && !mjpgW) {
+            mjpgW = w; mjpgH = h;
+        }
+        pNative->Release();
+    }
+
+    if (pBestNative) {
+        hr = m_pReader->SetCurrentMediaType(
+            MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, pBestNative);
+        if (SUCCEEDED(hr)) {
+            m_isNV12 = bestIsNV12;
+            m_width = static_cast<int>(bestW);
+            m_height = static_cast<int>(bestH);
+            pBestNative->Release();
+            FACELOGIN_INFO(L"Camera configured for %s %dx%d",
+                           m_isNV12 ? L"NV12" : L"YUY2", m_width, m_height);
+            return true;
+        }
+        pBestNative->Release();
+    }
+
+    // Camera only offers compressed MJPEG: ask the reader to decode it to YUY2.
+    if (mjpgW) {
+        IMFMediaType* pYuy2 = nullptr;
+        hr = MFCreateMediaType(&pYuy2);
+        if (SUCCEEDED(hr)) {
+            pYuy2->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+            pYuy2->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2);
+            MFSetAttributeSize(pYuy2, MF_MT_FRAME_SIZE, mjpgW, mjpgH);
+            hr = m_pReader->SetCurrentMediaType(
+                MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, pYuy2);
+            pYuy2->Release();
+        }
+        if (SUCCEEDED(hr)) {
+            m_isNV12 = false;
+            m_width = static_cast<int>(mjpgW);
+            m_height = static_cast<int>(mjpgH);
+            FACELOGIN_INFO(L"MJPEG camera decoding to YUY2 %dx%d", m_width, m_height);
+            return true;
+        }
+        FACELOGIN_ERROR(L"MJPEG camera: failed to configure YUY2 decode output (0x%08X)", hr);
         return false;
     }
 
-    IMFMediaType* pActualType = nullptr;
-    hr = m_pReader->GetCurrentMediaType(
-        MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pActualType);
-    if (SUCCEEDED(hr)) {
-        GUID subtype;
-        pActualType->GetGUID(MF_MT_SUBTYPE, &subtype);
-        MFGetAttributeSize(pActualType, MF_MT_FRAME_SIZE,
-                           reinterpret_cast<UINT32*>(&m_width),
-                           reinterpret_cast<UINT32*>(&m_height));
-
-        if (subtype == MFVideoFormat_YUY2) {
-            m_isNV12 = false;
-            FACELOGIN_INFO(L"Native format: YUY2  %dx%d", m_width, m_height);
-        } else if (subtype == MFVideoFormat_MJPG) {
-            FACELOGIN_WARN(L"Native format is MJPEG, requesting YUY2");
-            pType = nullptr;
-            MFCreateMediaType(&pType);
-            pType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-            pType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2);
-            MFSetAttributeSize(pType, MF_MT_FRAME_SIZE, m_width, m_height);
-            hr = m_pReader->SetCurrentMediaType(
-                (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, pType);
-            if (SUCCEEDED(hr)) {
-                m_isNV12 = false;
-                IMFMediaType* pYUY2Type = nullptr;
-                m_pReader->GetCurrentMediaType(
-                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pYUY2Type);
-                if (pYUY2Type) {
-                    UINT32 yw = 0, yh = 0;
-                    MFGetAttributeSize(pYUY2Type, MF_MT_FRAME_SIZE, &yw, &yh);
-                    m_width = static_cast<int>(yw);
-                    m_height = static_cast<int>(yh);
-                    pYUY2Type->Release();
-                }
-            } else {
-                m_isNV12 = false;
-            }
-            pType->Release();
-        } else {
-            m_isNV12 = false;
-        }
-        pActualType->Release();
-    } else {
-        m_isNV12 = false;
-    }
-
-    return true;
+    FACELOGIN_ERROR(L"No supported camera format (NV12/YUY2/MJPEG)");
+    return false;
 }
 
 bool WebcamCapture::GrabFrame(dlib::matrix<dlib::rgb_pixel>& outFrame) {

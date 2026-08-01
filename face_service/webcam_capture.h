@@ -11,6 +11,8 @@
 #include <mfreadwrite.h>
 #include <mfobjects.h>
 
+#include "camera_types.h"
+
 namespace facelogin {
 
 // Webcam capture using Media Foundation IMFSourceReader.
@@ -25,7 +27,10 @@ public:
     WebcamCapture(const WebcamCapture&) = delete;
     WebcamCapture& operator=(const WebcamCapture&) = delete;
 
-    bool Initialize(int preferredWidth = 1280, int preferredHeight = 720);
+    // devicePath: optional stable symbolic link of the camera to use.
+    // Empty (default) = first enumerated device.
+    bool Initialize(int preferredWidth = 1280, int preferredHeight = 720,
+                    const std::wstring& devicePath = L"");
     bool IsInitialized() const { return m_initialized; }
     bool GrabFrame(dlib::matrix<dlib::rgb_pixel>& outFrame);
     bool IsFrameReady();
@@ -34,8 +39,12 @@ public:
     static bool InitializeMF();
     static void ShutdownMF();
 
+    // Enumerate all video capture devices. Requires InitializeMF() first.
+    static std::vector<CameraDeviceInfo> ListCameras();
+
 private:
-    bool FindFirstCamera(IMFMediaSource** ppSource);
+    // Find the camera matching devicePath (fallback: first device).
+    bool FindCamera(const std::wstring& devicePath, IMFMediaSource** ppSource);
     bool ConfigureReader(int width, int height);
     bool ConvertNV12toRGB(IMFSample* pSample, dlib::matrix<dlib::rgb_pixel>& outFrame);
     bool ConvertYUY2toRGB(IMFSample* pSample, dlib::matrix<dlib::rgb_pixel>& outFrame);

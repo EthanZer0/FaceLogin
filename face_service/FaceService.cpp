@@ -19,6 +19,16 @@ FaceService* FaceService::s_pInstance = nullptr;
 
 static constexpr wchar_t SERVICE_NAME[] = L"FaceLoginService";
 
+// UTF-8 → wide string, for passing config.camera_device to the camera backends.
+static std::wstring Utf8ToWstr(const std::string& s) {
+    if (s.empty()) return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (len <= 0) return L"";
+    std::wstring ws(len - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &ws[0], len);
+    return ws;
+}
+
 FaceService::FaceService() {
     s_pInstance = this;
 }
@@ -164,6 +174,13 @@ bool FaceService::Initialize() {
     CreateDirectoryW(m_dataDir.c_str(), nullptr);
     m_modelsDir = GetModelsDir();
 
+    // Load configuration from config.json (falls back to registry). Must happen
+    // before camera init — the configured camera_device is used below.
+    m_config = LoadConfig(m_dataDir);
+    m_matchThreshold = m_config.match_threshold;
+    m_livenessMethod = m_config.liveness_method;
+    m_antiSpoofThreshold = m_config.anti_spoof_threshold;
+
     std::wstring logPath = m_dataDir + L"\\log\\service.log";
     Logger::Instance().SetLogFile(logPath);
     Logger::Instance().SetMinLevel(LogLevel::Info);
@@ -234,22 +251,17 @@ bool FaceService::Initialize() {
     if (m_isServiceMode) {
         // Camera is initialized lazily per auth request to avoid
         // device contention with the console app. See Run().
-        FACELOGIN_INFO(L"DirectShow webcam will be initialized on demand");
+        FACELOGIN_INFO(L"DirectShow webcam will be initialized on demand%s",
+                       m_config.camera_device.empty() ? L"" : L" (configured device)");
     } else {
         m_webcamMF = std::make_unique<WebcamCapture>();
-        if (!m_webcamMF->Initialize(1280, 720)) {
+        if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
             FACELOGIN_ERROR(L"Failed to initialize MF webcam");
             return false;
         }
     }
 
     m_pipeServer = std::make_unique<PipeServer>();
-
-    // Load configuration from config.json (falls back to registry)
-    m_config = LoadConfig(m_dataDir);
-    m_matchThreshold = m_config.match_threshold;
-    m_livenessMethod = m_config.liveness_method;
-    m_antiSpoofThreshold = m_config.anti_spoof_threshold;
 
     // dlib recognizer/detector were removed — the system is now pure ONNX.
     // recognition_model/detector config values are ignored (only onnx/scrfd
@@ -343,13 +355,12 @@ void FaceService::Run() {
             if (m_isServiceMode) {
                 if (!m_webcamDS) {
                     m_webcamDS = std::make_unique<WebcamCaptureDS>();
-                    if (!m_webcamDS->Initialize(1280, 720)) {
+                    if (!m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
                         FACELOGIN_ERROR(L"DS camera init failed on demand");
                         m_webcamDS.reset();
                         m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
                         FlushFileBuffers(m_pipeServer->GetHandle());
-                        wchar_t dummy[64]; DWORD br;
-                        ReadFile(m_pipeServer->GetHandle(), dummy, sizeof(dummy), &br, nullptr);
+                        m_pipeServer->DrainOutput(5000);
                         m_pipeServer->Disconnect();
                         continue;
                     }

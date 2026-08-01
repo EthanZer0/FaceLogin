@@ -1,5 +1,7 @@
 #include "webcam_capture_dshow.h"
 #include "../common/logger.h"
+#include <oaidl.h>
+#include <oleauto.h>
 #include <new>
 
 #pragma comment(lib, "strmiids.lib")
@@ -131,7 +133,59 @@ static bool GetPin(IBaseFilter* pFilter, PIN_DIRECTION dir, IPin** ppPin) {
     return false;
 }
 
-bool WebcamCaptureDS::FindFirstCamera(IBaseFilter** ppFilter) {
+// Enumerate all video capture devices via DirectShow. Reads the stable
+// symbolic link (DevicePath) and friendly name from each moniker.
+std::vector<CameraDeviceInfo> WebcamCaptureDS::ListCameras() {
+    std::vector<CameraDeviceInfo> devices;
+
+    ICreateDevEnum* pDevEnum = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_SystemDeviceEnum, nullptr,
+                                  CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&pDevEnum));
+    if (FAILED(hr)) {
+        FACELOGIN_ERROR(L"DS CoCreateInstance(SystemDeviceEnum) failed: 0x%08X", hr);
+        return devices;
+    }
+
+    IEnumMoniker* pEnum = nullptr;
+    hr = pDevEnum->CreateClassEnumerator(CLSID_VideoInputDeviceCategory, &pEnum, 0);
+    pDevEnum->Release();
+
+    if (FAILED(hr) || pEnum == nullptr) {
+        FACELOGIN_WARN(L"DS: no video capture devices found (pEnum=%p, hr=0x%08X)",
+                       (void*)pEnum, hr);
+        return devices;
+    }
+
+    IMoniker* pMoniker = nullptr;
+    ULONG fetched = 0;
+    while (pEnum->Next(1, &pMoniker, &fetched) == S_OK && fetched == 1) {
+        CameraDeviceInfo info;
+        IPropertyBag* pBag = nullptr;
+        if (SUCCEEDED(pMoniker->BindToStorage(nullptr, nullptr, IID_PPV_ARGS(&pBag)))) {
+            VARIANT var; VariantInit(&var);
+            if (SUCCEEDED(pBag->Read(L"DevicePath", &var, nullptr)) && var.vt == VT_BSTR) {
+                info.devicePath = var.bstrVal;
+            }
+            VariantClear(&var);
+            VariantInit(&var);
+            if (SUCCEEDED(pBag->Read(L"FriendlyName", &var, nullptr)) && var.vt == VT_BSTR) {
+                info.friendlyName = var.bstrVal;
+            }
+            VariantClear(&var);
+            pBag->Release();
+        }
+        devices.push_back(std::move(info));
+        pMoniker->Release();
+        fetched = 0;
+    }
+    pEnum->Release();
+
+    return devices;
+}
+
+bool WebcamCaptureDS::FindCamera(const std::wstring& devicePath,
+                                 IBaseFilter** ppFilter) {
     *ppFilter = nullptr;
 
     ICreateDevEnum* pDevEnum = nullptr;
@@ -153,25 +207,63 @@ bool WebcamCaptureDS::FindFirstCamera(IBaseFilter** ppFilter) {
         return false;
     }
 
+    // First pass: match the configured device by DevicePath.
+    IMoniker* pMatch = nullptr;
+    IMoniker* pFirst = nullptr;
     IMoniker* pMoniker = nullptr;
     ULONG fetched = 0;
-    hr = pEnum->Next(1, &pMoniker, &fetched);
+    while (pEnum->Next(1, &pMoniker, &fetched) == S_OK && fetched == 1) {
+        if (!pFirst) {
+            pFirst = pMoniker;
+            pFirst->AddRef();
+        }
+        if (!devicePath.empty() && !pMatch) {
+            IPropertyBag* pBag = nullptr;
+            if (SUCCEEDED(pMoniker->BindToStorage(nullptr, nullptr, IID_PPV_ARGS(&pBag)))) {
+                VARIANT var; VariantInit(&var);
+                if (SUCCEEDED(pBag->Read(L"DevicePath", &var, nullptr)) && var.vt == VT_BSTR) {
+                    if (devicePath == var.bstrVal) {
+                        pMatch = pMoniker;
+                        pMatch->AddRef();
+                    }
+                }
+                VariantClear(&var);
+                pBag->Release();
+            }
+        }
+        pMoniker->Release();
+        fetched = 0;
+    }
     pEnum->Release();
 
-    if (hr != S_OK || fetched == 0) {
-        FACELOGIN_WARN(L"DS camera enumeration returned no monikers");
-        return false;
+    if (pMatch) {
+        pMoniker = pMatch;
+        FACELOGIN_INFO(L"DS: using configured camera (matched DevicePath)");
+    } else {
+        if (!devicePath.empty()) {
+            FACELOGIN_WARN(L"DS: configured camera not found — falling back to first device");
+        }
+        pMoniker = pFirst;
+        if (!pMoniker) {
+            FACELOGIN_WARN(L"DS: no camera monikers available");
+            return false;
+        }
     }
 
     hr = pMoniker->BindToObject(nullptr, nullptr, IID_IBaseFilter, (void**)ppFilter);
-    pMoniker->Release();
+    // NOTE: do NOT Release pMoniker here. After the loop, pMoniker aliases
+    // pFirst/pMatch, which hold their own AddRef'd references and are released
+    // below. Releasing pMoniker here would double-release those references
+    // (use-after-free). The loop bottom already settled the Next() reference.
+    if (pFirst) pFirst->Release();
+    if (pMatch) pMatch->Release();
 
     if (FAILED(hr)) {
         FACELOGIN_ERROR(L"DS BindToObject (camera) failed: 0x%08X", hr);
         return false;
     }
 
-    FACELOGIN_INFO(L"DS: found first video capture device");
+    FACELOGIN_INFO(L"DS: found video capture device");
     return true;
 }
 
@@ -344,7 +436,8 @@ bool WebcamCaptureDS::BuildGraph(IBaseFilter* pCapture, int width, int height) {
 // Public API
 // ============================================================================
 
-bool WebcamCaptureDS::Initialize(int preferredWidth, int preferredHeight) {
+bool WebcamCaptureDS::Initialize(int preferredWidth, int preferredHeight,
+                                 const std::wstring& devicePath) {
     if (m_initialized) return true;
 
     m_width  = preferredWidth;
@@ -355,7 +448,7 @@ bool WebcamCaptureDS::Initialize(int preferredWidth, int preferredHeight) {
         return false;
     }
 
-    if (!FindFirstCamera(&m_pCapture)) {
+    if (!FindCamera(devicePath, &m_pCapture)) {
         FACELOGIN_ERROR(L"DS: no camera found — check if camera is connected and "
                          "drivers are installed.");
         ShutdownCOM();

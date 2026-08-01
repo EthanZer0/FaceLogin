@@ -29,6 +29,8 @@ static void jsonWriteString(std::ostringstream& ss, const std::string& s) {
 }
 
 // Minimal JSON parser for flat objects. Returns empty string on error.
+// Handles \" and \\ escapes (backslash-heavy values like camera device
+// symbolic links would otherwise get corrupted by the round-trip).
 static std::string jsonGetString(const std::string& json, const std::string& key) {
     std::string search = "\"" + key + "\"";
     auto pos = json.find(search);
@@ -40,16 +42,35 @@ static std::string jsonGetString(const std::string& json, const std::string& key
     // skip whitespace
     while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\n')) pos++;
     if (pos >= json.size()) return "";
-    if (json[pos] == '"') {
-        pos++; // skip opening quote
-        auto end = json.find('"', pos);
-        if (end == std::string::npos) return "";
+    if (json[pos] != '"') {
+        // Number or literal
+        auto end = json.find_first_of(",}\n\r \t", pos);
+        if (end == std::string::npos) return json.substr(pos);
         return json.substr(pos, end - pos);
     }
-    // Number or literal
-    auto end = json.find_first_of(",}\n\r \t", pos);
-    if (end == std::string::npos) return json.substr(pos);
-    return json.substr(pos, end - pos);
+
+    // Parse the quoted string, unescaping \\ and \" as we go.
+    pos++;  // skip opening quote
+    std::string out;
+    while (pos < json.size()) {
+        char c = json[pos];
+        if (c == '"') break;               // closing quote
+        if (c == '\\' && pos + 1 < json.size()) {
+            char next = json[pos + 1];
+            if (next == '\\' || next == '"') {
+                out.push_back(next);       // \\ → \  and  \" → "
+                pos += 2;
+                continue;
+            }
+            // Unknown escape: keep the backslash literally.
+            out.push_back(c);
+            pos++;
+            continue;
+        }
+        out.push_back(c);
+        pos++;
+    }
+    return out;
 }
 
 static float jsonGetFloat(const std::string& json, const std::string& key, float defVal) {
@@ -65,7 +86,8 @@ std::string ConfigToJson(const AppConfig& cfg) {
     ss << "  "; jsonWriteString(ss, "detector"); ss << ": "; jsonWriteString(ss, cfg.detector); ss << ",\n";
     ss << "  "; jsonWriteString(ss, "liveness_method"); ss << ": "; jsonWriteString(ss, LivenessMethodToString(cfg.liveness_method)); ss << ",\n";
     ss << "  "; jsonWriteString(ss, "match_threshold"); ss << ": " << cfg.match_threshold << ",\n";
-    ss << "  "; jsonWriteString(ss, "anti_spoof_threshold"); ss << ": " << cfg.anti_spoof_threshold << "\n";
+    ss << "  "; jsonWriteString(ss, "anti_spoof_threshold"); ss << ": " << cfg.anti_spoof_threshold << ",\n";
+    ss << "  "; jsonWriteString(ss, "camera_device"); ss << ": "; jsonWriteString(ss, cfg.camera_device); ss << "\n";
     ss << "}\n";
     return ss.str();
 }
@@ -80,6 +102,8 @@ AppConfig ConfigFromJson(const std::string& json) {
     if (!live.empty()) cfg.liveness_method = LivenessMethodFromString(live);
     cfg.match_threshold = jsonGetFloat(json, "match_threshold", 0.30f);
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
+    auto cam = jsonGetString(json, "camera_device");
+    if (!cam.empty()) cfg.camera_device = cam;
     return cfg;
 }
 
@@ -117,10 +141,10 @@ AppConfig LoadConfig(const std::wstring& dataDir) {
     file.close();
 
     AppConfig cfg = ConfigFromJson(buf.str());
-    FACELOGIN_INFO(L"Loaded config.json: rec=%hs det=%hs live=%hs thr=%.2f",
+    FACELOGIN_INFO(L"Loaded config.json: rec=%hs det=%hs live=%hs thr=%.2f camera=%hs",
                   cfg.recognition_model.c_str(), cfg.detector.c_str(),
                   LivenessMethodToString(cfg.liveness_method).c_str(),
-                  cfg.match_threshold);
+                  cfg.match_threshold, cfg.camera_device.c_str());
     return cfg;
 }
 

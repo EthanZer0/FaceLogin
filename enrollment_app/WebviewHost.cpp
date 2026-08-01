@@ -291,6 +291,7 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"GetUserSid")   *ids = 18;
     else if (n == L"GetAccountType") *ids = 19;
     else if (n == L"GetLatestFrameAndFaces") *ids = 20;
+    else if (n == L"GetCameraList") *ids = 21;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -369,6 +370,7 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
         case 18: if (res) *res = MakeStr(m_wizard->GetUserSid()); break;
         case 19: if (res) *res = MakeStr(m_wizard->GetAccountType()); break;
         case 20: if (res) *res = MakeStr(m_wizard->GetLatestFrameAndFaces()); break;
+        case 21: if (res) *res = MakeStr(m_wizard->GetCameraList()); break;
         default: return DISP_E_MEMBERNOTFOUND;
         }
         return S_OK;

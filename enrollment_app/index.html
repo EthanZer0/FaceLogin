@@ -225,6 +225,14 @@ body{
          dlib was dropped, the system is now pure ONNX (InsightFace + SCRFD). -->
 
     <div class="field">
+      <label>摄像头 (Camera)</label>
+      <select id="cfg-camera">
+        <option value="">默认（第一个设备）</option>
+      </select>
+      <p class="dim" style="margin-top:4px;font-size:11px">有多台或虚拟摄像头时，可在此选择用于录入与登录的摄像头。</p>
+    </div>
+
+    <div class="field">
       <label>活体检测 (Liveness Method)</label>
       <select id="cfg-liveness" onchange="onLivenessChange()">
         <option value="blink">眨眼检测 (Blink)</option>
@@ -397,6 +405,35 @@ function loadSettings() {
     var json = H.GetConfig();
     var cfg = JSON.parse(json);
     document.getElementById('cfg-liveness').value = cfg.liveness_method || 'blink';
+
+    // Populate the camera dropdown from the enumerated devices.
+    var camSel = document.getElementById('cfg-camera');
+    var currentCam = cfg.camera_device || '';
+    // Keep the "default" option as first.
+    camSel.innerHTML = '<option value="">默认（第一个设备）</option>';
+    try {
+      var camList = JSON.parse(H.GetCameraList());
+      var found = false;
+      for (var i = 0; i < camList.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = camList[i].path;
+        opt.textContent = camList[i].name || ('摄像头 ' + (i + 1));
+        camSel.appendChild(opt);
+        if (currentCam && camList[i].path === currentCam) found = true;
+      }
+      if (found) {
+        camSel.value = currentCam;
+      } else if (currentCam) {
+        // Configured camera is no longer present — keep it visible so the
+        // user knows, but fall back to default at runtime.
+        var missingOpt = document.createElement('option');
+        missingOpt.value = currentCam;
+        missingOpt.textContent = '(未找到: ' + currentCam + ')';
+        camSel.appendChild(missingOpt);
+        camSel.value = currentCam;
+      }
+    } catch(e) {}
+
     // match_threshold is stored as distance (lower = stricter).
     // Convert to UI strictness: strictness = 100 - threshold*100 (higher = stricter).
     var thr = Math.round(100 - (cfg.match_threshold || 0.30) * 100);
@@ -417,7 +454,8 @@ function onSaveSettings() {
     liveness_method: document.getElementById('cfg-liveness').value,
     // Convert strictness back: threshold = (100 - strictness) / 100
     match_threshold: (100 - strictness) / 100,
-    anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100
+    anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
+    camera_device: document.getElementById('cfg-camera').value
   };
   try {
     var ok = H.SetConfig(JSON.stringify(cfg));

@@ -14,6 +14,7 @@ struct AppConfig {
     LivenessMethod liveness_method        = LivenessMethod::Blink;
     float          match_threshold        = 0.30f;
     float          anti_spoof_threshold   = 0.30f;       // DeepPixBiS pixel map threshold
+    std::string    camera_device          = "";          // device symbolic link; empty = first camera
 };
 
 AppConfig LoadConfig(const std::wstring& dataDir);

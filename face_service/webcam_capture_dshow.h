@@ -18,6 +18,8 @@
 #include <strmif.h>
 #include <uuids.h>
 
+#include "camera_types.h"
+
 // ISampleGrabberCB was removed from Win10+ SDK, but CLSIDs are still
 // in strmiids.lib.  Declare minimal interface.
 #ifndef __ISampleGrabberCB_INTERFACE_DEFINED__
@@ -82,7 +84,10 @@ public:
     WebcamCaptureDS(const WebcamCaptureDS&) = delete;
     WebcamCaptureDS& operator=(const WebcamCaptureDS&) = delete;
 
-    bool Initialize(int preferredWidth = 1280, int preferredHeight = 720);
+    // devicePath: optional stable symbolic link of the camera to use.
+    // Empty (default) = first enumerated device.
+    bool Initialize(int preferredWidth = 1280, int preferredHeight = 720,
+                    const std::wstring& devicePath = L"");
     bool IsInitialized() const { return m_initialized; }
     bool GrabFrame(dlib::matrix<dlib::rgb_pixel>& outFrame);
     bool IsFrameReady();
@@ -92,6 +97,10 @@ public:
 
     static bool InitializeCOM();
     static void ShutdownCOM();
+
+    // Enumerate all video capture devices via DirectShow. Requires
+    // CoInitializeEx (InitializeCOM) to have been called first.
+    static std::vector<CameraDeviceInfo> ListCameras();
 
 private:
     static bool   s_comInitialized;
@@ -112,7 +121,7 @@ private:
         LONG m_refCount = 1;
     };
 
-    bool FindFirstCamera(IBaseFilter** ppFilter);
+    bool FindCamera(const std::wstring& devicePath, IBaseFilter** ppFilter);
     bool BuildGraph(IBaseFilter* pCapture, int width, int height);
 
     IGraphBuilder*   m_pGraph        = nullptr;
