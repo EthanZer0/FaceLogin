@@ -60,8 +60,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             modelsDir = std::wstring(programData) + L"\\FaceLogin\\models";
         }
     }
+    // Check models exist. The enrollment app uses the ONNX pipeline
+    // exclusively (SCRFD detection + InsightFace recognition); the dlib
+    // recognizer was removed, so check the models actually loaded at runtime:
+    // shape predictor (landmarks) and the ONNX recognizer. The legacy dlib
+    // recognizer/hog detector models are no longer required.
     std::wstring shapePath = modelsDir + L"\\shape_predictor_68_face_landmarks.dat";
-    std::wstring recPath   = modelsDir + L"\\dlib_face_recognition_resnet_model_v1.dat";
+    std::wstring recPath   = modelsDir + L"\\w600k_mbf.onnx";
 
     if (GetFileAttributesW(shapePath.c_str()) == INVALID_FILE_ATTRIBUTES ||
         GetFileAttributesW(recPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
