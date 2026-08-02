@@ -9,6 +9,3 @@ DEFINE_GUID(CLSID_FaceLoginProvider,
 
 // Resource IDs
 #define IDI_FACELOGIN 101
-#define IDB_TILEIMAGE 102
-// TILE_PIXELS: 128×128 premultiplied-alpha BGRA raw pixel data
-#define IDR_TILE_PIXELS 103

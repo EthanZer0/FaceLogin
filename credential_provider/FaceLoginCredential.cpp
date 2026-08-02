@@ -384,7 +384,7 @@ STDMETHODIMP FaceLoginCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) 
 STDMETHODIMP FaceLoginCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
     UNREFERENCED_PARAMETER(dwFieldID);
     *phbmp = nullptr;
-    return E_INVALIDARG;
+    return E_NOTIMPL;
 }
 
 STDMETHODIMP FaceLoginCredential::GetSubmitButtonValue(DWORD dwFieldID, DWORD* pdwAdjacentTo) {
