@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // EmbeddedFS is set by the caller (main.go's //go:embed resources/*).
@@ -96,7 +97,11 @@ func ExtractAll(destDir string, progressFn func(step, total int, name string)) e
 // so a corrupted/malicious InstallPath registry value can never wipe an
 // arbitrary directory. Returns the number of files removed and the first error
 // (if any) — callers can continue and report a summary.
-func RemoveInstalledFiles(destDir string) (int, error) {
+//
+// removeUserData: when true, additionally deletes the data/ (config.json,
+// enrolled face database) and log/ (logs) subdirectories — i.e. a full purge.
+// When false, only program files are removed and user data is preserved.
+func RemoveInstalledFiles(destDir string, removeUserData bool) (int, error) {
 	removed := 0
 	var firstErr error
 	recordErr := func(err error) {
@@ -161,5 +166,61 @@ func RemoveInstalledFiles(destDir string) (int, error) {
 			}
 		}
 	}
+
+	// Full purge: also remove user data and logs (config.json, the enrolled
+	// face database in data/, and log/). Only invoked when the caller opted in
+	// (removeUserData); the default uninstall preserves these.
+	if removeUserData {
+		for _, sub := range []string{"data", "log"} {
+			dir := filepath.Join(destDir, sub)
+			if DirExists(dir) {
+				if err := os.RemoveAll(dir); err != nil {
+					recordErr(err)
+				} else {
+					removed++
+				}
+			}
+		}
+	}
+
 	return removed, firstErr
+}
+
+// RemoveInstalledDir removes the install directory itself, but ONLY if it is
+// empty after the files above were deleted. This is the anti-misdeletion guard:
+// a real FaceLogin install dir that held unexpected/unknown files (not deployed
+// by us) will still contain them here, so the directory is left in place and
+// false is returned — never silently wiping an arbitrary directory. Returns
+// true when the directory was removed.
+func RemoveInstalledDir(destDir string) (bool, error) {
+	if !DirExists(destDir) {
+		return true, nil // already gone
+	}
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		return false, err
+	}
+	// Also tolerate the models/ subdir being left empty (it's ours) — but only
+	// if it contains nothing. Anything else means the dir is NOT empty.
+	if len(entries) == 0 {
+		if err := os.Remove(destDir); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	// If only an empty models/ remains, remove it then retry.
+	onlyModels := len(entries) == 1 && entries[0].IsDir() && strings.EqualFold(entries[0].Name(), "models")
+	if onlyModels {
+		mEntries, _ := os.ReadDir(filepath.Join(destDir, "models"))
+		if len(mEntries) == 0 {
+			if err := os.Remove(filepath.Join(destDir, "models")); err != nil {
+				return false, err
+			}
+			if err := os.Remove(destDir); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+	}
+	return false, nil // not empty — do NOT delete
 }

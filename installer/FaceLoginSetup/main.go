@@ -67,25 +67,29 @@ func main() {
 	// camera_device field defaults to "" = first device automatically). The
 	// V2→V3 database migration cannot be automated (requires re-enrollment),
 	// so it is surfaced via the upgrade notice below instead.
+	// v1.3.0: no forced config overrides needed. The V3→V4 database migration
+	// (multi-face support) is fully backward compatible — old data is upgraded
+	// in memory on load, no re-enrollment required.
 	internal.ConfigUpgradeEnabled = false
 
 	// =========================================================================
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.2.0"
-	internal.NoticeTitle = "FaceLogin 1.2.0 更新说明"
-	internal.NoticeBody = "⚠️ 重要：升级后请重新录入人脸\n" +
-		"本次更新升级了人脸识别引擎（移除旧模型，统一为新的 ONNX 识别），" +
-		"旧版本（1.1.0 及更早）录入的人脸数据已不兼容，升级后需重新录入人脸才能使用人脸登录。\n\n" +
-		"新增功能：\n" +
-		"- 摄像头选择器：多摄像头 / 虚拟摄像头环境可选设备\n" +
-		"- 支持无密码账户（微软无密码 / 本地空密码）录入\n" +
-		"- 微软账号密码验证改进\n\n" +
+	internal.NoticeVersion = "1.3.0"
+	internal.NoticeTitle = "FaceLogin 1.3.0 更新说明"
+	internal.NoticeBody = "新增功能：\n" +
+		"- 多账户支持：每个 Windows 账号可录入多张人脸\n" +
+		"- 人脸管理：可给每张脸命名、删除单张脸或清空全部\n" +
+		"- 首次使用自动引导选择摄像头\n" +
+		"- 卸载时彻底清除（程序文件、人脸数据、日志）\n\n" +
 		"修复：\n" +
-		"- 打断识别时摄像头立即释放\n" +
-		"- 修复多处登录崩溃问题\n" +
-		"- 修复摄像头路径乱码等问题"
+		"- 修复锁屏时摄像头无法打开、指示灯不亮的问题\n" +
+		"- 修复安装到中文路径时无法启动摄像头的问题\n\n" +
+		"说明：\n" +
+		"- 已有的人脸数据自动兼容，无需重新录入\n" +
+		"- 同一账号重新采集人脸 = 新增一张脸，不再覆盖旧脸（每账号最多 5 张）\n" +
+		"- 卸载会删除所有人脸数据且不可恢复，请谨慎操作"
 
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources

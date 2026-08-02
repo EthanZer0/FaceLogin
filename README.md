@@ -11,7 +11,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="DEVELOPMENT.md"><img src="https://img.shields.io/badge/platform-Windows%2010%2B%20x64-blue" alt="Platform"></a>
   <a href="DEVELOPMENT.md"><img src="https://img.shields.io/badge/language-C%2B%2B20%20%7C%20Go-orange" alt="Language"></a>
-  <a href="https://github.com/EthanZer0/FaceLogin/releases"><img src="https://img.shields.io/badge/version-1.2.0-green" alt="Version"></a>
+  <a href="https://github.com/EthanZer0/FaceLogin/releases"><img src="https://img.shields.io/badge/version-1.3.0-green" alt="Version"></a>
 </p>
 
 ---
@@ -24,7 +24,7 @@
 |:---:|:---:|:---:|
 | Windows 原生锁屏集成<br>无需额外操作 | EAR 眨眼 + MiniFASNetV2<br>防照片/视频/面具攻击 | dlib ResNet-34 + InsightFace<br>ONNX 混合识别模式 |
 | **多账户支持** | **安全存储** | **热配置** |
-| 本地 SAM + 微软在线<br>账户全兼容 | DPAPI 机器范围加密<br>管道 DACL 访问控制 | 运行时修改识别参数<br>无需重启服务 |
+| 本地 SAM + 微软在线<br>账户全兼容，每账号可录多张人脸 | DPAPI 机器范围加密<br>管道 DACL 访问控制 | 运行时修改识别参数<br>无需重启服务 |
 
 </div>
 

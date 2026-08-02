@@ -200,17 +200,31 @@ func (a *App) Uninstall() map[string]interface{} {
 		a.emit(50, "注销登录组件", "done", "")
 	}
 
-	// Step 3: Delete installed program files (files only — the install
-	// directory itself, data/ and log/ are preserved; user data is kept).
+	// Step 3: Delete installed program files AND user data (data/, log/) and
+	// remove the install directory if it becomes empty. This is a FULL purge —
+	// enrolled faces, config, and logs are gone (the frontend warns about this
+	// before uninstall). The directory itself is only removed after every file
+	// we own has been deleted and the folder is confirmed empty, so an
+	// unexpected/unknown file (not deployed by us) leaves the dir in place and
+	// never gets silently wiped.
 	a.emit(50, "删除程序文件", "running", "")
 	if installDir != "" && internal.DirExists(installDir) {
-		removed, rmErr := internal.RemoveInstalledFiles(installDir)
+		removed, rmErr := internal.RemoveInstalledFiles(installDir, true)
 		if rmErr != nil {
 			a.emit(50, "删除程序文件", "warn",
 				fmt.Sprintf("已删除 %d 个文件，部分文件删除失败。", removed))
 		} else {
 			a.emit(70, "删除程序文件", "done",
-				fmt.Sprintf("已删除 %d 个程序文件。", removed))
+				fmt.Sprintf("已删除 %d 个程序文件及用户数据。", removed))
+		}
+
+		// Remove the (now empty) install directory — guarded so it only
+		// happens when nothing remains.
+		if internal.DirExists(installDir) {
+			if _, err := internal.RemoveInstalledDir(installDir); err != nil {
+				a.emit(70, "删除程序文件", "warn",
+					fmt.Sprintf("安装目录非空，已保留（%v）。", err))
+			}
 		}
 	} else {
 		a.emit(70, "删除程序文件", "done", "")
@@ -222,12 +236,12 @@ func (a *App) Uninstall() map[string]interface{} {
 	_ = internal.DeleteRegValue(REGVAL_DATA_PATH)
 	a.emit(85, "清理注册表", "done", "")
 
-	// Step 5: Notify user data preserved
+	// Step 5: Notify complete
 	a.emit(85, "完成", "running", "")
 	a.emit(100, "完成", "done",
-		"卸载完成。用户数据和日志已保留，如需清除请手动删除。")
+		"卸载完成，程序文件、人脸数据和日志已全部删除。")
 
-	return result(true, "卸载完成，登录界面已恢复为默认密码登录。用户数据和日志已保留。")
+	return result(true, "卸载完成，登录界面已恢复为默认密码登录。程序文件、人脸数据和日志已全部删除。")
 }
 
 func result(success bool, message string) map[string]interface{} {

@@ -80,7 +80,7 @@ async function doInstall() {
 }
 
 async function doUninstall() {
-  if (!confirm('确定要卸载 FaceLogin 人脸登录吗？')) return
+  if (!confirm('确定要卸载 FaceLogin 人脸登录吗？\n\n⚠️ 卸载将删除所有程序文件、人脸数据和日志，且不可恢复！')) return
 
   running.value = true
   showResult.value = false
@@ -166,7 +166,8 @@ async function doUninstall() {
       <!-- Uninstall mode -->
       <div v-if="!showInstall && !running && !showResult">
         <p class="text-sm text-gray-600 leading-relaxed">
-          卸载将停止并删除 FaceLogin 服务、注销登录组件、删除程序文件。用户数据和日志将保留。
+          卸载将停止并删除 FaceLogin 服务、注销登录组件、删除全部程序文件，
+          以及 <strong>人脸数据和日志（不可恢复）</strong>，并移除安装目录。
         </p>
         <button
           class="mt-6 w-full py-2.5 text-sm font-medium border border-gray-300 text-gray-700

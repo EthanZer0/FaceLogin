@@ -62,7 +62,7 @@ FaceLogin/
 │   ├── webcam_capture.cpp/h        # Media Foundation 摄像头
 │   ├── webcam_capture_dshow.cpp/h  # DirectShow 摄像头 (Session 0 服务模式)
 │   ├── pipe_server.cpp/h           # 命名管道服务端 (DACL安全)
-│   └── credential_store.cpp/h      # 用户凭据数据库 (V2格式, SID/UPN)
+│   └── credential_store.cpp/h      # 用户凭据数据库 (V4格式, 每账号多人脸)
 ├── credential_provider/            # Windows 登录界面 COM 组件
 │   ├── CMakeLists.txt
 │   ├── dllmain.cpp                 # DLL 入口 + COM 注册/注销
@@ -144,7 +144,7 @@ graph TB
 
     subgraph Storage["数据存储"]
         direction LR
-        UsersDB["users.dat<br/>V2 加密凭据"]
+        UsersDB["users.dat<br/>V4 加密凭据 (多账号多人脸)"]
         Models["models/<br/>*.dat + *.onnx"]
         Config["config.json<br/>热配置"]
         Logs["*.log<br/>日志文件"]
@@ -242,7 +242,7 @@ sequenceDiagram
     User->>App: 输入 Windows 密码
     App->>App: LogonUserW 验证密码
     App->>App: DPAPI 加密密码
-    App->>Store: 写入 V2 记录 (username/UPN/SID/password/embedding)
+    App->>Store: 写入 V4 记录 (username/UPN/SID/password/faces[])
     App->>Pipe: RELOAD_DB
     Pipe->>Svc: 通知重载
     Svc->>Store: 重新加载数据库
@@ -292,7 +292,7 @@ FACELOGIN_ERROR(L"...");
 | 消息 | 格式 | 说明 |
 |---|---|---|
 | `AUTH_REQUEST` | 纯文本 | 凭据提供方发起认证请求 |
-| `AUTH_SUCCESS:SID:UPN:DOMAIN\USER:PASSWORD` | 冒号分隔 (≥3个) | 认证成功，返回凭据（V2格式含SID/UPN） |
+| `AUTH_SUCCESS:SID:UPN:DOMAIN\USER:PASSWORD` | 冒号分隔 (≥3个) | 认证成功，返回凭据（V4格式含SID/UPN/人脸ID） |
 | `AUTH_SUCCESS:DOMAIN\USER:PASSWORD` | 冒号分隔 (1个) | 旧格式（V1向后兼容） |
 | `AUTH_TIMEOUT` | 纯文本 | 15秒内未检测到匹配人脸 |
 | `AUTH_NO_FACE` | 纯文本 | 检测超时无匹配 |
@@ -390,7 +390,7 @@ ServiceMain()
   ├─ RegisterServiceCtrlHandlerEx()
   ├─ Initialize()
   │   ├─ 创建数据目录 + 加载配置
-  │   ├─ 加载凭据数据库 (CredentialStore, V2 with SID/UPN)
+  │   ├─ 加载凭据数据库 (CredentialStore, V4, 每账号多人脸)
   │   ├─ 初始化人脸检测器 (FaceDetector / OnnxDetector)
   │   ├─ 初始化人脸识别器 (FaceRecognizer / OnnxRecognizer)
   │   ├─ 初始化活体检测器 (LivenessDetector / OnnxAntiSpoof)
@@ -508,31 +508,41 @@ EAR = (||P2-P6|| + ||P3-P5||) / (2 * ||P1-P4||)
 
 ### 5.7 凭据存储 (`credential_store.h/cpp`)
 
-**V2 二进制文件格式** (`users.dat`):
+**V4 二进制文件格式** (`users.dat`):
 
 ```
 [Header]
   magic:     uint32_t  0x474F4C46 ("FLOG")
-  version:   uint32_t  2
-  count:     uint32_t  (用户数量)
+  version:   uint32_t  4
+  count:     uint32_t  (有脸账号数量)
 
 [Records] × count
   usernameLen:    uint32_t
   username:       wchar_t[usernameLen]    (UTF-16LE)
-  upnLen:         uint32_t                (V2 new)
-  upn:            wchar_t[upnLen]         (V2 new, e.g. "user@outlook.com")
-  sidLen:         uint32_t                (V2 new)
-  sid:            wchar_t[sidLen]         (V2 new, e.g. "S-1-5-21-...")
+  upnLen:         uint32_t                (V2+)
+  upn:            wchar_t[upnLen]         (V2+, e.g. "user@outlook.com")
+  sidLen:         uint32_t                (V2+)
+  sid:            wchar_t[sidLen]         (V2+, e.g. "S-1-5-21-...")
   passwordLen:    uint32_t
-  encryptedPass:  uint8_t[passwordLen]    (DPAPI 加密)
-  embedding:      float[128]              (512 bytes)
+  encryptedPass:  uint8_t[passwordLen]    (DPAPI 加密，或 0/1 字节 passwordless 哨兵)
+  faceCount:      uint32_t                (V4, ≥1, ≤ kMaxFacesPerUser=5)
+  [faces] × faceCount:
+    faceId:       uint32_t                (V4, 账号内唯一，≥1，删除后不复用)
+    labelLen:     uint32_t                (V4, 0 = 空)
+    label:        wchar_t[labelLen]       (V4, 用户命名，默认 "脸N")
+    embLen:       uint32_t
+    embedding:    float[embLen]           (512-D ONNX / 128-D 旧 dlib)
 ```
 
-**V1 向后兼容**: V1 数据库加载时，通过 `LookupAccountNameW` 和 IdentityStore 注册表自动补充 SID/UPN 字段。
+**V1/V2/V3 向后兼容**: V1 加载时用 `LookupAccountNameW` + IdentityStore 注册表自动补 SID/UPN；V1/V2 固定 128-D embedding，V3 长度前缀 embedding。**加载时在内存中把单条 embedding 包装成单元素 `faces`（id=1，label="脸1"）升级为 V4 结构，但不写回磁盘**——文件保持旧版本直到下一次 `SaveDatabase()`（录入/删除时）才写为 V4。这保证旧版安装的磁贴仍可读取 header。
 
-**线程安全**: 所有操作在调用者持有锁的前提下执行。服务端在主循环中串行处理请求，无并发写入场景。
+**每账号多人脸**: `UserRecord.faces` 为 `vector<FaceRecord>`（`FaceRecord = {id, label, embedding}`）。`AddFace` 是 create-or-append：账号不存在则创建（首脸 id=1），存在则追加新脸（id=max+1）且**不动已存密码**；超 `kMaxFacesPerUser`（5）拒绝。`DeleteFace` 删某张脸，删后无脸则连带移除整个账号（0 脸账号永不落盘）。匹配为账号级聚合：账号内取各脸最小距离作为账号距离，账号间比较 best/second-best，避免同账号多脸互相竞争抬高 ratio。
 
-**MatchResult**: 匹配时返回 `username / upn / sid / password(解密后) / distance`，密码使用后立即 `SecureZeroMemory` 擦除。
+**线程安全**: 所有操作在调用者持有锁的前提下执行。服务端在主循环中串行处理请求，无并发写入场景；唯一写者是录入控制台（单写者）。
+
+**MatchResult**: 匹配时返回 `username / upn / sid / password(解密后) / passwordless / distance / matchedFaceId / accountFaceCount`，密码使用后立即 `SecureZeroMemory` 擦除。
+
+**CP 兼容**: `FaceLoginProvider::ReadUserCountFromDatabase` 只读 header（magic/version/count），接受 v1..v4。若旧版（≤1.2.0）CP 读到 v4 文件会拒绝显示磁贴（version>3 → 视为无用户），密码登录不受影响——安全回退。
 
 ### 5.8 命名管道服务端 (`pipe_server.h/cpp`)
 
@@ -586,7 +596,7 @@ HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\
 
 **场景支持**: 支持 `CPUS_LOGON` 和 `CPUS_UNLOCK_WORKSTATION`。
 
-**用户检测**: `ReadUserCountFromDatabase()` 读取 `users.dat` (支持 V1/V2)，无注册用户时返回 `E_NOTIMPL` 隐藏磁贴。
+**用户检测**: `ReadUserCountFromDatabase()` 读取 `users.dat` (支持 V1..V4)，无注册用户时返回 `E_NOTIMPL` 隐藏磁贴。
 
 **MSA 支持**: `GetMSAUpnFromIdentityStore()` 从注册表 `HKLM\SOFTWARE\Microsoft\IdentityStore\LogonCache\...\Name2Sid` 读取 MSA UPN。
 
@@ -677,7 +687,7 @@ Win32 GUI 应用程序。
 
 - WebView2 界面显示 UPN、账户类型 (local/msa)、SID
 - 密码验证: `LogonUserW` 支持本地账户和 MSA UPN 回退
-- DPAPI 加密密码 → 更新 `users.dat` V2 格式 (含 SID/UPN)
+- DPAPI 加密密码 → 更新 `users.dat` V4 格式 (含 SID/UPN/多人脸)
 - 通过命名管道 `RELOAD_DB` 通知服务热加载
 
 **JS 接口** (通过 COM IDispatch，共 19 个 dispId):
@@ -930,7 +940,7 @@ wails build -clean -platform windows/amd64
 
 **凭据打包**: 本地账户使用 `Domain\Username` 格式，MSA 账户使用 UPN `user@domain.com` 格式。均使用 `MICROSOFT_AUTHENTICATION_PACKAGE_V1_0` 认证包。
 
-**数据存储**: V2 数据库同时存储 username、UPN 和 SID，按 SID 优先匹配。
+**数据存储**: V4 数据库同时存储 username、UPN 和 SID，按 SID 优先匹配；每账号可存多张人脸。
 
 ---
 
@@ -955,7 +965,7 @@ wails build -clean -platform windows/amd64
 | 锁屏不显示磁贴 | 未注册或已禁用 / 无注册用户 | 检查注册表 Disabled 键值，确认已录入人脸 |
 | 识别率低 | 光照不足 / 嵌入质量差 | 重新注册人脸，确保光线均匀 |
 | 摄像头不工作 | Session 0 权限 | 服务模式使用 DirectShow |
-| 人脸登录后用户名密码错误 | MSA 账户凭据格式不对 | 确认 V2 数据库含正确 UPN |
+| 人脸登录后用户名密码错误 | MSA 账户凭据格式不对 | 确认 V4 数据库含正确 UPN |
 | 注册时显示空白 UPN | MSA 账户 GetUserNameExW 失败 | 已通过 IdentityStore 回退解决 |
 
 ---
@@ -997,7 +1007,7 @@ REM 5. Win+L 锁屏测试
 # 认证请求 (客户端 → 服务端)
 AUTH_REQUEST
 
-# 认证成功，V2 格式 (服务端 → 客户端)
+# 认证成功，V4 格式 (服务端 → 客户端)
 AUTH_SUCCESS:S-1-5-21-xxx:user@outlook.com:DESKTOP-XXX\username:password123
 
 # 认证成功，V1 格式 (向后兼容)
