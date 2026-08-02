@@ -191,7 +191,7 @@ body{
       <input type="text" id="fld-sid" readonly>
     </div>
     <div class="field" id="pwd-pass-field">
-      <label>Windows 密码</label>
+      <label id="fld-pass-label">Windows 密码</label>
       <input type="password" id="fld-pass" placeholder="输入你的登录密码" autofocus>
     </div>
     <div class="field" id="field-skip-pass" style="display:none">
@@ -549,6 +549,21 @@ function onCapture() {
           try { document.getElementById('fld-user').value = H.GetUsername(); } catch(e) {}
           try { document.getElementById('fld-acct-type').value = H.GetAccountType(); } catch(e) {}
           try { document.getElementById('fld-sid').value = H.GetUserSid(); } catch(e) {}
+
+          // Label the password field by account type: MSA accounts use the
+          // Microsoft account password, local accounts use the Windows password.
+          try {
+            var acctType = document.getElementById('fld-acct-type').value;
+            var passLabel = document.getElementById('fld-pass-label');
+            var passInput = document.getElementById('fld-pass');
+            if (acctType === 'msa') {
+              passLabel.textContent = '微软账号密码';
+              passInput.placeholder = '输入你的微软账号密码';
+            } else {
+              passLabel.textContent = 'Windows 密码';
+              passInput.placeholder = '输入你的登录密码';
+            }
+          } catch(e) {}
 
           // Passwordless account detection: state 1 = confirmed (auto-skip),
           // state 2 = MSA that can't auto-confirm (user confirms via checkbox),
