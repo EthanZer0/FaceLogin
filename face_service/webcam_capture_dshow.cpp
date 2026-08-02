@@ -9,6 +9,40 @@
 namespace facelogin {
 
 // ============================================================================
+// DevicePath compatibility between the MF and DShow backends
+// ============================================================================
+
+// Media Foundation (Console enrollment) and DirectShow (lock-screen service)
+// report the same camera with DIFFERENT symbolic-link GUIDs in the DevicePath:
+//
+//   MF:  \?\usb#vid_04f2&pid_b5c5&mi_00#...{e5323777-f976-4f5b-9b55-b94699c46e44}\global
+//   DShow: \?\usb#vid_04f2&pid_b5c5&mi_00#...{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global
+//
+// MF uses MF_DEVSOURCE_CATEGORY (e5323777-...); DShow uses
+// CLSID_VideoInputDeviceCategory (65e8773d-...). Everything else is identical.
+// The user picks a camera in the Console (MF) and we save that DevicePath; at
+// lock-screen the service (DShow) must recognize it, so we rewrite the MF GUID
+// to the DShow GUID before comparing.
+static const wchar_t kMfCategoryGuid[] = L"e5323777-f976-4f5b-9b55-b94699c46e44";
+static const wchar_t kDsCategoryGuid[] = L"65e8773d-8f56-11d0-a3b9-00a0c9223196";
+
+// Converts an MF symbolic-link DevicePath (as saved by the Console) into the
+// equivalent DShow DevicePath. If the input already uses the DShow GUID (or
+// has no category GUID), it is returned unchanged.
+static std::wstring MfPathToDsPath(const std::wstring& mfPath) {
+    if (mfPath.find(kMfCategoryGuid) == std::wstring::npos) {
+        return mfPath;  // not an MF category path — leave as-is
+    }
+    std::wstring ds = mfPath;
+    size_t pos = 0;
+    while ((pos = ds.find(kMfCategoryGuid, pos)) != std::wstring::npos) {
+        ds.replace(pos, wcslen(kMfCategoryGuid), kDsCategoryGuid);
+        pos += wcslen(kDsCategoryGuid);
+    }
+    return ds;
+}
+
+// ============================================================================
 // Static COM helpers
 // ============================================================================
 
@@ -208,6 +242,11 @@ bool WebcamCaptureDS::FindCamera(const std::wstring& devicePath,
     }
 
     // First pass: match the configured device by DevicePath.
+    // The configured path was saved by the Console, which enumerates via
+    // Media Foundation — its DevicePath carries the MF category GUID. DShow
+    // reports the same camera with the DShow category GUID, so compare against
+    // BOTH the raw configured path and its DShow-equivalent form.
+    const std::wstring dsDevicePath = MfPathToDsPath(devicePath);
     IMoniker* pMatch = nullptr;
     IMoniker* pFirst = nullptr;
     IMoniker* pMoniker = nullptr;
@@ -222,7 +261,8 @@ bool WebcamCaptureDS::FindCamera(const std::wstring& devicePath,
             if (SUCCEEDED(pMoniker->BindToStorage(nullptr, nullptr, IID_PPV_ARGS(&pBag)))) {
                 VARIANT var; VariantInit(&var);
                 if (SUCCEEDED(pBag->Read(L"DevicePath", &var, nullptr)) && var.vt == VT_BSTR) {
-                    if (devicePath == var.bstrVal) {
+                    std::wstring dsPath = var.bstrVal;
+                    if (devicePath == dsPath || dsDevicePath == dsPath) {
                         pMatch = pMoniker;
                         pMatch->AddRef();
                     }

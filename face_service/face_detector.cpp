@@ -6,8 +6,12 @@ namespace facelogin {
 
 bool FaceDetector::Initialize(const std::wstring& shapePredictorPath) {
     try {
-        std::string narrowPath(shapePredictorPath.begin(), shapePredictorPath.end());
-        std::ifstream ifs(narrowPath, std::ios::binary);
+        // Pass the wide path directly: MSVC's std::ifstream accepts a
+        // std::wstring path and opens it via the wide-char Win32 API, which
+        // handles non-ASCII (e.g. Chinese) install paths correctly. Converting
+        // to a narrow std::string via begin()/end() would truncate each UTF-16
+        // char to one byte, garbling the path (e.g. "测试" → "KmՋ").
+        std::ifstream ifs(shapePredictorPath, std::ios::binary);
         if (!ifs.is_open()) {
             FACELOGIN_ERROR(L"Failed to open shape predictor: %s", shapePredictorPath.c_str());
             return false;
