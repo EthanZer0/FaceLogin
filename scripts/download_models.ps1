@@ -1,7 +1,11 @@
 # FaceLogin Model Download Script
-# Downloads the required dlib model files for face detection and recognition.
+# Downloads the required model files for face detection and recognition.
 #
 # Prerequisites: 7-Zip installed at default location, or manually decompress .bz2 files.
+#
+# Note: the recognition/detection models are ONNX (InsightFace SCRFD + w600k_mbf,
+# MiniFASNet anti-spoof) bundled with the installer. This script only downloads
+# the dlib shape predictor used for 68-point landmarks.
 
 param(
     [string]$ModelsDir = "$env:ProgramData\FaceLogin\models"
@@ -23,11 +27,6 @@ $models = @(
         Name = "shape_predictor_68_face_landmarks.dat"
         Url  = "http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2"
         Size = "~61 MB compressed, ~97 MB extracted"
-    },
-    @{
-        Name = "dlib_face_recognition_resnet_model_v1.dat"
-        Url  = "http://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat.bz2"
-        Size = "~94 MB compressed, ~100 MB extracted"
     }
 )
 
@@ -94,7 +93,7 @@ Write-Host "Models location: $ModelsDir"
 Write-Host ""
 Write-Host "Required files:"
 Write-Host "  1. shape_predictor_68_face_landmarks.dat (~97 MB)"
-Write-Host "  2. dlib_face_recognition_resnet_model_v1.dat (~100 MB)"
+Write-Host "  (ONNX models det_500m.onnx / w600k_mbf.onnx / OULU_Protocol_2_model_0_0.onnx are bundled with the installer)"
 Write-Host ""
-Write-Host "Next step: Run install.bat as Administrator"
+Write-Host "Next step: Run the FaceLoginSetup.exe installer, or place the model in the install dir."
 Write-Host "============================================" -ForegroundColor Cyan
