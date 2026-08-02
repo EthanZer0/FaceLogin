@@ -55,11 +55,21 @@ inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
 // The file is protected by ACLs (SYSTEM + Administrators only).
 // Passwords are encrypted with DPAPI CRYPTPROTECT_LOCAL_MACHINE.
 
+// Passwordless account: the encryptedPassword field holds a single sentinel
+// byte instead of a DPAPI blob. (An empty vector is also treated as
+// passwordless, as a defensive fallback.)
+inline constexpr uint8_t kPasswordlessSentinelByte = 0x00;
+inline bool IsPasswordlessRecord(const std::vector<uint8_t>& encryptedPassword) {
+    return encryptedPassword.empty() ||
+           (encryptedPassword.size() == 1 &&
+            encryptedPassword[0] == kPasswordlessSentinelByte);
+}
+
 struct UserRecord {
     std::wstring username;
     std::wstring upn;      // UserPrincipalName (e.g. "john@outlook.com"), V2
     std::wstring sid;      // Security Identifier (e.g. "S-1-5-21-..."), V2
-    std::vector<uint8_t> encryptedPassword;  // DPAPI encrypted
+    std::vector<uint8_t> encryptedPassword;  // DPAPI encrypted (or passwordless sentinel)
     std::vector<float> embedding;            // D-D embedding (128 for dlib, 512 for ONNX), V3
 };
 
@@ -102,6 +112,7 @@ public:
         std::wstring upn;
         std::wstring sid;
         std::wstring password;  // Decrypted — zero after use!
+        bool         passwordless = false;  // true: no password stored, must NOT submit LSA creds
         float distance;
     };
     // probeDim is the number of floats in probeEmbedding (128 for dlib,

@@ -147,12 +147,17 @@ bool CredentialStore::LoadDatabase() {
         // Password
         uint32_t passLen = 0;
         file.read(reinterpret_cast<char*>(&passLen), sizeof(passLen));
-        if (passLen == 0 || passLen > 4096) {
+        // passLen 0 or 1 is valid: 0 = empty (defensive), 1 = passwordless
+        // sentinel byte. Old versions only accepted >= 1; a 0-length record
+        // would have failed their check, so we accept both here.
+        if (passLen > 4096) {
             FACELOGIN_ERROR(L"Invalid password length: %u", passLen);
             return false;
         }
         rec.encryptedPassword.resize(passLen);
-        file.read(reinterpret_cast<char*>(rec.encryptedPassword.data()), passLen);
+        if (passLen > 0) {
+            file.read(reinterpret_cast<char*>(rec.encryptedPassword.data()), passLen);
+        }
 
         // Embedding — V3 stores a length-prefixed vector; V1/V2 store 128 floats.
         if (version >= 3) {
@@ -381,6 +386,15 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
         best.upn = m_users[bestIdx].upn;
         best.sid = m_users[bestIdx].sid;
         best.username = m_users[bestIdx].username;
+
+        if (IsPasswordlessRecord(m_users[bestIdx].encryptedPassword)) {
+            // Passwordless account: no password to decrypt. Return the match
+            // with passwordless=true so the caller (FaceService) knows not to
+            // submit LSA credentials and instead shows a degraded notice.
+            best.passwordless = true;
+            return best;
+        }
+
         // Decrypt the password
         auto plain = DpapiUtil::Unprotect(m_users[bestIdx].encryptedPassword);
         if (!plain.empty()) {
@@ -397,6 +411,10 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
         if (!best.password.empty()) {
             return best;
         }
+        // Password-bearing record whose decrypt failed (e.g. DPAPI key
+        // lost) — keep the old strict behavior: no match.
+        FACELOGIN_WARN(L"FindBestMatch: match found but password decrypt failed for %s",
+                       m_users[bestIdx].username.c_str());
     }
 
     return std::nullopt;

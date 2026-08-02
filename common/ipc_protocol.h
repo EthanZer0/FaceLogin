@@ -35,6 +35,13 @@ constexpr wchar_t MSG_GET_LOGS_OK_PREFIX[] = L"GET_LOGS_OK:";
 constexpr wchar_t MSG_PING[] = L"PING";
 constexpr wchar_t MSG_PONG[] = L"PONG";
 
+// Sent via AUTH_ERROR when the matched account is passwordless (MSA with no
+// password — PIN/Hello only). Face login cannot unlock such an account (no
+// password to submit to LSA), so the service degrades to this notice.
+// "该账号无密码，人脸识别无法用于解锁，请使用 PIN/Hello 登录"
+constexpr wchar_t MSG_PASSWORDLESS_NOTICE[] =
+    L"该账号无密码，人脸识别无法用于解锁，请使用 PIN/Hello 登录";
+
 // Parsed authentication result
 struct AuthResult {
     enum class Status {

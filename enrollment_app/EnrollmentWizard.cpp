@@ -9,6 +9,9 @@
 #include <wincodec.h>
 #include <wincred.h>
 #include <sddl.h>
+#include <lmaccess.h>
+#include <lmapibuf.h>
+#include <lmerr.h>
 #include <thread>
 #include <chrono>
 #include <sstream>
@@ -712,6 +715,30 @@ std::string EnrollmentWizard::GetUserUpn() const {
 }
 
 bool EnrollmentWizard::ValidatePassword(const std::wstring& password) {
+    // MSA (UPN contains '@'): LogonUserW with domain="." forces validation
+    // against only the local account database — i.e. the STALE cached MSA
+    // credential, not the user's current Microsoft password. Passing
+    // domain=NULL with a UPN lets the provider route through CloudAP for an
+    // online validation of the CURRENT password. INTERACTIVE also refreshes
+    // the cached credential when it succeeds (NETWORK never caches).
+    bool isMsa = !m_upn.empty() && m_upn.find(L'@') != std::wstring::npos;
+
+    if (isMsa) {
+        HANDLE hToken = nullptr;
+        BOOL ok = LogonUserW(m_upn.c_str(), nullptr, password.c_str(),
+                             LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &hToken);
+        if (ok && hToken) {
+            CloseHandle(hToken);
+            FACELOGIN_INFO(L"ValidatePassword: MSA online validation OK (%s)", m_upn.c_str());
+            return true;
+        }
+        DWORD err = GetLastError();
+        FACELOGIN_WARN(L"ValidatePassword: MSA interactive logon failed for %s (err=%lu)",
+                       m_upn.c_str(), err);
+        return false;
+    }
+
+    // Local account: validate against the local SAM database (reliable offline).
     HANDLE hToken = nullptr;
     BOOL ok = LogonUserW(m_username.c_str(), L".", password.c_str(),
                          LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &hToken);
@@ -719,25 +746,96 @@ bool EnrollmentWizard::ValidatePassword(const std::wstring& password) {
         CloseHandle(hToken);
         return true;
     }
-
-    // If LogonUser fails and we have a UPN (MSA account), try with UPN
-    if (!m_upn.empty() && m_upn.find(L'@') != std::wstring::npos) {
-        ok = LogonUserW(m_upn.c_str(), L".", password.c_str(),
-                         LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &hToken);
-        if (ok && hToken) {
-            CloseHandle(hToken);
-            return true;
-        }
-        FACELOGIN_WARN(L"ValidatePassword: UPN logon also failed (err=%lu)",
-                      GetLastError());
-    }
-
-    FACELOGIN_WARN(L"Password validation failed for user %s (UPN=%s)",
-                  m_username.c_str(), m_upn.c_str());
+    FACELOGIN_WARN(L"ValidatePassword: local logon failed for %s (err=%lu)",
+                   m_username.c_str(), GetLastError());
     return false;
 }
 
 bool EnrollmentWizard::SaveEnrollment(const std::wstring& password) {
+    return SaveEnrollmentImpl(password, /*passwordless=*/false);
+}
+
+bool EnrollmentWizard::SaveEnrollmentNoPassword() {
+    // Re-verify the current session identity before allowing a passwordless
+    // save — the user must be the logged-on owner of this account.
+    std::wstring tokenSid = GetCurrentProcessUserSid();
+    if (tokenSid.empty() || tokenSid != m_sid) {
+        FACELOGIN_ERROR(L"Passwordless enrollment refused: token SID %s != enrolled SID %s",
+                        tokenSid.c_str(), m_sid.c_str());
+        return false;
+    }
+    FACELOGIN_INFO(L"Passwordless enrollment confirmed for %s (session identity match)",
+                   m_username.c_str());
+    return SaveEnrollmentImpl(L"", /*passwordless=*/true);
+}
+
+// Returns the SID of the currently logged-on session identity (the process
+// token's user), used as the "self" proof for passwordless enrollment.
+std::wstring EnrollmentWizard::GetCurrentProcessUserSid() {
+    HANDLE hToken = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        return L"";
+    }
+    std::wstring result;
+    DWORD sz = 0;
+    GetTokenInformation(hToken, TokenUser, nullptr, 0, &sz);
+    if (sz > 0) {
+        std::vector<BYTE> buf(sz);
+        if (GetTokenInformation(hToken, TokenUser, buf.data(), sz, &sz)) {
+            auto* tu = reinterpret_cast<TOKEN_USER*>(buf.data());
+            LPWSTR sidStr = nullptr;
+            if (ConvertSidToStringSidW(tu->User.Sid, &sidStr)) {
+                result = sidStr;
+                LocalFree(sidStr);
+            }
+        }
+    }
+    CloseHandle(hToken);
+    return result;
+}
+
+// Detect whether the enrolled account is passwordless (no password — PIN/Hello
+// only). Layered, conservative:
+//   1. The current session identity must be the enrolled account.
+//   2. Empty-password LogonUser succeeds → definitely passwordless.
+//   3. NetUserGetInfo(23) shows an empty SAM password → passwordless.
+//   4. MSA that we can't auto-confirm → 2 (UI checkbox lets the user confirm).
+int EnrollmentWizard::GetPasswordlessState() const {
+    // 1) Session identity must be the account being enrolled.
+    std::wstring tokenSid = GetCurrentProcessUserSid();
+    if (tokenSid.empty() || tokenSid != m_sid) {
+        return 0;
+    }
+
+    // 2) Empty-password LogonUser probe.
+    HANDLE hToken = nullptr;
+    BOOL okEmpty = LogonUserW(m_username.c_str(), L".", L"",
+                              LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &hToken);
+    if (okEmpty && hToken) { CloseHandle(hToken); return 1; }
+    if (!m_upn.empty() && m_upn.find(L'@') != std::wstring::npos) {
+        okEmpty = LogonUserW(m_upn.c_str(), L".", L"",
+                             LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &hToken);
+        if (okEmpty && hToken) { CloseHandle(hToken); return 1; }
+    }
+
+    // 3) NetUserGetInfo(1003): SAM password field empty → passwordless.
+    // (USER_INFO_1003 exposes the SAM password; 23 does not include it.)
+    USER_INFO_1003* ui1003 = nullptr;
+    if (NetUserGetInfo(nullptr, m_username.c_str(), 1003,
+                       reinterpret_cast<LPBYTE*>(&ui1003)) == NERR_Success && ui1003) {
+        bool noPw = (ui1003->usri1003_password == nullptr ||
+                     ui1003->usri1003_password[0] == L'\0');
+        NetApiBufferFree(ui1003);
+        if (noPw) return 1;
+    }
+    // Local accounts: SAM password non-empty → has a password.
+    if (m_accountType != "msa") return 0;
+
+    // 4) MSA: SAM doesn't reflect the online password; can't auto-confirm.
+    return 2;
+}
+
+bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool passwordless) {
     if (m_embeddings.empty()) { FACELOGIN_ERROR(L"No face samples"); return false; }
 
     // Embedding consistency check: verify all samples are from the same person.
@@ -787,11 +885,18 @@ bool EnrollmentWizard::SaveEnrollment(const std::wstring& password) {
         avgEmbedding /= static_cast<float>(m_embeddings.size());
     }
 
-    auto protectedPassword = DpapiUtil::Protect(
-        reinterpret_cast<const uint8_t*>(password.c_str()),
-        static_cast<UINT>(password.size() * sizeof(wchar_t)));
-
-    if (protectedPassword.empty()) { FACELOGIN_ERROR(L"DPAPI encryption failed"); return false; }
+    // Protect the password (or store the passwordless sentinel).
+    std::vector<uint8_t> protectedPassword;
+    if (passwordless) {
+        protectedPassword = { facelogin::kPasswordlessSentinelByte };
+        FACELOGIN_INFO(L"Storing passwordless enrollment (sentinel) for %s",
+                       m_username.c_str());
+    } else {
+        protectedPassword = DpapiUtil::Protect(
+            reinterpret_cast<const uint8_t*>(password.c_str()),
+            static_cast<UINT>(password.size() * sizeof(wchar_t)));
+        if (protectedPassword.empty()) { FACELOGIN_ERROR(L"DPAPI encryption failed"); return false; }
+    }
 
     m_store.LoadDatabase();
     // Copy the average embedding into a plain float vector (full dimensionality —
@@ -802,7 +907,9 @@ bool EnrollmentWizard::SaveEnrollment(const std::wstring& password) {
     m_store.AddUser(m_username, m_upn, m_sid, protectedPassword, ef);
     if (!m_store.SaveDatabase()) { FACELOGIN_ERROR(L"Failed to save database"); return false; }
 
-    FACELOGIN_INFO(L"Enrollment saved for: %s (emb=%zu-D)", m_username.c_str(), ef.size());
+    FACELOGIN_INFO(L"Enrollment saved for: %s (emb=%zu-D%s)",
+                   m_username.c_str(), ef.size(),
+                   passwordless ? L", passwordless" : L"");
 
     // Notify service to reload database
     HANDLE hPipe = CreateFileW(ipc::PIPE_NAME, GENERIC_WRITE, 0, nullptr,

@@ -82,7 +82,8 @@ private:
         Authenticating,
         Ready,
         Failed,
-        Error
+        Error,
+        Blocked  // Passwordless account: show notice, never submit creds
     };
 
     // Authentication package lookup

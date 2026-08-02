@@ -527,6 +527,19 @@ bool FaceService::ProcessAuthRequest() {
         }
 
         {
+            // Passwordless account: face login cannot unlock it (no password to
+            // submit to LSA). Degrade gracefully with a notice instead of
+            // attempting liveness and submitting nothing. Do NOT mark the user
+            // as logged in.
+            if (match->passwordless) {
+                FACELOGIN_WARN(L"Matched passwordless account '%s' — face login cannot unlock; notifying CP",
+                               match->username.c_str());
+                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::MSG_PASSWORDLESS_NOTICE));
+                FlushFileBuffers(m_pipeServer->GetHandle());
+                m_pipeServer->DrainOutput(5000);
+                return false;
+            }
+
             std::wstring domain = L".";
             wchar_t computerName[MAX_COMPUTERNAME_LENGTH + 1] = {};
             DWORD size = ARRAYSIZE(computerName);

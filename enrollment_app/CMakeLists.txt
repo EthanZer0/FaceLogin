@@ -25,6 +25,7 @@ target_link_libraries(FaceLoginConsole PRIVATE
     gdi32
     crypt32
     windowscodecs
+    netapi32
 )
 
 target_include_directories(FaceLoginConsole PRIVATE

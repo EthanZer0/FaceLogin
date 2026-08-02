@@ -43,6 +43,16 @@ public:
     bool ValidatePassword(const std::wstring& password);
     bool SaveEnrollment(const std::wstring& password);
 
+    // Passwordless account support (MSA accounts with no password — PIN/Hello
+    // only). Returns:
+    //   0 = account has a password (or detection inconclusive but likely has one)
+    //   1 = confirmed passwordless (auto-skip the password screen)
+    //   2 = MSA, cannot auto-confirm — UI offers a checkbox for the user to confirm
+    int GetPasswordlessState() const;
+    // Save enrollment with no password (uses the current logged-on session
+    // identity as the "self" proof). Stores a passwordless sentinel.
+    bool SaveEnrollmentNoPassword();
+
     // Configuration
     std::string GetConfig() const;
     bool SetConfig(const std::string& json);
@@ -70,6 +80,9 @@ public:
 private:
     std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
     std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces);
+
+    bool SaveEnrollmentImpl(const std::wstring& password, bool passwordless);
+    static std::wstring GetCurrentProcessUserSid();
 
     // Camera & face processing
     std::unique_ptr<WebcamCapture>  m_webcam;

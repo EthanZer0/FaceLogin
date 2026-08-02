@@ -292,6 +292,8 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"GetAccountType") *ids = 19;
     else if (n == L"GetLatestFrameAndFaces") *ids = 20;
     else if (n == L"GetCameraList") *ids = 21;
+    else if (n == L"IsPasswordlessState") *ids = 22;
+    else if (n == L"SaveEnrollmentNoPassword") *ids = 23;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -371,6 +373,8 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
         case 19: if (res) *res = MakeStr(m_wizard->GetAccountType()); break;
         case 20: if (res) *res = MakeStr(m_wizard->GetLatestFrameAndFaces()); break;
         case 21: if (res) *res = MakeStr(m_wizard->GetCameraList()); break;
+        case 22: if (res) *res = MakeInt(m_wizard->GetPasswordlessState()); break;
+        case 23: if (res) *res = MakeBool(m_wizard->SaveEnrollmentNoPassword()); break;
         default: return DISP_E_MEMBERNOTFOUND;
         }
         return S_OK;

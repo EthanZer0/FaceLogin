@@ -29,8 +29,9 @@ static void jsonWriteString(std::ostringstream& ss, const std::string& s) {
 }
 
 // Minimal JSON parser for flat objects. Returns empty string on error.
-// Handles \" and \\ escapes (backslash-heavy values like camera device
-// symbolic links would otherwise get corrupted by the round-trip).
+// Handles \" , \\ and \uXXXX escapes (backslash-heavy values like camera
+// device symbolic links would otherwise get corrupted by the round-trip;
+// \uXXXX is emitted by JSON.stringify for characters like '&' in WebView2).
 static std::string jsonGetString(const std::string& json, const std::string& key) {
     std::string search = "\"" + key + "\"";
     auto pos = json.find(search);
@@ -49,7 +50,7 @@ static std::string jsonGetString(const std::string& json, const std::string& key
         return json.substr(pos, end - pos);
     }
 
-    // Parse the quoted string, unescaping \\ and \" as we go.
+    // Parse the quoted string, unescaping \\ , \" and \uXXXX as we go.
     pos++;  // skip opening quote
     std::string out;
     while (pos < json.size()) {
@@ -61,6 +62,35 @@ static std::string jsonGetString(const std::string& json, const std::string& key
                 out.push_back(next);       // \\ → \  and  \" → "
                 pos += 2;
                 continue;
+            }
+            if (next == 'u' && pos + 5 < json.size()) {
+                // \uXXXX — parse 4 hex digits into a UTF-8 char.
+                bool ok = true;
+                unsigned int code = 0;
+                for (int i = 0; i < 4; i++) {
+                    char h = json[pos + 2 + i];
+                    int v = -1;
+                    if (h >= '0' && h <= '9') v = h - '0';
+                    else if (h >= 'a' && h <= 'f') v = h - 'a' + 10;
+                    else if (h >= 'A' && h <= 'F') v = h - 'A' + 10;
+                    if (v < 0) { ok = false; break; }
+                    code = (code << 4) | static_cast<unsigned int>(v);
+                }
+                if (ok) {
+                    // Encode the code point as UTF-8.
+                    if (code < 0x80) {
+                        out.push_back(static_cast<char>(code));
+                    } else if (code < 0x800) {
+                        out.push_back(static_cast<char>(0xC0 | (code >> 6)));
+                        out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                    } else {
+                        out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+                        out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                        out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                    }
+                    pos += 6;
+                    continue;
+                }
             }
             // Unknown escape: keep the backslash literally.
             out.push_back(c);

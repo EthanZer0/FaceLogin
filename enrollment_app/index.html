@@ -190,9 +190,16 @@ body{
       <label>SID</label>
       <input type="text" id="fld-sid" readonly>
     </div>
-    <div class="field">
+    <div class="field" id="pwd-pass-field">
       <label>Windows 密码</label>
       <input type="password" id="fld-pass" placeholder="输入你的登录密码" autofocus>
+    </div>
+    <div class="field" id="field-skip-pass" style="display:none">
+      <label style="text-transform:none;display:flex;gap:8px;align-items:center;font-size:12px">
+        <input type="checkbox" id="fld-skip-pass">
+        <span id="fld-skip-pass-label">该账号没有密码（仅使用 PIN/Hello），跳过密码录入</span>
+      </label>
+      <p class="dim">无密码账号无法用于人脸解锁，人脸识别只能完成录入。</p>
     </div>
     <p class="dim">你的密码将使用 DPAPI 加密，仅存储在本机。</p>
     <button class="btn btn-primary" id="btn-save" onclick="onSave()" style="margin-top:8px">
@@ -542,6 +549,30 @@ function onCapture() {
           try { document.getElementById('fld-user').value = H.GetUsername(); } catch(e) {}
           try { document.getElementById('fld-acct-type').value = H.GetAccountType(); } catch(e) {}
           try { document.getElementById('fld-sid').value = H.GetUserSid(); } catch(e) {}
+
+          // Passwordless account detection: state 1 = confirmed (auto-skip),
+          // state 2 = MSA that can't auto-confirm (user confirms via checkbox),
+          // state 0 = has a password (normal flow).
+          try {
+            var st = H.GetPasswordlessState();
+            var skipField = document.getElementById('field-skip-pass');
+            var skipChk = document.getElementById('fld-skip-pass');
+            var passField = document.getElementById('pwd-pass-field');
+            if (st === 1) {
+              skipField.style.display = 'flex';
+              skipChk.checked = true;
+              skipChk.disabled = true;
+              document.getElementById('fld-skip-pass-label').textContent = '已检测到该账号无密码，将跳过密码录入。';
+              if (passField) passField.style.display = 'none';
+            } else if (st === 2) {
+              skipField.style.display = 'flex';
+              skipChk.checked = false;
+              skipChk.disabled = false;
+            } else {
+              skipField.style.display = 'none';
+              skipChk.checked = false;
+            }
+          } catch(e) {}
           document.getElementById('fld-pass').focus();
         }
       }, 200);
@@ -549,16 +580,21 @@ function onCapture() {
   }, 200);
 }
 
-function showBanner(screen, text, type) {
+function showBanner(screen, text, type, durationMs) {
   var el = document.getElementById(screen + '-banner');
   el.className = 'banner ' + type;
   el.textContent = text;
-  setTimeout(function() { el.className = 'banner'; }, 4000);
+  // Optional duration override; default 4s. Guidance messages (e.g. the
+  // lock-screen password-refresh hint) need longer to be readable.
+  var ms = (typeof durationMs === 'number') ? durationMs : 4000;
+  setTimeout(function() { el.className = 'banner'; }, ms);
 }
 
 function onSave() {
+  var skip = false;
+  try { skip = document.getElementById('fld-skip-pass').checked; } catch(e) {}
   var pass = document.getElementById('fld-pass').value;
-  if (!pass) { showBanner('pwd', '请输入密码。', 'error'); return; }
+  if (!skip && !pass) { showBanner('pwd', '请输入密码。', 'error'); return; }
 
   var btn = document.getElementById('btn-save');
   var spinner = document.getElementById('save-spinner');
@@ -568,9 +604,14 @@ function onSave() {
   // Defer the synchronous COM call to let the browser paint the spinner first
   setTimeout(function() {
     var ok = false;
-    try { ok = H.ValidatePassword(pass); } catch(e) {}
-    if (ok) {
-      try { ok = H.SaveEnrollment(pass); } catch(e) { ok = false; }
+    if (skip) {
+      // Passwordless account — use the current logged-on session identity.
+      try { ok = H.SaveEnrollmentNoPassword(); } catch(e) { ok = false; }
+    } else {
+      try { ok = H.ValidatePassword(pass); } catch(e) {}
+      if (ok) {
+        try { ok = H.SaveEnrollment(pass); } catch(e) { ok = false; }
+      }
     }
 
     btn.disabled = false;
@@ -588,7 +629,20 @@ function onSave() {
       renderFrame();
       try { H.StartPreview(); } catch(e) {}
     } else {
-      showBanner('pwd', '密码错误，请确认是你的 Windows 登录密码。', 'error');
+      // MSA password validation only checks the locally cached credential.
+      // If the user changed their Microsoft password elsewhere, the cache is
+      // stale and the CURRENT (correct) password fails here. Guide them to
+      // unlock once with the new password on the lock screen, which refreshes
+      // the cache. Local accounts validate reliably offline.
+      var acctType = '';
+      try { acctType = document.getElementById('fld-acct-type').value; } catch(e) {}
+      if (acctType === 'msa') {
+        showBanner('pwd',
+          '密码验证失败。若你最近更改过微软账号密码，请先按 Win+L 锁屏，用新密码登录一次，再回来录入。',
+          'error', 15000);
+      } else {
+        showBanner('pwd', '密码错误，请确认是你的 Windows 登录密码。', 'error');
+      }
     }
   }, 50);
 }
