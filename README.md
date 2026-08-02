@@ -195,4 +195,4 @@ wails build -clean -platform windows/amd64
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=EthanZer0/FaceLogin&type=timeline&legend=top-left&sealed_token=4-E724miuz9WOgmVHJim7lNHA4fI8zo-LmFpeTBVo1dVjfP-kPOnTiSmnzoNsQxyiFffKT897vAPd2I4VJ6bv9G8dZtbOZZdR0edpIC6JIfX_dbeTYYhFBwwxqGks12Nrf2Q_w8hiDzHDrTPK7pJSiT46BnjeG7ZG_svlWVCIXJ9dPSqe8qrGU9s0eYJ)](https://www.star-history.com/?repos=EthanZer0%2FFaceLogin&type=timeline&legend=top-left)
+[![Star History Chart](https://api.star-history.com/chart?repos=EthanZer0/FaceLogin&type=timeline&legend=top-left&sealed_token=VmVTMzr89tDtbHmrTsyTzIF6VF3OLyqrsjOL7Ol3A3hjpHG54eu5FmmclCyQ5NAHPN4WjopKPdnR88P7gHrOSlbbAufC3Yyd1su6gAh5YOW_Sye6_9YJmw)](https://www.star-history.com/?repos=EthanZer0%2FFaceLogin&type=timeline&legend=top-left)
