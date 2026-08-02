@@ -9,7 +9,23 @@
 namespace facelogin {
 
 static constexpr uint32_t FILE_MAGIC = 0x474F4C46; // "FLOG" in little-endian
-static constexpr uint32_t FILE_VERSION = 3;
+static constexpr uint32_t FILE_VERSION = 4;
+
+// Helpers for V4 serialization
+namespace {
+
+// Default label for a face: L"脸N" where N = face id.
+inline std::wstring DefaultFaceLabel(uint32_t id) {
+    return L"脸" + std::to_wstring(id);  // 脸N
+}
+
+// Trim a face label for storage (empty → default). Keeps labels sane.
+inline std::wstring NormalizeFaceLabel(const std::wstring& label, uint32_t id) {
+    if (label.empty()) return DefaultFaceLabel(id);
+    return label;
+}
+
+} // namespace
 
 // Helper: try to look up SID and UPN from a username.
 // Used for upgrading V1 databases on the fly.
@@ -95,7 +111,7 @@ bool CredentialStore::LoadDatabase() {
         FACELOGIN_ERROR(L"Invalid database file (bad magic: 0x%08X)", magic);
         return false;
     }
-    if (version != FILE_VERSION && version != 2 && version != 1) {
+    if (version != FILE_VERSION && version != 3 && version != 2 && version != 1) {
         FACELOGIN_ERROR(L"Unsupported database version: %u", version);
         return false;
     }
@@ -159,20 +175,67 @@ bool CredentialStore::LoadDatabase() {
             file.read(reinterpret_cast<char*>(rec.encryptedPassword.data()), passLen);
         }
 
-        // Embedding — V3 stores a length-prefixed vector; V1/V2 store 128 floats.
-        if (version >= 3) {
-            uint32_t embLen = 0;
-            file.read(reinterpret_cast<char*>(&embLen), sizeof(embLen));
-            // Sanity range: 64..4096 floats (covers 128-D dlib and 512-D ONNX)
-            if (embLen < 64 || embLen > 4096) {
-                FACELOGIN_ERROR(L"Invalid embedding length: %u", embLen);
+        if (version >= 4) {
+            // V4: one or more faces, each with id/label/embedding.
+            uint32_t faceCount = 0;
+            file.read(reinterpret_cast<char*>(&faceCount), sizeof(faceCount));
+            // Writer is capped at kMaxFacesPerUser; read-side is lenient to
+            // avoid killing the whole DB on a slightly-over spec file.
+            if (faceCount < 1 || faceCount > 16) {
+                FACELOGIN_ERROR(L"Invalid face count: %u", faceCount);
                 return false;
             }
-            rec.embedding.resize(embLen);
-            file.read(reinterpret_cast<char*>(rec.embedding.data()), embLen * sizeof(float));
+            rec.faces.reserve(faceCount);
+            for (uint32_t f = 0; f < faceCount; f++) {
+                FaceRecord face;
+                file.read(reinterpret_cast<char*>(&face.id), sizeof(face.id));
+                if (face.id < 1) {
+                    FACELOGIN_ERROR(L"Invalid face id: %u", face.id);
+                    return false;
+                }
+                uint32_t labelLen = 0;
+                file.read(reinterpret_cast<char*>(&labelLen), sizeof(labelLen));
+                if (labelLen > 64) {
+                    FACELOGIN_ERROR(L"Invalid face label length: %u", labelLen);
+                    return false;
+                }
+                if (labelLen > 0) {
+                    std::vector<wchar_t> labelBuf(labelLen + 1, 0);
+                    file.read(reinterpret_cast<char*>(labelBuf.data()),
+                              labelLen * sizeof(wchar_t));
+                    face.label = labelBuf.data();
+                }
+                uint32_t embLen = 0;
+                file.read(reinterpret_cast<char*>(&embLen), sizeof(embLen));
+                // Sanity range: 64..4096 floats (covers 128-D dlib and 512-D ONNX)
+                if (embLen < 64 || embLen > 4096) {
+                    FACELOGIN_ERROR(L"Invalid embedding length: %u", embLen);
+                    return false;
+                }
+                face.embedding.resize(embLen);
+                file.read(reinterpret_cast<char*>(face.embedding.data()),
+                          embLen * sizeof(float));
+                rec.faces.push_back(std::move(face));
+            }
         } else {
-            rec.embedding.resize(128);
-            file.read(reinterpret_cast<char*>(rec.embedding.data()), 128 * sizeof(float));
+            // V1/V2/V3: a single embedding, upgraded in memory to one face.
+            uint32_t embLen = 0;
+            if (version >= 3) {
+                file.read(reinterpret_cast<char*>(&embLen), sizeof(embLen));
+                if (embLen < 64 || embLen > 4096) {
+                    FACELOGIN_ERROR(L"Invalid embedding length: %u", embLen);
+                    return false;
+                }
+            } else {
+                embLen = 128;  // V1/V2 fixed 128 floats
+            }
+            FaceRecord face;
+            face.id = 1;
+            face.label = DefaultFaceLabel(1);
+            face.embedding.resize(embLen);
+            file.read(reinterpret_cast<char*>(face.embedding.data()),
+                      embLen * sizeof(float));
+            rec.faces.push_back(std::move(face));
         }
 
         if (file.good()) {
@@ -187,6 +250,11 @@ bool CredentialStore::LoadDatabase() {
             FACELOGIN_ERROR(L"Failed to read record %u", i);
             return false;
         }
+    }
+
+    if (version < FILE_VERSION) {
+        FACELOGIN_INFO(L"Upgraded database v%u → v%u in-memory (will be written on next save)",
+                       version, FILE_VERSION);
     }
 
     FACELOGIN_INFO(L"Loaded %zu user(s) successfully", m_users.size());
@@ -211,12 +279,19 @@ bool CredentialStore::SaveDatabase() {
     // Write header
     uint32_t magic = FILE_MAGIC;
     uint32_t version = FILE_VERSION;
-    uint32_t count = static_cast<uint32_t>(m_users.size());
+    // Skip accounts with zero faces defensively — DeleteFace removes a whole
+    // account when its last face is deleted, so this should never occur.
+    uint32_t count = 0;
+    for (const auto& rec : m_users) {
+        if (!rec.faces.empty()) count++;
+    }
     file.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
     file.write(reinterpret_cast<const char*>(&version), sizeof(version));
     file.write(reinterpret_cast<const char*>(&count), sizeof(count));
 
     for (const auto& rec : m_users) {
+        if (rec.faces.empty()) continue;  // defensive: never persist 0-face account
+
         // Username
         uint32_t nameLen = static_cast<uint32_t>(rec.username.size());
         file.write(reinterpret_cast<const char*>(&nameLen), sizeof(nameLen));
@@ -244,16 +319,107 @@ bool CredentialStore::SaveDatabase() {
         file.write(reinterpret_cast<const char*>(&passLen), sizeof(passLen));
         file.write(reinterpret_cast<const char*>(rec.encryptedPassword.data()), passLen);
 
-        // Embedding (length-prefixed, V3)
-        uint32_t embLen = static_cast<uint32_t>(rec.embedding.size());
-        file.write(reinterpret_cast<const char*>(&embLen), sizeof(embLen));
-        if (embLen > 0) {
-            file.write(reinterpret_cast<const char*>(rec.embedding.data()), embLen * sizeof(float));
+        // Faces (V4)
+        uint32_t faceCount = static_cast<uint32_t>(rec.faces.size());
+        file.write(reinterpret_cast<const char*>(&faceCount), sizeof(faceCount));
+        for (const auto& face : rec.faces) {
+            uint32_t faceId = face.id;
+            file.write(reinterpret_cast<const char*>(&faceId), sizeof(faceId));
+
+            uint32_t labelLen = static_cast<uint32_t>(face.label.size());
+            file.write(reinterpret_cast<const char*>(&labelLen), sizeof(labelLen));
+            if (labelLen > 0) {
+                file.write(reinterpret_cast<const char*>(face.label.c_str()),
+                           labelLen * sizeof(wchar_t));
+            }
+
+            uint32_t embLen = static_cast<uint32_t>(face.embedding.size());
+            file.write(reinterpret_cast<const char*>(&embLen), sizeof(embLen));
+            if (embLen > 0) {
+                file.write(reinterpret_cast<const char*>(face.embedding.data()),
+                           embLen * sizeof(float));
+            }
         }
     }
 
     file.close();
-    FACELOGIN_INFO(L"Saved %zu user(s) to database (v3)", m_users.size());
+    FACELOGIN_INFO(L"Saved %zu user(s) to database (v4)", count);
+    return true;
+}
+
+size_t CredentialStore::FindUserIndex(const std::wstring& sid,
+                                      const std::wstring& upn,
+                                      const std::wstring& username) const {
+    if (!sid.empty()) {
+        auto it = std::find_if(m_users.begin(), m_users.end(),
+            [&sid](const UserRecord& r) { return r.sid == sid; });
+        if (it != m_users.end()) return static_cast<size_t>(it - m_users.begin());
+    }
+    if (!upn.empty()) {
+        auto it = std::find_if(m_users.begin(), m_users.end(),
+            [&upn](const UserRecord& r) { return r.upn == upn; });
+        if (it != m_users.end()) return static_cast<size_t>(it - m_users.begin());
+    }
+    if (!username.empty()) {
+        auto it = std::find_if(m_users.begin(), m_users.end(),
+            [&username](const UserRecord& r) { return r.username == username; });
+        if (it != m_users.end()) return static_cast<size_t>(it - m_users.begin());
+    }
+    return m_users.size();
+}
+
+bool CredentialStore::AddFace(const std::wstring& username,
+                              const std::wstring& upn,
+                              const std::wstring& sid,
+                              const std::vector<uint8_t>& encryptedPassword,
+                              const std::vector<float>& embedding,
+                              const std::wstring& label,
+                              uint32_t* outFaceId) {
+    size_t idx = FindUserIndex(sid, upn, username);
+
+    if (idx < m_users.size()) {
+        // Account exists → append a face, never touch stored password/faces.
+        UserRecord& rec = m_users[idx];
+        if (rec.faces.size() >= kMaxFacesPerUser) {
+            FACELOGIN_WARN(L"AddFace rejected: %s already has %zu faces (max %zu)",
+                           username.c_str(), rec.faces.size(), kMaxFacesPerUser);
+            return false;
+        }
+        uint32_t newId = 1;
+        for (const auto& f : rec.faces) {
+            if (f.id >= newId) newId = f.id + 1;
+        }
+        FaceRecord face;
+        face.id = newId;
+        face.label = NormalizeFaceLabel(label, newId);
+        face.embedding = embedding;
+        rec.faces.push_back(std::move(face));
+        // Refresh display identity in case username/upn/sid changed.
+        rec.username = username;
+        rec.upn = upn;
+        rec.sid = sid;
+        if (outFaceId) *outFaceId = newId;
+        FACELOGIN_INFO(L"Appended face #%u to %s (SID=%s, emb=%zu-D, total=%zu)",
+                       newId, username.c_str(), sid.c_str(), embedding.size(),
+                       rec.faces.size());
+        return true;
+    }
+
+    // Account not found → create it with the given password and first face.
+    UserRecord rec;
+    rec.username = username;
+    rec.upn = upn;
+    rec.sid = sid;
+    rec.encryptedPassword = encryptedPassword;
+    FaceRecord face;
+    face.id = 1;
+    face.label = NormalizeFaceLabel(label, 1);
+    face.embedding = embedding;
+    rec.faces.push_back(std::move(face));
+    m_users.push_back(std::move(rec));
+    if (outFaceId) *outFaceId = 1;
+    FACELOGIN_INFO(L"Created user %s with first face (SID=%s, emb=%zu-D)",
+                   username.c_str(), sid.c_str(), embedding.size());
     return true;
 }
 
@@ -262,41 +428,48 @@ bool CredentialStore::AddUser(const std::wstring& username,
                                const std::wstring& sid,
                                const std::vector<uint8_t>& encryptedPassword,
                                const std::vector<float>& embedding) {
-    // Check if user already exists (match by SID if available, then username)
-    auto it = m_users.end();
-    if (!sid.empty()) {
-        it = std::find_if(m_users.begin(), m_users.end(),
-            [&sid](const UserRecord& r) { return r.sid == sid; });
-    }
-    if (it == m_users.end() && !upn.empty()) {
-        it = std::find_if(m_users.begin(), m_users.end(),
-            [&upn](const UserRecord& r) { return r.upn == upn; });
-    }
-    if (it == m_users.end()) {
-        it = std::find_if(m_users.begin(), m_users.end(),
-            [&username](const UserRecord& r) { return r.username == username; });
-    }
+    return AddFace(username, upn, sid, encryptedPassword, embedding);
+}
 
-    if (it != m_users.end()) {
-        it->username = username;
-        it->upn = upn;
-        it->sid = sid;
-        it->encryptedPassword = encryptedPassword;
-        it->embedding = embedding;
-        FACELOGIN_INFO(L"Updated existing user: %s (SID=%s, emb=%zu-D)",
-                      username.c_str(), sid.c_str(), embedding.size());
-    } else {
-        UserRecord rec;
-        rec.username = username;
-        rec.upn = upn;
-        rec.sid = sid;
-        rec.encryptedPassword = encryptedPassword;
-        rec.embedding = embedding;
-        m_users.push_back(std::move(rec));
-        FACELOGIN_INFO(L"Added new user: %s (SID=%s, emb=%zu-D)",
-                      username.c_str(), sid.c_str(), embedding.size());
+bool CredentialStore::DeleteFace(const std::wstring& sid, uint32_t faceId) {
+    size_t idx = FindUserIndex(sid, L"", L"");
+    if (idx >= m_users.size()) {
+        FACELOGIN_WARN(L"DeleteFace: account not found (SID=%s)", sid.c_str());
+        return false;
     }
+    UserRecord& rec = m_users[idx];
+    auto it = std::remove_if(rec.faces.begin(), rec.faces.end(),
+        [faceId](const FaceRecord& f) { return f.id == faceId; });
+    if (it == rec.faces.end()) {
+        FACELOGIN_WARN(L"DeleteFace: face #%u not found for %s", faceId, sid.c_str());
+        return false;
+    }
+    rec.faces.erase(it, rec.faces.end());
+    FACELOGIN_INFO(L"Deleted face #%u from %s (%zu remaining)",
+                   faceId, rec.username.c_str(), rec.faces.size());
+    if (rec.faces.empty()) {
+        // Last face removed → drop the account entirely so the login tile
+        // (which reads the record count) doesn't show a tile that can never
+        // match. Re-enrollment goes through the first-time flow again.
+        m_users.erase(m_users.begin() + static_cast<ptrdiff_t>(idx));
+        FACELOGIN_INFO(L"Removed account %s (no faces remain)", rec.username.c_str());
+    }
+    return true;
+}
 
+bool CredentialStore::ClearAllFaces(const std::wstring& sid) {
+    return DeleteUserBySid(sid);
+}
+
+bool CredentialStore::DeleteUserBySid(const std::wstring& sid) {
+    size_t idx = FindUserIndex(sid, L"", L"");
+    if (idx >= m_users.size()) {
+        FACELOGIN_WARN(L"DeleteUserBySid: account not found (SID=%s)", sid.c_str());
+        return false;
+    }
+    std::wstring username = m_users[idx].username;
+    m_users.erase(m_users.begin() + static_cast<ptrdiff_t>(idx));
+    FACELOGIN_INFO(L"Deleted user %s (SID=%s)", username.c_str(), sid.c_str());
     return true;
 }
 
@@ -314,6 +487,28 @@ bool CredentialStore::DeleteUser(const std::wstring& username) {
     return false;
 }
 
+bool CredentialStore::RenameFace(const std::wstring& sid, uint32_t faceId,
+                                 const std::wstring& label) {
+    size_t idx = FindUserIndex(sid, L"", L"");
+    if (idx >= m_users.size()) return false;
+    UserRecord& rec = m_users[idx];
+    for (auto& f : rec.faces) {
+        if (f.id == faceId) {
+            f.label = NormalizeFaceLabel(label, faceId);
+            FACELOGIN_INFO(L"Renamed face #%u of %s → %s",
+                           faceId, rec.username.c_str(), f.label.c_str());
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t CredentialStore::GetFaceCount(const std::wstring& sid) const {
+    size_t idx = FindUserIndex(sid, L"", L"");
+    if (idx >= m_users.size()) return 0;
+    return m_users[idx].faces.size();
+}
+
 std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
     const float probeEmbedding[], size_t probeDim, float threshold) {
 
@@ -321,36 +516,57 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
         return std::nullopt;
     }
 
+    // Account-level matching. Each account's closest face is its
+    // representative distance; accounts are then compared against each other.
+    // This keeps two faces of the SAME account from competing and inflating
+    // the best/second-best ratio.
     float bestDist = 1e10f, secondBestDist = 1e10f;
     size_t bestIdx = m_users.size();
+    uint32_t bestFaceId = 0;
+    size_t comparableAccounts = 0;
 
     for (size_t i = 0; i < m_users.size(); i++) {
-        // Skip stored embeddings that don't match the probe's dimensionality.
-        // dlib (128-D) and InsightFace ONNX (512-D) embeddings live in
-        // different metric spaces — comparing them would be meaningless.
-        if (m_users[i].embedding.size() != probeDim) continue;
+        const auto& faces = m_users[i].faces;
+        float accountBest = 1e10f;
+        uint32_t faceBestId = 0;
 
-        float sum = 0.0f;
-        for (size_t j = 0; j < probeDim; j++) {
-            float diff = probeEmbedding[j] - m_users[i].embedding[j];
-            sum += diff * diff;
+        for (const auto& face : faces) {
+            // Skip stored embeddings that don't match the probe's dimensionality.
+            // dlib (128-D) and InsightFace ONNX (512-D) embeddings live in
+            // different metric spaces — comparing them would be meaningless.
+            if (face.embedding.size() != probeDim) continue;
+
+            float sum = 0.0f;
+            for (size_t j = 0; j < probeDim; j++) {
+                float diff = probeEmbedding[j] - face.embedding[j];
+                sum += diff * diff;
+            }
+            float dist = std::sqrt(sum);
+
+            if (dist < accountBest) {
+                accountBest = dist;
+                faceBestId = face.id;
+            }
         }
-        float dist = std::sqrt(sum);
 
-        if (dist < bestDist) {
+        if (accountBest >= 1e9f) continue;  // no face with a comparable dimension
+        comparableAccounts++;
+
+        if (accountBest < bestDist) {
             secondBestDist = bestDist;
-            bestDist = dist;
+            bestDist = accountBest;
             bestIdx = i;
-        } else if (dist < secondBestDist) {
-            secondBestDist = dist;
+            bestFaceId = faceBestId;
+        } else if (accountBest < secondBestDist) {
+            secondBestDist = accountBest;
         }
     }
 
-    // No stored embedding with a comparable dimensionality.
+    // No account with a comparable-dimensionality embedding.
     // (e.g. dlib 128-D probe against an ONNX 512-D enrollment — a config/data
     // mismatch. DEBUG level: fires on every frame and would spam the log.)
     if (bestIdx >= m_users.size()) {
-        FACELOGIN_DEBUG(L"FindBestMatch: no stored %zu-D embedding (users=%zu)",
+        FACELOGIN_DEBUG(L"FindBestMatch: no stored %zu-D embedding (accounts=%zu)",
                         probeDim, m_users.size());
         return std::nullopt;
     }
@@ -367,11 +583,11 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
     }
 
     // Reject if best match is not meaningfully better than second-best.
-    // A ratio >= 0.75 means the probe is ambiguous between two users
+    // A ratio >= 0.75 means the probe is ambiguous between two accounts
     // (or between the real user and a noisy impostor).
-    // Skip this check when only one user is enrolled — there is no
+    // Skip this check when only one account is comparable — there is no
     // second-best to compare against.
-    if (m_users.size() > 1 && secondBestDist < 1e9f) {
+    if (comparableAccounts > 1 && secondBestDist < 1e9f) {
         float ratio = bestDist / secondBestDist;
         if (ratio >= 0.75f) {
             FACELOGIN_INFO(L"Match rejected: best/second-best ratio too high (%.3f/%.3f=%.3f)",
@@ -383,6 +599,8 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
     if (bestDist < effThreshold) {
         MatchResult best;
         best.distance = bestDist;
+        best.matchedFaceId = bestFaceId;
+        best.accountFaceCount = m_users[bestIdx].faces.size();
         best.upn = m_users[bestIdx].upn;
         best.sid = m_users[bestIdx].sid;
         best.username = m_users[bestIdx].username;
