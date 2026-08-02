@@ -97,10 +97,7 @@ FaceLogin/
 │   │   └── resources/              # 部署文件 (编译时嵌入)
 │   └── wails.json                  # Wails 项目配置
 ├── scripts/                        # 辅助脚本
-│   ├── download_models.ps1         # dlib 模型文件下载
-│   ├── install.bat                 # 命令行安装
-│   ├── uninstall.bat               # 命令行卸载
-│   ├── render_svg.js               # SVG → tile 像素数据转换
+│   ├── download_models.ps1         # 模型文件下载 (shape predictor)
 │   └── start_standalone.bat        # 开发模式快速启动
 └── assets/                         # 静态资源 (图标等)
 ```
@@ -462,19 +459,19 @@ class FaceDetector {
 - `DetectLargestFace()`: 返回面积最大的人脸（离摄像头最近）
 - `GetLandmarks()`: 对给定矩形提取地标
 
-### 5.4 人脸识别 (`face_recognizer.h/cpp`)
+### 5.4 人脸识别 (`onnx_models.h/cpp`)
 
 ```cpp
-class FaceRecognizer {
-    FaceNetType m_net;  // ResNet-34 架构 (dlib_face_recognition_resnet_model_v1.dat)
+class OnnxRecognizer {
+    // InsightFace w600k_mbf ONNX (512-D embedding)
 };
 ```
 
-**初始化**: 加载 `dlib_face_recognition_resnet_model_v1.dat` (~22 MB)
+**初始化**: 加载 `w600k_mbf.onnx` (ONNX Runtime)
 
-**嵌入计算**: 输入 RGB 帧 + 地标 → 输出 128 维浮点向量
+**嵌入计算**: 输入对齐后的 RGB 帧 + 地标 → 输出 512 维浮点向量
 
-**匹配**: 欧氏距离比对，默认阈值 0.30。同时检查最佳匹配 / 次佳匹配比 < 0.75（防误匹配）。
+**匹配**: 欧氏距离比对，默认阈值 0.30（512-D 用 0.80）。同时检查最佳匹配 / 次佳匹配比 < 0.75（防误匹配）。
 
 ### 5.5 活体检测 (`liveness_detector.h/cpp`)
 
@@ -810,7 +807,6 @@ C:\Program Files\FaceLogin\               # 安装目录 (用户可选)
 │   └── enrollment.log
 └── models/
     ├── shape_predictor_68_face_landmarks.dat       (~97 MB)
-    ├── dlib_face_recognition_resnet_model_v1.dat    (~22 MB)
     ├── det_500m.onnx                                 (~16 MB)
     ├── w600k_mbf.onnx                                 (~6 MB)
     └── OULU_Protocol_2_model_0_0.onnx                 (~1 MB)
@@ -832,12 +828,11 @@ C:\ProgramData\FaceLogin\                   # 数据目录
 | 文件 | 大小 | 用途 | 来源 |
 |---|---|---|---|
 | `shape_predictor_68_face_landmarks.dat` | ~97 MB | 68点面部地标提取 | dlib.net |
-| `dlib_face_recognition_resnet_model_v1.dat` | ~22 MB | dlib ResNet-34 128维嵌入 | dlib.net |
 | `det_500m.onnx` | ~16 MB | SCRFD 人脸检测 | InsightFace |
-| `w600k_mbf.onnx` | ~6 MB | buffalo_s MobileFaceNet 128维嵌入 | InsightFace |
+| `w600k_mbf.onnx` | ~6 MB | buffalo_s MobileFaceNet 512维嵌入 | InsightFace |
 | `OULU_Protocol_2_model_0_0.onnx` | ~1 MB | MiniFASNetV2 静默反欺诈 | MiniFASNet |
 
-下载脚本: `scripts/download_models.ps1` 可下载 dlib 模型文件。ONNX 模型文件需从 InsightFace 项目自行下载。
+下载脚本: `scripts/download_models.ps1` 可下载 dlib shape predictor 模型。ONNX 模型（det_500m / w600k_mbf / OULU）随安装包分发。
 
 ---
 

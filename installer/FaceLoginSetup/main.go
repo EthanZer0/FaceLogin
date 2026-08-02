@@ -70,26 +70,22 @@ func main() {
 	// v1.3.0: no forced config overrides needed. The V3→V4 database migration
 	// (multi-face support) is fully backward compatible — old data is upgraded
 	// in memory on load, no re-enrollment required.
+	// v1.4.0: no forced config overrides needed. Removed the unused legacy dlib
+	// models (recognizer + HOG detector) — smaller installer, no re-enrollment.
 	internal.ConfigUpgradeEnabled = false
 
 	// =========================================================================
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.3.0"
-	internal.NoticeTitle = "FaceLogin 1.3.0 更新说明"
-	internal.NoticeBody = "新增功能：\n" +
-		"- 多账户支持：每个 Windows 账号可录入多张人脸\n" +
-		"- 人脸管理：可给每张脸命名、删除单张脸或清空全部\n" +
-		"- 首次使用自动引导选择摄像头\n" +
-		"- 卸载时彻底清除（程序文件、人脸数据、日志）\n\n" +
-		"修复：\n" +
-		"- 修复锁屏时摄像头无法打开、指示灯不亮的问题\n" +
-		"- 修复安装到中文路径时无法启动摄像头的问题\n\n" +
+	internal.NoticeVersion = "1.4.0"
+	internal.NoticeTitle = "FaceLogin 1.4.0 更新说明"
+	internal.NoticeBody = "优化：\n" +
+		"- 移除未使用的旧版 dlib 模型，安装包体积更小\n" +
+		"- 修复控制台启动时的模型检查（改为校验实际使用的 ONNX 模型）\n\n" +
 		"说明：\n" +
-		"- 已有的人脸数据自动兼容，无需重新录入\n" +
-		"- 同一账号重新采集人脸 = 新增一张脸，不再覆盖旧脸（每账号最多 5 张）\n" +
-		"- 卸载会删除所有人脸数据且不可恢复，请谨慎操作"
+		"- 现有的人脸数据和配置完全兼容，无需重新录入\n" +
+		"- 人脸识别功能与 1.3.0 一致，本版本仅做体积优化与启动修复"
 
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources

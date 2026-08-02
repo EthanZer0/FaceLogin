@@ -11,7 +11,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="DEVELOPMENT.md"><img src="https://img.shields.io/badge/platform-Windows%2010%2B%20x64-blue" alt="Platform"></a>
   <a href="DEVELOPMENT.md"><img src="https://img.shields.io/badge/language-C%2B%2B20%20%7C%20Go-orange" alt="Language"></a>
-  <a href="https://github.com/EthanZer0/FaceLogin/releases"><img src="https://img.shields.io/badge/version-1.3.0-green" alt="Version"></a>
+  <a href="https://github.com/EthanZer0/FaceLogin/releases"><img src="https://img.shields.io/badge/version-1.4.0-green" alt="Version"></a>
 </p>
 
 ---
@@ -20,9 +20,9 @@
 
 <div align="center">
 
-| 锁屏人脸解锁 | 双重活体检测 | 双引擎识别 |
+| 锁屏人脸解锁 | 双重活体检测 | ONNX 识别 |
 |:---:|:---:|:---:|
-| Windows 原生锁屏集成<br>无需额外操作 | EAR 眨眼 + MiniFASNetV2<br>防照片/视频/面具攻击 | dlib ResNet-34 + InsightFace<br>ONNX 混合识别模式 |
+| Windows 原生锁屏集成<br>无需额外操作 | EAR 眨眼 + MiniFASNetV2<br>防照片/视频/面具攻击 | SCRFD 检测 + InsightFace<br>ONNX 人脸识别 |
 | **多账户支持** | **安全存储** | **热配置** |
 | 本地 SAM + 微软在线<br>账户全兼容，每账号可录多张人脸 | DPAPI 机器范围加密<br>管道 DACL 访问控制 | 运行时修改识别参数<br>无需重启服务 |
 
@@ -49,7 +49,7 @@ flowchart TB
 
     subgraph Storage["数据存储"]
         direction LR
-        UsersDB[("data/<br/>users.dat")] ~~~ Config[("data/<br/>config.json")] ~~~ Models[("models/<br/>ONNX + dlib")] ~~~ Logs[("log/<br/>日志文件")]
+        UsersDB[("data/<br/>users.dat")] ~~~ Config[("data/<br/>config.json")] ~~~ Models[("models/<br/>ONNX + landmarks")] ~~~ Logs[("log/<br/>日志文件")]
     end
 
     LogonUI -->|"COM 接口"| CP
@@ -97,7 +97,7 @@ flowchart TB
 | 摄像头 | USB 或内置，支持 1280×720 |
 | 运行时 | WebView2（Windows 11 内置，Win10 自动安装） |
 | 权限 | 管理员权限（安装和注册需要） |
-| 磁盘空间 | ~300 MB（含模型文件 ~140 MB） |
+| 磁盘空间 | ~200 MB（含模型文件 ~28 MB） |
 
 ---
 
@@ -138,14 +138,14 @@ FaceLogin/
 ### 前置条件
 
 - **Visual Studio 2022**（含 C++ 工作负载）
-- **vcpkg** — dlib、onnxruntime
+- **vcpkg** — dlib（仅用于 68 点地标）、onnxruntime
 - **Go 1.21+** + **Wails v2**（仅安装程序）
 - **CMake 3.20+**
 
 ### C++ 组件
 
 ```powershell
-# vcpkg 依赖
+# vcpkg 依赖（dlib 仅用于 shape predictor 地标，识别/检测用 ONNX）
 vcpkg install dlib[core] onnxruntime --triplet x64-windows
 
 # 构建
@@ -167,7 +167,6 @@ wails build -clean -platform windows/amd64
 | 文件 | 用途 | 下载 |
 |---|---|---|
 | `shape_predictor_68_face_landmarks.dat` | 面部地标提取 | `scripts/download_models.ps1` |
-| `dlib_face_recognition_resnet_model_v1.dat` | dlib 人脸识别 | `scripts/download_models.ps1` |
 | `det_500m.onnx` | SCRFD 人脸检测 | [InsightFace](https://github.com/deepinsight/insightface) |
 | `w600k_mbf.onnx` | InsightFace 人脸识别 | [InsightFace](https://github.com/deepinsight/insightface) |
 | `OULU_Protocol_2_model_0_0.onnx` | 静默反欺诈 | [MiniFASNet](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing) |
