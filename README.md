@@ -195,10 +195,4 @@ wails build -clean -platform windows/amd64
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=EthanZer0%2FFaceLogin&type=timeline&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=EthanZer0/FaceLogin&type=timeline&theme=dark&legend=top-left&sealed_token=9YnxAN9XfHJMUCBVb5jRwWO3dXzdEpSvr-tDzHXgChEHjqNQ_VVCWH8KFMPXUNVwcm2GjuIIf9adP3z27SjNvTvUw1PizYVhsCMiG1TKD4LRE4wu9Nre7g" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=EthanZer0/FaceLogin&type=timeline&legend=top-left&sealed_token=9YnxAN9XfHJMUCBVb5jRwWO3dXzdEpSvr-tDzHXgChEHjqNQ_VVCWH8KFMPXUNVwcm2GjuIIf9adP3z27SjNvTvUw1PizYVhsCMiG1TKD4LRE4wu9Nre7g" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=EthanZer0/FaceLogin&type=timeline&legend=top-left&sealed_token=9YnxAN9XfHJMUCBVb5jRwWO3dXzdEpSvr-tDzHXgChEHjqNQ_VVCWH8KFMPXUNVwcm2GjuIIf9adP3z27SjNvTvUw1PizYVhsCMiG1TKD4LRE4wu9Nre7g" />
- </picture>
-</a>
+[![Star History Chart](https://api.star-history.com/chart?repos=EthanZer0/FaceLogin&type=timeline&legend=top-left&sealed_token=9YnxAN9XfHJMUCBVb5jRwWO3dXzdEpSvr-tDzHXgChEHjqNQ_VVCWH8KFMPXUNVwcm2GjuIIf9adP3z27SjNvTvUw1PizYVhsCMiG1TKD4LRE4wu9Nre7g)](https://www.star-history.com/?repos=EthanZer0%2FFaceLogin&type=timeline&legend=top-left)
