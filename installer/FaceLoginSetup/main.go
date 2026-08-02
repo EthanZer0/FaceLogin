@@ -63,17 +63,29 @@ func main() {
 	//   internal.NoticeBody     = "行1\n行2\n行3"  // one bullet per line
 	//
 	// v1.0.1: threshold defaults changed (match strictness 70 / anti-spoof 0.30).
-	// =========================================================================
-	internal.ConfigUpgradeEnabled = true
+	// v1.2.0: no forced config overrides needed (thresholds unchanged; the new
+	// camera_device field defaults to "" = first device automatically). The
+	// V2→V3 database migration cannot be automated (requires re-enrollment),
+	// so it is surfaced via the upgrade notice below instead.
+	internal.ConfigUpgradeEnabled = false
 
 	// =========================================================================
-	// B) Upgrade notice — placeholder content for verifying the popup mechanic.
-	// Replace with the real release notes before shipping.
+	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.1.0"
-	internal.NoticeTitle = "FaceLogin 1.1.0 更新说明"
-	internal.NoticeBody = "这是占位公告，用于验证弹窗机制。\n正式发布前请替换为真实更新内容。\n例如：升级后请重新录入人脸以适配新识别引擎。"
+	internal.NoticeVersion = "1.2.0"
+	internal.NoticeTitle = "FaceLogin 1.2.0 更新说明"
+	internal.NoticeBody = "⚠️ 重要：升级后请重新录入人脸\n" +
+		"本次更新升级了人脸识别引擎（移除旧模型，统一为新的 ONNX 识别），" +
+		"旧版本（1.1.0 及更早）录入的人脸数据已不兼容，升级后需重新录入人脸才能使用人脸登录。\n\n" +
+		"新增功能：\n" +
+		"- 摄像头选择器：多摄像头 / 虚拟摄像头环境可选设备\n" +
+		"- 支持无密码账户（微软无密码 / 本地空密码）录入\n" +
+		"- 微软账号密码验证改进\n\n" +
+		"修复：\n" +
+		"- 打断识别时摄像头立即释放\n" +
+		"- 修复多处登录崩溃问题\n" +
+		"- 修复摄像头路径乱码等问题"
 
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
