@@ -66,6 +66,35 @@ func DirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+// IsSafeInstallDir returns true only when path looks like a real FaceLogin
+// install directory, i.e. the directory name contains "FaceLogin" (case-
+// insensitive) AND the directory holds FaceLoginService.exe. Used before an
+// uninstall deletes the tree: without this guard, a corrupted/malicious
+// InstallPath registry value (e.g. "C:\" or "C:\Users\<user>") would make
+// os.RemoveAll recursively delete an arbitrary directory — catastrophic data
+// loss. When this returns false, the uninstall must NOT delete the directory.
+func IsSafeInstallDir(path string) bool {
+	if !DirExists(path) {
+		return false
+	}
+
+	// 1) Directory name must contain "FaceLogin" (case-insensitive).
+	base := strings.ToLower(filepath.Base(filepath.Clean(path)))
+	if !strings.Contains(base, "facelogin") {
+		return false
+	}
+
+	// 2) The directory must contain the service executable — the strongest
+	//    signal that this is really an install dir, not just a folder whose
+	//    name happens to contain "FaceLogin".
+	svcPath := filepath.Join(path, "FaceLoginService.exe")
+	if !FileExists(svcPath) {
+		return false
+	}
+
+	return true
+}
+
 // CopyFile copies a file from src to dst. Parent directories of dst must exist.
 func CopyFile(src, dst string) error {
 	data, err := os.ReadFile(src)

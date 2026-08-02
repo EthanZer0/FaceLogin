@@ -89,3 +89,77 @@ func ExtractAll(destDir string, progressFn func(step, total int, name string)) e
 	}
 	return nil
 }
+
+// RemoveInstalledFiles deletes exactly the files this installer deployed, in
+// the same layout ExtractAll wrote them. It NEVER removes the install directory
+// or any user data (data/, log/). Uninstall uses this instead of os.RemoveAll
+// so a corrupted/malicious InstallPath registry value can never wipe an
+// arbitrary directory. Returns the number of files removed and the first error
+// (if any) — callers can continue and report a summary.
+func RemoveInstalledFiles(destDir string) (int, error) {
+	removed := 0
+	var firstErr error
+	recordErr := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	modelsDir := filepath.Join(destDir, "models")
+
+	entries, err := fs.ReadDir(EmbeddedFS, "resources")
+	if err != nil {
+		// If embedded resources can't be enumerated, fall back to the known
+		// top-level binary names so uninstall still removes the executables.
+		for _, name := range []string{
+			"FaceLoginService.exe",
+			"FaceLoginCredentialProvider.dll",
+			"FaceLoginConsole.exe",
+		} {
+			p := filepath.Join(destDir, name)
+			if FileExists(p) {
+				if err := os.Remove(p); err != nil {
+					recordErr(err)
+				} else {
+					removed++
+				}
+			}
+		}
+		return removed, firstErr
+	}
+	modelEntries, _ := fs.ReadDir(EmbeddedFS, "resources/models")
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		var dstPath string
+		if filepath.Ext(name) == ".dat" {
+			dstPath = filepath.Join(modelsDir, name)
+		} else {
+			dstPath = filepath.Join(destDir, name)
+		}
+		if FileExists(dstPath) {
+			if err := os.Remove(dstPath); err != nil {
+				recordErr(err)
+			} else {
+				removed++
+			}
+		}
+	}
+	for _, entry := range modelEntries {
+		if entry.IsDir() {
+			continue
+		}
+		dstPath := filepath.Join(modelsDir, entry.Name())
+		if FileExists(dstPath) {
+			if err := os.Remove(dstPath); err != nil {
+				recordErr(err)
+			} else {
+				removed++
+			}
+		}
+	}
+	return removed, firstErr
+}

@@ -200,13 +200,17 @@ func (a *App) Uninstall() map[string]interface{} {
 		a.emit(50, "注销登录组件", "done", "")
 	}
 
-	// Step 3: Delete install directory
+	// Step 3: Delete installed program files (files only — the install
+	// directory itself, data/ and log/ are preserved; user data is kept).
 	a.emit(50, "删除程序文件", "running", "")
 	if installDir != "" && internal.DirExists(installDir) {
-		if err = os.RemoveAll(installDir); err != nil {
-			a.emit(50, "删除程序文件", "warn", err.Error())
+		removed, rmErr := internal.RemoveInstalledFiles(installDir)
+		if rmErr != nil {
+			a.emit(50, "删除程序文件", "warn",
+				fmt.Sprintf("已删除 %d 个文件，部分文件删除失败。", removed))
 		} else {
-			a.emit(70, "删除程序文件", "done", "")
+			a.emit(70, "删除程序文件", "done",
+				fmt.Sprintf("已删除 %d 个程序文件。", removed))
 		}
 	} else {
 		a.emit(70, "删除程序文件", "done", "")
@@ -223,7 +227,7 @@ func (a *App) Uninstall() map[string]interface{} {
 	a.emit(100, "完成", "done",
 		"卸载完成。用户数据和日志已保留，如需清除请手动删除。")
 
-	return result(true, "卸载完成，登录界面已恢复为默认密码登录。")
+	return result(true, "卸载完成，登录界面已恢复为默认密码登录。用户数据和日志已保留。")
 }
 
 func result(success bool, message string) map[string]interface{} {
