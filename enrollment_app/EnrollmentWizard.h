@@ -41,7 +41,9 @@ public:
     bool IsLivenessPassed() const { return m_livenessPassed; }
     bool IsLivenessChecking() const { return m_livenessChecking; }
     bool ValidatePassword(const std::wstring& password);
-    bool SaveEnrollment(const std::wstring& password);
+    // Save enrollment with the given password. label names this face (may be
+    // empty — the backend falls back to L"脸N").
+    bool SaveEnrollment(const std::wstring& password, const std::wstring& label = L"");
 
     // Passwordless account support (MSA accounts with no password — PIN/Hello
     // only). Returns:
@@ -51,7 +53,25 @@ public:
     int GetPasswordlessState() const;
     // Save enrollment with no password (uses the current logged-on session
     // identity as the "self" proof). Stores a passwordless sentinel.
-    bool SaveEnrollmentNoPassword();
+    // label names this face (empty → L"脸N").
+    bool SaveEnrollmentNoPassword(const std::wstring& label = L"");
+
+    // Multi-face management (1.3.0). The current account can enroll several
+    // faces; each save appends one face instead of replacing the old one.
+    // Number of faces enrolled for the current account (0 = not enrolled).
+    int GetFaceCount();
+    // JSON list of the current account's faces: [{"id":1,"label":"脸1"},...]
+    std::string GetFacesJson();
+    // Append a new face for the current account without re-entering a password
+    // (identity proven by the session token SID). label may be empty.
+    bool SaveEnrollmentAppend(const std::wstring& label = L"");
+    // Delete one face of the current account (removes the account if it was
+    // the last face). Returns false on unknown id / not enrolled.
+    bool DeleteFace(int faceId);
+    // Remove all faces of the current account (= remove the account).
+    bool ClearAllFaces();
+    // Rename one face of the current account.
+    bool RenameFace(int faceId, const std::wstring& label);
 
     // Configuration
     std::string GetConfig() const;
@@ -81,7 +101,8 @@ private:
     std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
     std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces);
 
-    bool SaveEnrollmentImpl(const std::wstring& password, bool passwordless);
+    bool SaveEnrollmentImpl(const std::wstring& password, bool passwordless,
+                            const std::wstring& label);
     static std::wstring GetCurrentProcessUserSid();
 
     // Camera & face processing

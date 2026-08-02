@@ -294,8 +294,23 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"GetCameraList") *ids = 21;
     else if (n == L"IsPasswordlessState") *ids = 22;
     else if (n == L"SaveEnrollmentNoPassword") *ids = 23;
+    else if (n == L"GetFaceCount") *ids = 24;
+    else if (n == L"GetFacesJson") *ids = 25;
+    else if (n == L"SaveEnrollmentAppend") *ids = 26;
+    else if (n == L"DeleteFace") *ids = 27;
+    else if (n == L"ClearAllFaces") *ids = 28;
+    else if (n == L"RenameFace") *ids = 29;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
+}
+
+// Read an optional (may be absent) string argument at position argIdx from the
+// DISPPARAMS rgvarg array (0 = last JS argument). Returns empty when absent or
+// not a BSTR. WebView2's host object passes arguments with VT_BSTR.
+static std::wstring OptionalArg(DISPPARAMS* p, UINT argIdx) {
+    if (!p || p->cArgs < argIdx + 1) return L"";
+    if (p->rgvarg[argIdx].vt != VT_BSTR) return L"";
+    return std::wstring(p->rgvarg[argIdx].bstrVal);
 }
 
 static VARIANT MakeStr(const std::string& s) {
@@ -344,9 +359,21 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
             break;
         }
         case 7: {
+            // DISPPARAMS.rgvarg is in REVERSE order: rgvarg[0] is the LAST JS
+            // argument. JS calls SaveEnrollment(password, label), so rgvarg[0]
+            // is the label and rgvarg[1] is the password. (Reading them the
+            // other way round stored the password as the face label — see the
+            // first-enrollment password bug.)
             if (p->cArgs < 1) return DISP_E_BADPARAMCOUNT;
-            std::wstring pass(p->rgvarg[0].vt == VT_BSTR ? p->rgvarg[0].bstrVal : L"");
-            if (res) *res = MakeBool(m_wizard->SaveEnrollment(pass));
+            std::wstring label = OptionalArg(p, 0);
+            std::wstring pass;
+            if (p->cArgs >= 2) {
+                pass = (p->rgvarg[1].vt == VT_BSTR) ? std::wstring(p->rgvarg[1].bstrVal) : L"";
+            } else {
+                // Backward compat: a single-argument call is the password.
+                pass = (p->rgvarg[0].vt == VT_BSTR) ? std::wstring(p->rgvarg[0].bstrVal) : L"";
+            }
+            if (res) *res = MakeBool(m_wizard->SaveEnrollment(pass, label));
             break;
         }
         case 8:  if (res) *res = MakeStr(m_wizard->GetLatestFrameBase64()); break;
@@ -374,7 +401,32 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
         case 20: if (res) *res = MakeStr(m_wizard->GetLatestFrameAndFaces()); break;
         case 21: if (res) *res = MakeStr(m_wizard->GetCameraList()); break;
         case 22: if (res) *res = MakeInt(m_wizard->GetPasswordlessState()); break;
-        case 23: if (res) *res = MakeBool(m_wizard->SaveEnrollmentNoPassword()); break;
+        case 23: {
+            std::wstring label = OptionalArg(p, 0);  // first JS arg: face label
+            if (res) *res = MakeBool(m_wizard->SaveEnrollmentNoPassword(label));
+            break;
+        }
+        case 24: if (res) *res = MakeInt(m_wizard->GetFaceCount()); break;
+        case 25: if (res) *res = MakeStr(m_wizard->GetFacesJson()); break;
+        case 26: {
+            std::wstring label = OptionalArg(p, 0);  // face label
+            if (res) *res = MakeBool(m_wizard->SaveEnrollmentAppend(label));
+            break;
+        }
+        case 27: {
+            if (p->cArgs < 1) return DISP_E_BADPARAMCOUNT;
+            if (p->rgvarg[0].vt != VT_I4) return DISP_E_TYPEMISMATCH;
+            if (res) *res = MakeBool(m_wizard->DeleteFace(p->rgvarg[0].lVal));
+            break;
+        }
+        case 28: if (res) *res = MakeBool(m_wizard->ClearAllFaces()); break;
+        case 29: {
+            if (p->cArgs < 2) return DISP_E_BADPARAMCOUNT;
+            if (p->rgvarg[1].vt != VT_I4) return DISP_E_TYPEMISMATCH;
+            std::wstring label = OptionalArg(p, 0);
+            if (res) *res = MakeBool(m_wizard->RenameFace(p->rgvarg[1].lVal, label));
+            break;
+        }
         default: return DISP_E_MEMBERNOTFOUND;
         }
         return S_OK;

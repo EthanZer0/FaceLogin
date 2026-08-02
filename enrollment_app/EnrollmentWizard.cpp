@@ -706,6 +706,36 @@ static std::string WstrToUtf8(const std::wstring& ws) {
     return result;
 }
 
+// Helper: UTF-8 string with JSON escaping (quotes, backslashes) — safe to
+// embed directly inside a JSON string literal for the face list.
+static std::string WstrToUtf8Escaped(const std::wstring& ws) {
+    std::string out;
+    for (wchar_t ch : ws) {
+        if (ch == L'"')       out += "\\\"";
+        else if (ch == L'\\') out += "\\\\";
+        else {
+            char mb[4] = {};
+            int n = WideCharToMultiByte(CP_UTF8, 0, &ch, 1, mb, 4, nullptr, nullptr);
+            if (n > 0) out.append(mb, static_cast<size_t>(n));
+        }
+    }
+    return out;
+}
+
+// Notify the FaceLogin service to reload the user database after a write.
+static void NotifyServiceReload() {
+    HANDLE hPipe = CreateFileW(ipc::PIPE_NAME, GENERIC_WRITE, 0, nullptr,
+                               OPEN_EXISTING, 0, nullptr);
+    if (hPipe != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        std::wstring msg(ipc::MSG_RELOAD_DB);
+        msg.push_back(L'\0');
+        WriteFile(hPipe, msg.c_str(), static_cast<DWORD>(msg.size() * sizeof(wchar_t)),
+                  &written, nullptr);
+        CloseHandle(hPipe);
+    }
+}
+
 std::string EnrollmentWizard::GetUserSid() const {
     return WstrToUtf8(m_sid);
 }
@@ -751,11 +781,12 @@ bool EnrollmentWizard::ValidatePassword(const std::wstring& password) {
     return false;
 }
 
-bool EnrollmentWizard::SaveEnrollment(const std::wstring& password) {
-    return SaveEnrollmentImpl(password, /*passwordless=*/false);
+bool EnrollmentWizard::SaveEnrollment(const std::wstring& password,
+                                      const std::wstring& label) {
+    return SaveEnrollmentImpl(password, /*passwordless=*/false, label);
 }
 
-bool EnrollmentWizard::SaveEnrollmentNoPassword() {
+bool EnrollmentWizard::SaveEnrollmentNoPassword(const std::wstring& label) {
     // Re-verify the current session identity before allowing a passwordless
     // save — the user must be the logged-on owner of this account.
     std::wstring tokenSid = GetCurrentProcessUserSid();
@@ -766,7 +797,7 @@ bool EnrollmentWizard::SaveEnrollmentNoPassword() {
     }
     FACELOGIN_INFO(L"Passwordless enrollment confirmed for %s (session identity match)",
                    m_username.c_str());
-    return SaveEnrollmentImpl(L"", /*passwordless=*/true);
+    return SaveEnrollmentImpl(L"", /*passwordless=*/true, label);
 }
 
 // Returns the SID of the currently logged-on session identity (the process
@@ -835,7 +866,8 @@ int EnrollmentWizard::GetPasswordlessState() const {
     return 2;
 }
 
-bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool passwordless) {
+bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool passwordless,
+                                          const std::wstring& label) {
     if (m_embeddings.empty()) { FACELOGIN_ERROR(L"No face samples"); return false; }
 
     // Embedding consistency check: verify all samples are from the same person.
@@ -885,30 +917,55 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
         avgEmbedding /= static_cast<float>(m_embeddings.size());
     }
 
-    // Protect the password (or store the passwordless sentinel).
-    std::vector<uint8_t> protectedPassword;
-    if (passwordless) {
-        protectedPassword = { facelogin::kPasswordlessSentinelByte };
-        FACELOGIN_INFO(L"Storing passwordless enrollment (sentinel) for %s",
-                       m_username.c_str());
-    } else {
-        protectedPassword = DpapiUtil::Protect(
-            reinterpret_cast<const uint8_t*>(password.c_str()),
-            static_cast<UINT>(password.size() * sizeof(wchar_t)));
-        if (protectedPassword.empty()) { FACELOGIN_ERROR(L"DPAPI encryption failed"); return false; }
-    }
-
     m_store.LoadDatabase();
+
     // Copy the average embedding into a plain float vector (full dimensionality —
     // 512-D for ONNX, 128-D for dlib). Never truncate.
     std::vector<float> ef(static_cast<size_t>(avgEmbedding.size()));
     for (long i = 0; i < avgEmbedding.size(); i++)
         ef[static_cast<size_t>(i)] = avgEmbedding(static_cast<long>(i));
-    m_store.AddUser(m_username, m_upn, m_sid, protectedPassword, ef);
+
+    // create-or-append (1.3.0): the same account may hold several faces.
+    // First-time enrollment stores the (protected) password and face #1;
+    // subsequent enrollments APPEND a face and leave the stored password
+    // untouched (the user is the logged-on session owner, already trusted).
+    size_t idx = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    uint32_t newFaceId = 0;
+    if (idx >= m_store.GetUsers().size()) {
+        // First face for this account — protect the password now.
+        std::vector<uint8_t> protectedPassword;
+        if (passwordless) {
+            protectedPassword = { facelogin::kPasswordlessSentinelByte };
+            FACELOGIN_INFO(L"Storing passwordless enrollment (sentinel) for %s",
+                           m_username.c_str());
+        } else {
+            protectedPassword = DpapiUtil::Protect(
+                reinterpret_cast<const uint8_t*>(password.c_str()),
+                static_cast<UINT>(password.size() * sizeof(wchar_t)));
+            if (protectedPassword.empty()) { FACELOGIN_ERROR(L"DPAPI encryption failed"); return false; }
+        }
+        if (!m_store.AddFace(m_username, m_upn, m_sid, protectedPassword, ef, label, &newFaceId)) {
+            FACELOGIN_ERROR(L"Failed to create enrollment for %s", m_username.c_str());
+            return false;
+        }
+    } else {
+        // Append a face to an existing account. AddFace ignores the password
+        // argument here, so the stored password/sentinel is preserved.
+        if (m_store.GetUsers()[idx].faces.size() >= facelogin::kMaxFacesPerUser) {
+            FACELOGIN_ERROR(L"Cannot append: %s already has %zu faces (max %zu)",
+                            m_username.c_str(), m_store.GetUsers()[idx].faces.size(),
+                            facelogin::kMaxFacesPerUser);
+            return false;
+        }
+        if (!m_store.AddFace(m_username, m_upn, m_sid, {}, ef, label, &newFaceId)) {
+            FACELOGIN_ERROR(L"Failed to append face for %s", m_username.c_str());
+            return false;
+        }
+    }
     if (!m_store.SaveDatabase()) { FACELOGIN_ERROR(L"Failed to save database"); return false; }
 
-    FACELOGIN_INFO(L"Enrollment saved for: %s (emb=%zu-D%s)",
-                   m_username.c_str(), ef.size(),
+    FACELOGIN_INFO(L"Enrollment saved for: %s (face #%u, emb=%zu-D%s)",
+                   m_username.c_str(), newFaceId, ef.size(),
                    passwordless ? L", passwordless" : L"");
 
     // Notify service to reload database
@@ -922,6 +979,72 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
                   &written, nullptr);
         CloseHandle(hPipe);
     }
+    return true;
+}
+
+// ============================================================================
+// Multi-face management (1.3.0)
+// ============================================================================
+
+int EnrollmentWizard::GetFaceCount() {
+    m_store.LoadDatabase();
+    return static_cast<int>(m_store.GetFaceCount(m_sid));
+}
+
+std::string EnrollmentWizard::GetFacesJson() {
+    m_store.LoadDatabase();
+    size_t idx = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    if (idx >= m_store.GetUsers().size()) return "[]";
+
+    std::ostringstream js;
+    js << "[";
+    const auto& faces = m_store.GetUsers()[idx].faces;
+    for (size_t i = 0; i < faces.size(); i++) {
+        if (i > 0) js << ",";
+        const auto& f = faces[i];
+        js << "{\"id\":" << f.id
+           << ",\"label\":\"" << WstrToUtf8Escaped(f.label) << "\"}";
+    }
+    js << "]";
+    return js.str();
+}
+
+bool EnrollmentWizard::SaveEnrollmentAppend(const std::wstring& label) {
+    // The appended face belongs to the logged-on session owner — the session
+    // token SID must match the enrolled account (same self-proof as the
+    // passwordless flow). No password is required for an append.
+    std::wstring tokenSid = GetCurrentProcessUserSid();
+    if (tokenSid.empty() || tokenSid != m_sid) {
+        FACELOGIN_ERROR(L"Face append refused: token SID %s != enrolled SID %s",
+                        tokenSid.c_str(), m_sid.c_str());
+        return false;
+    }
+    return SaveEnrollmentImpl(L"", /*passwordless=*/false, label);
+}
+
+bool EnrollmentWizard::DeleteFace(int faceId) {
+    if (faceId <= 0) return false;
+    m_store.LoadDatabase();
+    if (!m_store.DeleteFace(m_sid, static_cast<uint32_t>(faceId))) return false;
+    if (!m_store.SaveDatabase()) return false;
+    NotifyServiceReload();
+    return true;
+}
+
+bool EnrollmentWizard::ClearAllFaces() {
+    m_store.LoadDatabase();
+    if (!m_store.ClearAllFaces(m_sid)) return false;
+    if (!m_store.SaveDatabase()) return false;
+    NotifyServiceReload();
+    return true;
+}
+
+bool EnrollmentWizard::RenameFace(int faceId, const std::wstring& label) {
+    if (faceId <= 0) return false;
+    m_store.LoadDatabase();
+    if (!m_store.RenameFace(m_sid, static_cast<uint32_t>(faceId), label)) return false;
+    if (!m_store.SaveDatabase()) return false;
+    NotifyServiceReload();
     return true;
 }
 
