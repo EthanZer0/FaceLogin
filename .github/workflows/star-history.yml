@@ -1,5 +1,7 @@
 name: Update Star History
 
+# 触发器：仅负责 schedule 触发 + 从 star-history 分支运行脚本。
+# 所有脚本与数据都隔离在 star-history 分支，main 不维护任何 star-history 逻辑。
 on:
   schedule:
     # 每天 UTC 01:17 更新（避开整点，GitHub 定时任务尽量错峰）
@@ -18,32 +20,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout main (for scripts)
+      - name: Checkout star-history branch (self-contained scripts + data)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 拉全部分支（含 star-history），判断是否已存在
+          ref: star-history
+          fetch-depth: 0   # 拉全部分支，判断历史是否已存在
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Restore cumulative history from star-history branch
+      - name: Prepare data dir
         run: |
           set -e
           mkdir -p .star-history-data
-          # .star-history-data 只在 star-history 分支维护，main 上不存在。
-          # 每次运行先把累积 history.json 从分支取回，snapshot 在其上追加当天，
-          # 否则历史会被覆盖成单点（曲线消失）。
-          if git rev-parse --verify "refs/remotes/origin/star-history" >/dev/null 2>&1; then
-            if git cat-file -e "origin/star-history:history.json" 2>/dev/null; then
-              git show "origin/star-history:history.json" > .star-history-data/history.json
-              echo "已恢复历史: $(grep -c '\"date\"' .star-history-data/history.json) 天"
-            else
-              echo "分支无 history.json，从空历史起步"
-            fi
+          # 已 checkout star-history 分支：history.json 与 .github/scripts 都在工作区。
+          if [ -f history.json ]; then
+            cp history.json .star-history-data/history.json
+            echo "已载入历史: $(grep -c '\"date\"' .star-history-data/history.json) 天"
           else
-            echo "star-history 分支尚不存在，从空历史起步"
+            echo "分支无 history.json，从空历史起步"
           fi
 
       - name: Snapshot star count
@@ -52,7 +49,7 @@ jobs:
         run: node .github/scripts/star-history-data.mjs snapshot EthanZer0/FaceLogin .star-history-data
 
       - name: Generate SVG
-        run: node .github/scripts/star-history-svg.mjs .star-history-data/history.json .star-history-data/star-history.svg
+        run: node .github/scripts/star-history-svg.mjs .star-history-data/history.json .star-history-data/star-history.svg EthanZer0/FaceLogin
 
       - name: Show result
         run: |
@@ -64,35 +61,18 @@ jobs:
       - name: Commit to star-history branch
         run: |
           set -e
-          BRANCH="star-history"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # 准备独立 worktree 目录
-          rm -rf .star-history-gh-pages
-          mkdir -p .star-history-gh-pages
+          # 产物复制回工作区根目录（累积 history + SVG），保持分支上文件稳定。
+          cp .star-history-data/history.json history.json
+          cp .star-history-data/star-history.svg star-history.svg
 
-          # 首次运行：创建 orphan 分支；否则检出已有分支
-          if git rev-parse --verify "refs/remotes/origin/${BRANCH}" >/dev/null 2>&1; then
-            git worktree add .star-history-gh-pages "origin/${BRANCH}" -B "${BRANCH}" >/dev/null 2>&1
-          else
-            git worktree add --detach .star-history-gh-pages >/dev/null 2>&1
-            git -C .star-history-gh-pages checkout --orphan "${BRANCH}" >/dev/null 2>&1
-            git -C .star-history-gh-pages rm -rf . >/dev/null 2>&1 || true
-          fi
-
-          # 复制产物（保持 history.json 的累积）
-          cp .star-history-data/history.json .star-history-gh-pages/history.json
-          cp .star-history-data/star-history.svg .star-history-gh-pages/star-history.svg
-
-          # 提交（幂等：无变化则不产生空提交）
-          cd .star-history-gh-pages
+          # 工作区已是 star-history 分支，直接原地提交产物。
           git add history.json star-history.svg
           if ! git diff --cached --quiet; then
             git commit -m "Update star history ($(date +%Y-%m-%d))"
-            git push origin "${BRANCH}"
+            git push origin star-history
           else
             echo "无变化，跳过提交"
           fi
-          cd ..
-          git worktree remove .star-history-gh-pages --force
