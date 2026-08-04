@@ -41,6 +41,54 @@ float LivenessDetector::ComputeRightEAR(const dlib::full_object_detection& landm
     return ComputeEyeEAR(landmarks, RIGHT_EYE_IDX);
 }
 
+float LivenessDetector::Median(std::vector<float>& v) {
+    std::sort(v.begin(), v.end());
+    size_t n = v.size();
+    if (n == 0) return 0.0f;
+    if (n % 2 == 1) return v[n / 2];
+    return (v[n / 2 - 1] + v[n / 2]) * 0.5f;
+}
+
+// Head-pose proxy: vertical distance from the nose tip (point 33) to the
+// eye line (left outer 36 → right outer 45), normalized by the eye distance.
+//   pose = |cross((p45-p36), (p33-p36))| / |p45-p36|^2
+// Scale-invariant. A blink moves the nose ~zero; tilting the head moves it
+// substantially, so it discriminates real blinks from head-motion EAR dips.
+float LivenessDetector::ComputePose(const dlib::full_object_detection& landmarks) {
+    if (landmarks.num_parts() < 46) return 0.0f;
+
+    auto& p36 = landmarks.part(36);  // left outer eye corner
+    auto& p45 = landmarks.part(45);  // right outer eye corner
+    auto& p33 = landmarks.part(33);  // nose tip
+
+    float ex = p45.x() - p36.x();
+    float ey = p45.y() - p36.y();
+    float eyeDist2 = ex * ex + ey * ey;
+    if (eyeDist2 < 1e-6f) return 0.0f;
+
+    float nx = p33.x() - p36.x();
+    float ny = p33.y() - p36.y();
+    // Cross product magnitude / eyeDist2 = perpendicular distance from the
+    // nose to the eye line, in units of eye distance.
+    float cross = ex * ny - ey * nx;
+    return cross / eyeDist2;  // signed: + = nose below eye line (normal)
+}
+
+void LivenessDetector::Reset() {
+    m_leftSamples.clear();
+    m_rightSamples.clear();
+    m_poseSamples.clear();
+    m_baselinePose = -1.0f;
+    m_baselineReady = false;
+    m_leftThreshold  = m_fixedEarThreshold;
+    m_rightThreshold = m_fixedEarThreshold;
+    m_below = m_open = 0;
+    m_leftBelow = m_leftOpen = 0;
+    m_rightBelow = m_rightOpen = 0;
+    m_blinkDetected = false;
+    m_blinkReported = false;
+}
+
 bool LivenessDetector::ProcessFrame(const dlib::full_object_detection& landmarks) {
     if (m_blinkDetected) {
         // One-shot: return true only once so the debug UI sees the exact
@@ -49,56 +97,127 @@ bool LivenessDetector::ProcessFrame(const dlib::full_object_detection& landmarks
         m_blinkReported = true;
         return true;
     }
+    return m_glassesMode ? ProcessFrameGlasses(landmarks)
+                         : ProcessFrameClassic(landmarks);
+}
 
+// ============================================================================
+// CLASSIC algorithm (default): averaged EAR + fixed threshold + debounced
+// close→open state machine. This is the stable 1.3.0 production detector —
+// no adaptive baseline, no per-eye, no pose gate.
+// ============================================================================
+bool LivenessDetector::ProcessFrameClassic(const dlib::full_object_detection& landmarks) {
     float leftEAR = ComputeLeftEAR(landmarks);
     float rightEAR = ComputeRightEAR(landmarks);
     float avgEAR = (leftEAR + rightEAR) / 2.0f;
 
-    // Debounced blink detection: we look for a full "close → open" cycle.
-    //
-    // Phase 1 — Eye closing: accumulate frames where EAR < threshold.
-    //           Also allow a single above-threshold frame (noise) before
-    //           resetting the close counter — this lets blinks survive
-    //           momentary landmark jitter.
-    // Phase 2 — Eye opening: once enough "closed" frames are accumulated,
-    //           require 2 consecutive "open" frames (debounce) to declare
-    //           the blink complete.
-
-    if (avgEAR < m_earThreshold) {
+    if (avgEAR < m_fixedEarThreshold) {
         // Eye is closed or closing.
-        if (m_consecutiveBelowThreshold < m_consecutiveFramesRequired) {
-            m_consecutiveBelowThreshold++;
-        }
-        m_consecutiveOpen = 0;
+        if (m_below < m_consecutiveFramesRequired) m_below++;
+        m_open = 0;
     } else {
         // Eye is open.
-        if (m_consecutiveBelowThreshold >= m_consecutiveFramesRequired) {
-            m_consecutiveOpen++;
-            if (m_consecutiveOpen >= 2) {
-                m_blinkDetected = true;
-            }
+        if (m_below >= m_consecutiveFramesRequired) {
+            m_open++;
+            if (m_open >= 2) m_blinkDetected = true;
         } else {
-            // Not enough closed frames yet.  Allow 1-2 jitter frames before
+            // Not enough closed frames yet. Allow 1-2 jitter frames before
             // resetting the close counter.
-            if (m_consecutiveBelowThreshold > 0) {
-                m_consecutiveOpen++;
-                if (m_consecutiveOpen >= 2) {
-                    // Two open frames in a row before threshold met = no blink.
-                    m_consecutiveBelowThreshold = 0;
-                    m_consecutiveOpen = 0;
+            if (m_below > 0) {
+                m_open++;
+                if (m_open >= 2) {
+                    m_below = 0;
+                    m_open = 0;
                 }
             }
         }
     }
 
-    return false;  // one-shot returned above on the reporting frame
+    if (m_blinkDetected) {
+        m_blinkReported = true;
+        return true;
+    }
+    return false;
 }
 
-void LivenessDetector::Reset() {
-    m_consecutiveBelowThreshold = 0;
-    m_consecutiveOpen = 0;
-    m_blinkDetected = false;
-    m_blinkReported = false;
+// ============================================================================
+// GLASSES algorithm (opt-in): adaptive per-eye baseline + single-eye detection
+// + pose-stability gate (anti head-tilt spoof).
+// ============================================================================
+bool LivenessDetector::ProcessFrameGlasses(const dlib::full_object_detection& landmarks) {
+    float leftEAR = ComputeLeftEAR(landmarks);
+    float rightEAR = ComputeRightEAR(landmarks);
+    float pose = ComputePose(landmarks);
+
+    // --- Baseline warmup (adaptive threshold + pose) ---
+    if (!m_baselineReady) {
+        m_leftSamples.push_back(leftEAR);
+        m_rightSamples.push_back(rightEAR);
+        m_poseSamples.push_back(pose);
+        if (static_cast<int>(m_leftSamples.size()) >= kBaselineFrames) {
+            m_leftThreshold  = Median(m_leftSamples)  * kRelativeFactor;
+            m_rightThreshold = Median(m_rightSamples) * kRelativeFactor;
+            m_baselinePose   = Median(m_poseSamples);
+            m_baselineReady  = true;
+        }
+        return false;  // still sampling — do not attempt blink detection yet
+    }
+
+    // --- Pose gate ---
+    bool poseStable = (std::fabs(pose - m_baselinePose) <= kMaxPoseDelta);
+
+    bool leftClosed  = poseStable && (leftEAR  < m_leftThreshold);
+    bool rightClosed = poseStable && (rightEAR < m_rightThreshold);
+
+    // Left eye state machine.
+    if (leftClosed) {
+        if (m_leftBelow < m_consecutiveFramesRequired) m_leftBelow++;
+        m_leftOpen = 0;
+    } else {
+        if (m_leftBelow >= m_consecutiveFramesRequired) {
+            m_leftOpen++;
+            if (m_leftOpen >= 2) m_blinkDetected = true;
+        } else {
+            if (m_leftBelow > 0) {
+                m_leftOpen++;
+                if (m_leftOpen >= 2) {
+                    m_leftBelow = 0;
+                    m_leftOpen = 0;
+                }
+            }
+        }
+    }
+
+    if (m_blinkDetected) {
+        m_blinkReported = true;
+        return true;
+    }
+
+    // Right eye state machine (only if left hasn't fired yet).
+    if (rightClosed) {
+        if (m_rightBelow < m_consecutiveFramesRequired) m_rightBelow++;
+        m_rightOpen = 0;
+    } else {
+        if (m_rightBelow >= m_consecutiveFramesRequired) {
+            m_rightOpen++;
+            if (m_rightOpen >= 2) m_blinkDetected = true;
+        } else {
+            if (m_rightBelow > 0) {
+                m_rightOpen++;
+                if (m_rightOpen >= 2) {
+                    m_rightBelow = 0;
+                    m_rightOpen = 0;
+                }
+            }
+        }
+    }
+
+    if (m_blinkDetected) {
+        m_blinkReported = true;
+        return true;
+    }
+
+    return false;
 }
 
 } // namespace facelogin

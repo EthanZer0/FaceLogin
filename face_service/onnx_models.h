@@ -12,6 +12,18 @@
 
 namespace facelogin {
 
+// In-place low-light enhancement for a face chip. Detects darkness (mean
+// luma below kLowLightMeanThreshold) and stretches brightness so the mean
+// lands at a reference level, clamped to [0,255]. No-op for chips at normal
+// brightness. Called on the RESIZED chip before the model's own normalization
+// loop, so both InsightFace (recognizer) and DeepPixBiS (anti-spoof) see
+// brightness-normalized input in dark scenes.
+//
+// Safe by construction: only affects genuinely dark chips; a normal-brightness
+// chip is returned unchanged, so the match threshold and photo-rejection
+// boundary are untouched.
+void ApplyLowLightEnhance(dlib::matrix<dlib::rgb_pixel>& chip);
+
 // ONNX-based face recognition using InsightFace buffalo_s (w600k_mbf).
 // Replaces dlib ResNet-34 with the more accurate MobileFaceNet @ WebFace600K.
 // Embedding dimension: 128 (compatible with existing users.dat storage).
@@ -38,11 +50,15 @@ public:
 
     bool IsInitialized() const { return m_initialized; }
 
+    // Enable/disable low-light brightness normalization for dark face chips.
+    void SetLowLightEnhance(bool enable) { m_lowLightEnhance = enable; }
+
 private:
     std::unique_ptr<Ort::Env> m_env;
     std::unique_ptr<Ort::Session> m_session;
     std::unique_ptr<Ort::MemoryInfo> m_memoryInfo;
     bool m_initialized = false;
+    bool m_lowLightEnhance = false;
 
     // Input/output names (cached after session creation)
     std::string m_inputName;
@@ -116,11 +132,15 @@ public:
 
     bool IsInitialized() const { return m_initialized; }
 
+    // Enable/disable low-light brightness normalization for dark face chips.
+    void SetLowLightEnhance(bool enable) { m_lowLightEnhance = enable; }
+
 private:
     std::unique_ptr<Ort::Env> m_env;
     std::unique_ptr<Ort::Session> m_session;
     std::unique_ptr<Ort::MemoryInfo> m_memoryInfo;
     bool m_initialized = false;
+    bool m_lowLightEnhance = false;
 
     std::string m_inputName;
     std::string m_outputName;

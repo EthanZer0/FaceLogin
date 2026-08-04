@@ -73,6 +73,28 @@ public:
     // Rename one face of the current account.
     bool RenameFace(int faceId, const std::wstring& label);
 
+    // Account-type change detection (symmetric MSA ↔ local conversions).
+    // Windows keeps the same SID when a user converts their account between a
+    // Microsoft account (MSA) and a local account, so the stored record is
+    // matched by SID but may carry stale identity/password from the previous
+    // account type:
+    //   MSA→local:  record UPN still an MSA email, password is the old MSA one.
+    //   local→MSA:  record UPN empty (local-era), password is the old local one.
+    // Returns 0 = normal / nothing to refresh,
+    //         1 = stale MSA→local record detected,
+    //         2 = stale local→MSA record detected (current session is an MSA
+    //             but the record UPN is empty or differs from the current email).
+    int GetAccountTypeChanged();
+    // JSON wrapper for JS: {"state":0} | {"state":1,"faces":N} |
+    // {"state":2,"faces":N,"upn":"user@mail.com"}.
+    std::string CheckAccountTypeChanged();
+    // Validate the CURRENT password, then rewrite the stale record IN PLACE
+    // (preserving all faces): state 1 clears the old MSA UPN (local account),
+    // state 2 writes the current MSA email; both refresh username/SID and
+    // re-encrypt the password via DPAPI. Refuses (returns false) unless
+    // GetAccountTypeChanged()!=0 and the password validates.
+    bool RefreshAccountIdentity(const std::wstring& password);
+
     // Configuration
     std::string GetConfig() const;
     bool SetConfig(const std::string& json);

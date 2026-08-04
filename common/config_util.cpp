@@ -117,6 +117,8 @@ std::string ConfigToJson(const AppConfig& cfg) {
     ss << "  "; jsonWriteString(ss, "liveness_method"); ss << ": "; jsonWriteString(ss, LivenessMethodToString(cfg.liveness_method)); ss << ",\n";
     ss << "  "; jsonWriteString(ss, "match_threshold"); ss << ": " << cfg.match_threshold << ",\n";
     ss << "  "; jsonWriteString(ss, "anti_spoof_threshold"); ss << ": " << cfg.anti_spoof_threshold << ",\n";
+    ss << "  "; jsonWriteString(ss, "blink_glasses_mode"); ss << ": " << (cfg.blink_glasses_mode ? "true" : "false") << ",\n";
+    ss << "  "; jsonWriteString(ss, "low_light_enhance"); ss << ": " << (cfg.low_light_enhance ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "camera_device"); ss << ": "; jsonWriteString(ss, cfg.camera_device); ss << "\n";
     ss << "}\n";
     return ss.str();
@@ -132,6 +134,8 @@ AppConfig ConfigFromJson(const std::string& json) {
     if (!live.empty()) cfg.liveness_method = LivenessMethodFromString(live);
     cfg.match_threshold = jsonGetFloat(json, "match_threshold", 0.30f);
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
+    cfg.blink_glasses_mode = (jsonGetString(json, "blink_glasses_mode") == "true");
+    cfg.low_light_enhance = (jsonGetString(json, "low_light_enhance") == "true");
     auto cam = jsonGetString(json, "camera_device");
     if (!cam.empty()) cfg.camera_device = cam;
     return cfg;

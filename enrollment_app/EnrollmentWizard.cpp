@@ -291,6 +291,7 @@ bool EnrollmentWizard::StartPreview() {
         m_webcam->Shutdown();
         return false;
     }
+    m_onnxRecognizer->SetLowLightEnhance(m_config.low_light_enhance);
 
     // Try loading anti-spoof model
     m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
@@ -299,6 +300,7 @@ bool EnrollmentWizard::StartPreview() {
         FACELOGIN_WARN(L"Anti-spoof model not available");
         m_antiSpoof.reset();
     }
+    if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(m_config.low_light_enhance);
 
     // dlib recognizer/detector were removed — pure ONNX. recognition_model
     // and detector config values are ignored.
@@ -597,7 +599,8 @@ bool EnrollmentWizard::CaptureFaceSamples() {
         } else {
             // blink (default)
             LivenessDetector liveness;
-            liveness.Configure(kDefaultEarThreshold, kDefaultBlinkFrames);
+            liveness.Configure(kDefaultEarThreshold, kDefaultBlinkFrames,
+                               m_config.blink_glasses_mode);
             auto livenessStart = std::chrono::steady_clock::now();
             bool blinked = false;
             while (m_capturing && !blinked) {
@@ -1048,6 +1051,170 @@ bool EnrollmentWizard::RenameFace(int faceId, const std::wstring& label) {
     return true;
 }
 
+// Detect a stale account-type record (symmetric MSA ↔ local). The constructor's
+// MSA registry fallbacks (EnrollmentWizard.cpp:120-182) may fill m_upn with an
+// old email, so we do NOT trust m_upn/m_accountType here — we re-query the
+// current session identity instead:
+//   GetUserNameExW(8) succeeds with '@' → current account is MSA
+//   GetUserNameExW(8) fails (err 1332)  → current account is local
+// Then compare against the stored record (matched by SID, which Windows keeps
+// across MSA↔local conversions):
+//   local + record UPN is an MSA email  → state 1 (MSA→local, clear UPN)
+//   MSA   + record UPN empty/different  → state 2 (local→MSA, write current UPN)
+//   everything else                     → state 0 (no refresh needed)
+int EnrollmentWizard::GetAccountTypeChanged() {
+    // Determine the CURRENT session's account type via NameUserPrincipal.
+    std::wstring curUpn;
+    bool sessionIsMsa = false;
+    HMODULE hSecur32 = LoadLibraryW(L"secur32.dll");
+    if (hSecur32) {
+        typedef BOOLEAN (WINAPI *PFN_GetUserNameExW)(int, LPWSTR, PULONG);
+        auto pfn = reinterpret_cast<PFN_GetUserNameExW>(
+            GetProcAddress(hSecur32, "GetUserNameExW"));
+        if (pfn) {
+            ULONG upnSize = 256;
+            std::vector<wchar_t> upnBuf(upnSize);
+            if (pfn(8 /* NameUserPrincipal */, upnBuf.data(), &upnSize)) {
+                curUpn = upnBuf.data();
+                sessionIsMsa = (curUpn.find(L'@') != std::wstring::npos);
+            }
+            // else: err 1332 (ERROR_NONE_MAPPED) = no UPN → local account.
+        }
+        FreeLibrary(hSecur32);
+    }
+
+    // Match the current identity against stored records (same priority as
+    // FindUserIndex: SID > UPN > username).
+    m_store.LoadDatabase();
+    std::wstring tokenSid = GetCurrentProcessUserSid();
+    size_t idx = m_store.FindUserIndex(tokenSid, m_upn, m_username);
+    if (idx >= m_store.GetUsers().size()) return 0;  // not enrolled → normal first-time flow
+
+    const auto& rec = m_store.GetUsers()[idx];
+    if (!sessionIsMsa) {
+        // Current account is local. Flag if the record still carries an MSA email.
+        if (rec.upn.find(L'@') != std::wstring::npos) {
+            FACELOGIN_INFO(L"GetAccountTypeChanged: stale MSA→local record for %s (UPN=%s, faces=%zu)",
+                           rec.username.c_str(), rec.upn.c_str(), rec.faces.size());
+            return 1;
+        }
+        return 0;
+    }
+
+    // Current account is MSA. Flag if the record UPN is empty (local-era) or a
+    // different email than the current session's MSA identity.
+    if (rec.upn.empty() || rec.upn != curUpn) {
+        FACELOGIN_INFO(L"GetAccountTypeChanged: stale local→MSA record for %s (stored UPN=%s, current=%s, faces=%zu)",
+                       rec.username.c_str(), rec.upn.empty() ? L"<empty>" : rec.upn.c_str(),
+                       curUpn.c_str(), rec.faces.size());
+        return 2;
+    }
+    return 0;
+}
+
+std::string EnrollmentWizard::CheckAccountTypeChanged() {
+    int state = GetAccountTypeChanged();
+    if (state == 0) return "{\"state\":0}";
+
+    // Attach the face count so the prompt can say "你已录入 N 张人脸", and for
+    // state 2 the current MSA email so the prompt can show what will be written.
+    m_store.LoadDatabase();
+    std::wstring tokenSid = GetCurrentProcessUserSid();
+    size_t idx = m_store.FindUserIndex(tokenSid, m_upn, m_username);
+    size_t faces = (idx < m_store.GetUsers().size()) ? m_store.GetUsers()[idx].faces.size() : 0;
+
+    if (state == 2) {
+        // Re-derive the current MSA email (same GetUserNameExW query as above).
+        std::wstring curUpn;
+        HMODULE hSecur32 = LoadLibraryW(L"secur32.dll");
+        if (hSecur32) {
+            typedef BOOLEAN (WINAPI *PFN_GetUserNameExW)(int, LPWSTR, PULONG);
+            auto pfn = reinterpret_cast<PFN_GetUserNameExW>(
+                GetProcAddress(hSecur32, "GetUserNameExW"));
+            if (pfn) {
+                ULONG upnSize = 256;
+                std::vector<wchar_t> upnBuf(upnSize);
+                if (pfn(8, upnBuf.data(), &upnSize)) curUpn = upnBuf.data();
+            }
+            FreeLibrary(hSecur32);
+        }
+        return "{\"state\":2,\"faces\":" + std::to_string(faces) +
+               ",\"upn\":\"" + WstrToUtf8Escaped(curUpn) + "\"}";
+    }
+    return "{\"state\":1,\"faces\":" + std::to_string(faces) + "}";
+}
+
+bool EnrollmentWizard::RefreshAccountIdentity(const std::wstring& password) {
+    int state = GetAccountTypeChanged();
+    if (state == 0) {
+        FACELOGIN_WARN(L"RefreshAccountIdentity: no stale record to refresh");
+        return false;
+    }
+    if (password.empty()) {
+        FACELOGIN_WARN(L"RefreshAccountIdentity: empty password");
+        return false;
+    }
+
+    // Validate the CURRENT password before touching the database.
+    // ValidatePassword routes by account type: MSA (UPN contains '@') goes
+    // through CloudAP online/cached validation, local uses LogonUserW(".").
+    if (!ValidatePassword(password)) {
+        FACELOGIN_WARN(L"RefreshAccountIdentity: password validation failed");
+        return false;
+    }
+
+    // Re-encrypt with DPAPI (machine scope — matches first enrollment).
+    std::vector<uint8_t> protectedPassword = DpapiUtil::Protect(password);
+    if (protectedPassword.empty()) {
+        FACELOGIN_ERROR(L"RefreshAccountIdentity: DPAPI encryption failed");
+        return false;
+    }
+
+    std::wstring tokenSid = GetCurrentProcessUserSid();
+    m_store.LoadDatabase();
+    size_t idx = m_store.FindUserIndex(tokenSid, m_upn, m_username);
+    if (idx >= m_store.GetUsers().size()) {
+        FACELOGIN_WARN(L"RefreshAccountIdentity: record vanished before update");
+        return false;
+    }
+
+    // Write the identity matching the CURRENT account type:
+    //   state 1 (MSA→local): clear the old MSA UPN.
+    //   state 2 (local→MSA): write the current MSA email (session UPN).
+    std::wstring newUpn;
+    if (state == 2) {
+        HMODULE hSecur32 = LoadLibraryW(L"secur32.dll");
+        if (hSecur32) {
+            typedef BOOLEAN (WINAPI *PFN_GetUserNameExW)(int, LPWSTR, PULONG);
+            auto pfn = reinterpret_cast<PFN_GetUserNameExW>(
+                GetProcAddress(hSecur32, "GetUserNameExW"));
+            if (pfn) {
+                ULONG upnSize = 256;
+                std::vector<wchar_t> upnBuf(upnSize);
+                if (pfn(8, upnBuf.data(), &upnSize)) newUpn = upnBuf.data();
+            }
+            FreeLibrary(hSecur32);
+        }
+    }
+    // state 1 → newUpn stays empty (local account).
+
+    if (!m_store.UpdateAccountIdentity(idx, m_username, newUpn, tokenSid, protectedPassword)) {
+        FACELOGIN_ERROR(L"RefreshAccountIdentity: identity update failed");
+        return false;
+    }
+    if (!m_store.SaveDatabase()) {
+        FACELOGIN_ERROR(L"RefreshAccountIdentity: save failed");
+        return false;
+    }
+
+    NotifyServiceReload();
+    FACELOGIN_INFO(L"RefreshAccountIdentity: refreshed identity of %s (UPN=%s%s, faces preserved)",
+                   m_username.c_str(),
+                   newUpn.empty() ? L"<cleared>" : newUpn.c_str(),
+                   state == 2 ? L", MSA" : L", local");
+    return true;
+}
+
 // ============================================================================
 // Camera device enumeration
 // ============================================================================
@@ -1107,6 +1274,10 @@ bool EnrollmentWizard::SetConfig(const std::string& json) {
         FACELOGIN_WARN(L"SetConfig: runtime fallback to blink (anti-spoof model unavailable)");
         m_livenessMethod = LivenessMethod::Blink;
     }
+
+    // Propagate the low-light enhancement toggle to the models (hot reload).
+    if (m_onnxRecognizer) m_onnxRecognizer->SetLowLightEnhance(newConfig.low_light_enhance);
+    if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(newConfig.low_light_enhance);
 
     // Notify service to reload config
     HANDLE hPipe = CreateFileW(ipc::PIPE_NAME, GENERIC_WRITE, 0, nullptr,

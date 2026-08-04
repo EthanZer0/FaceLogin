@@ -237,6 +237,7 @@ bool FaceService::Initialize() {
         FACELOGIN_ERROR(L"ONNX recognizer failed to load — recognition unavailable");
         return false;
     }
+    m_onnxRecognizer->SetLowLightEnhance(m_config.low_light_enhance);
 
     // Try loading anti-spoof model (MiniFASNetV2).
     m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
@@ -247,6 +248,7 @@ bool FaceService::Initialize() {
         FACELOGIN_WARN(L"Anti-spoof model not available");
         m_antiSpoof.reset();
     }
+    if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(m_config.low_light_enhance);
 
     if (m_isServiceMode) {
         // Camera is initialized lazily per auth request to avoid
@@ -325,6 +327,9 @@ void FaceService::Run() {
                     m_antiSpoof.reset();
                 }
             }
+            // Propagate the low-light enhancement toggle to the models (hot reload).
+            m_onnxRecognizer->SetLowLightEnhance(m_config.low_light_enhance);
+            if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(m_config.low_light_enhance);
             m_pipeServer->WriteMessage(ipc::MSG_CONFIG_RELOAD_OK);
             m_pipeServer->Disconnect();
             FACELOGIN_INFO(L"Configuration reloaded: rec=%hs det=%hs live=%hs thr=%.2f",
@@ -616,7 +621,8 @@ bool FaceService::ProcessAuthRequest() {
                     }
                 } else if (method == LivenessMethod::Blink) {
                     LivenessDetector liveness;
-                    liveness.Configure(kDefaultEarThreshold, kDefaultBlinkFrames);
+                    liveness.Configure(kDefaultEarThreshold, kDefaultBlinkFrames,
+                                       m_config.blink_glasses_mode);
                     auto livenessStart = std::chrono::steady_clock::now();
                     bool blinked = false;
                     while (m_running) {

@@ -431,6 +431,48 @@ bool CredentialStore::AddUser(const std::wstring& username,
     return AddFace(username, upn, sid, encryptedPassword, embedding);
 }
 
+bool CredentialStore::UpdateAccountIdentity(size_t idx,
+                                            const std::wstring& username,
+                                            const std::wstring& upn,
+                                            const std::wstring& sid,
+                                            const std::vector<uint8_t>& encryptedPassword) {
+    if (idx >= m_users.size()) {
+        FACELOGIN_WARN(L"UpdateAccountIdentity: index %zu out of range", idx);
+        return false;
+    }
+
+    UserRecord& rec = m_users[idx];
+    if (!rec.faces.empty()) {
+        // In-place identity + password refresh; faces untouched.
+        rec.username = username;
+        rec.upn      = upn;
+        rec.sid      = sid;
+        rec.encryptedPassword = encryptedPassword;
+        FACELOGIN_INFO(L"Updated identity of '%s' → username=%s SID=%s UPN=%s (faces preserved)",
+                       username.c_str(), username.c_str(), sid.c_str(), upn.c_str());
+        return true;
+    }
+
+    // rec has no faces (defensive — SaveDatabase never persists 0-face
+    // records, but an in-memory edge could exist). Instead of persisting an
+    // empty record, merge its identity into the matching live record.
+    size_t target = m_users.size();
+    if (!upn.empty()) target = FindUserIndex(L"", upn, L"");
+    if (target >= m_users.size() && !username.empty()) target = FindUserIndex(L"", L"", username);
+    if (target < m_users.size()) {
+        UserRecord& dst = m_users[target];
+        dst.username = username;
+        dst.upn      = upn;
+        dst.sid      = sid;
+        dst.encryptedPassword = encryptedPassword;
+        m_users.erase(m_users.begin() + static_cast<ptrdiff_t>(idx));
+        FACELOGIN_INFO(L"Merged identity of empty stale record into existing account %s",
+                       username.c_str());
+        return true;
+    }
+    return false;
+}
+
 bool CredentialStore::DeleteFace(const std::wstring& sid, uint32_t faceId) {
     size_t idx = FindUserIndex(sid, L"", L"");
     if (idx >= m_users.size()) {

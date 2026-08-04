@@ -8,6 +8,44 @@
 namespace facelogin {
 
 // ============================================================================
+// Low-light enhancement (shared by recognizer + anti-spoof)
+// ============================================================================
+
+// A chip is "dark" when its mean luma is below ~40/255 (0.157). Normal indoor
+// faces are 100-180; genuinely dark scenes fall well below 40.
+static constexpr float kLowLightMeanThreshold = 40.0f;
+// Reference mean luma we stretch dark chips toward. ~110/255 ≈ mid-brightness,
+// close to what InsightFace/DeepPixBiS were trained on.
+static constexpr float kLowLightTargetMean   = 110.0f;
+
+void ApplyLowLightEnhance(dlib::matrix<dlib::rgb_pixel>& chip) {
+    const long n = static_cast<long>(chip.size());
+    if (n == 0) return;
+
+    // Mean luma over the chip.
+    double sum = 0.0;
+    for (long i = 0; i < n; i++) {
+        const auto& p = chip(i);
+        sum += 0.299 * p.red + 0.587 * p.green + 0.114 * p.blue;
+    }
+    float mean = static_cast<float>(sum / n);
+    if (mean >= kLowLightMeanThreshold) return;  // not dark — no-op
+
+    // Stretch brightness: gain brings the mean up to the target, clamped so a
+    // bright pixel can't overflow past 255.
+    float gain = kLowLightTargetMean / mean;
+    for (long i = 0; i < n; i++) {
+        auto& p = chip(i);
+        int r = static_cast<int>(p.red   * gain + 0.5f);
+        int g = static_cast<int>(p.green * gain + 0.5f);
+        int b = static_cast<int>(p.blue  * gain + 0.5f);
+        p.red   = static_cast<unsigned char>(r > 255 ? 255 : r);
+        p.green = static_cast<unsigned char>(g > 255 ? 255 : g);
+        p.blue  = static_cast<unsigned char>(b > 255 ? 255 : b);
+    }
+}
+
+// ============================================================================
 // OnnxRecognizer
 // ============================================================================
 
@@ -54,6 +92,10 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
         // First resize to 112x112
         dlib::matrix<dlib::rgb_pixel> resized(112, 112);
         dlib::resize_image(faceChip, resized);
+
+        // Optional low-light enhancement (config-gated): normalize brightness
+        // of dark chips so the embedding isn't distorted by a dark scene.
+        if (m_lowLightEnhance) ApplyLowLightEnhance(resized);
 
         // Convert to NCHW float tensor: [1, 3, 112, 112] normalized to [-1, 1]
         std::vector<float> input(1 * 3 * 112 * 112);
@@ -449,6 +491,10 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
         int isize = m_inputSize; // 224 for DeepPixBiS
         dlib::matrix<dlib::rgb_pixel> resized(isize, isize);
         dlib::resize_image(faceChip, resized);
+
+        // Optional low-light enhancement (config-gated): normalize brightness
+        // of dark chips so anti-spoof scores don't drop in dark scenes.
+        if (m_lowLightEnhance) ApplyLowLightEnhance(resized);
 
         // DeepPixBiS expects RGB NCHW, ImageNet normalization:
         //   pixel = (pixel/255 - mean) / std

@@ -83,9 +83,10 @@ func main() {
 	internal.NoticeBody = "优化：\n" +
 		"- 移除未使用的旧版 dlib 模型，安装包体积更小\n" +
 		"- 修复控制台启动时的模型检查（改为校验实际使用的 ONNX 模型）\n\n" +
+		"新功能：\n" +
+		"- 检测并处理微软账号(MSA)与本地账户之间切换后遗留的旧人脸数据与过期密码，人脸无需重新录入\n\n" +
 		"说明：\n" +
-		"- 现有的人脸数据和配置完全兼容，无需重新录入\n" +
-		"- 人脸识别功能与 1.3.0 一致，本版本仅做体积优化与启动修复"
+		"- 现有的人脸数据和配置完全兼容"
 
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources

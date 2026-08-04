@@ -300,6 +300,8 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"DeleteFace") *ids = 27;
     else if (n == L"ClearAllFaces") *ids = 28;
     else if (n == L"RenameFace") *ids = 29;
+    else if (n == L"CheckAccountTypeChanged") *ids = 30;
+    else if (n == L"RefreshAccountIdentity") *ids = 31;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -425,6 +427,15 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
             if (p->rgvarg[1].vt != VT_I4) return DISP_E_TYPEMISMATCH;
             std::wstring label = OptionalArg(p, 0);
             if (res) *res = MakeBool(m_wizard->RenameFace(p->rgvarg[1].lVal, label));
+            break;
+        }
+        case 30: if (res) *res = MakeStr(m_wizard->CheckAccountTypeChanged()); break;
+        case 31: {
+            // Single argument (password), so rgvarg[0] is it — no reverse-order
+            // ambiguity. Same access pattern as case 6.
+            if (p->cArgs < 1) return DISP_E_BADPARAMCOUNT;
+            std::wstring pass(p->rgvarg[0].vt == VT_BSTR ? p->rgvarg[0].bstrVal : L"");
+            if (res) *res = MakeBool(m_wizard->RefreshAccountIdentity(pass));
             break;
         }
         default: return DISP_E_MEMBERNOTFOUND;

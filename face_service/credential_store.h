@@ -145,6 +145,18 @@ public:
                  const std::vector<uint8_t>& encryptedPassword,
                  const std::vector<float>& embedding);
 
+    // Update the identity + stored password of an existing account IN PLACE,
+    // preserving all enrolled faces (their ids/labels/embeddings are untouched).
+    // Used when the account switches from a Microsoft (MSA) to a local account:
+    // clears the stale MSA UPN (pass an empty upn) and refreshes username/SID.
+    // Returns false when idx is out of range.
+    // Call SaveDatabase() to persist.
+    bool UpdateAccountIdentity(size_t idx,
+                               const std::wstring& username,
+                               const std::wstring& upn,
+                               const std::wstring& sid,
+                               const std::vector<uint8_t>& encryptedPassword);
+
     // Delete one face of an account. If the account ends up with no faces,
     // the whole account record is removed (an account with zero faces must
     // never be persisted — the login tile reads the record count and would
