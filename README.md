@@ -69,6 +69,18 @@ flowchart TB
 
 ---
 
+## Star History
+
+<p align="center">
+  <a href="https://github.com/EthanZer0/FaceLogin/stargazers">
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/EthanZer0/FaceLogin/star-history/star-history.svg" width="80%">
+  </a>
+</p>
+
+> 图表由 GitHub Actions 每日自动更新（[workflow](.github/workflows/star-history.yml)），数据与渲染完全自托管，不依赖第三方服务。
+
+---
+
 ## 快速开始
 
 ### 第一步：安装
@@ -192,7 +204,3 @@ wails build -clean -platform windows/amd64
 ## 免责声明
 
 本软件通过人脸识别辅助 Windows 登录，但 **不能替代** 密码。人脸识别为便捷方式，系统始终保留密码登录作为后备。请勿在安全要求极高的环境中单独依赖人脸识别。
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/chart?repos=EthanZer0/FaceLogin&type=date&legend=top-left&sealed_token=fk-z91fWpfqFDIiXmW7jgML5SCiH0Az-Zu1tJfvGSgopL9624vU-B8iPXcp9x7twFZbAiX_qNHkPoQ74I0gP1f66ZnEq01yPcFfiaVBOLT-uTPc3RxYPfcJZgu3A48wCG2cMEu-vGdFId2pHMU7tlhnkyOGItwFTg0QNmHwYU2qNRIkcl5kAVMMdViqQ)](https://www.star-history.com/?repos=EthanZer0%2FFaceLogin&type=date&legend=top-left)
