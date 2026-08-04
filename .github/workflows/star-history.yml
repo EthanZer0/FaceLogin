@@ -28,6 +28,24 @@ jobs:
         with:
           node-version: 20
 
+      - name: Restore cumulative history from star-history branch
+        run: |
+          set -e
+          mkdir -p .star-history-data
+          # .star-history-data 只在 star-history 分支维护，main 上不存在。
+          # 每次运行先把累积 history.json 从分支取回，snapshot 在其上追加当天，
+          # 否则历史会被覆盖成单点（曲线消失）。
+          if git rev-parse --verify "refs/remotes/origin/star-history" >/dev/null 2>&1; then
+            if git cat-file -e "origin/star-history:history.json" 2>/dev/null; then
+              git show "origin/star-history:history.json" > .star-history-data/history.json
+              echo "已恢复历史: $(grep -c '\"date\"' .star-history-data/history.json) 天"
+            else
+              echo "分支无 history.json，从空历史起步"
+            fi
+          else
+            echo "star-history 分支尚不存在，从空历史起步"
+          fi
+
       - name: Snapshot star count
         env:
           GITHUB_TOKEN: ${{ github.token }}

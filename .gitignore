@@ -52,3 +52,6 @@ node_modules/
 # OS
 Thumbs.db
 .DS_Store
+
+# Star history data (workflow-generated, lives on star-history branch)
+.star-history-data/
