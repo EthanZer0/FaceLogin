@@ -55,3 +55,6 @@ Thumbs.db
 
 # Star history data (workflow-generated, lives on star-history branch)
 .star-history-data/
+
+# 本地文档（技术文章、配图等），不发布到仓库
+docs/
