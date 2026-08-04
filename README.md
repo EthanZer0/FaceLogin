@@ -73,7 +73,7 @@ flowchart TB
 
 <p align="center">
   <a href="https://github.com/EthanZer0/FaceLogin/stargazers">
-    <img alt="Star History Chart" src="https://raw.githubusercontent.com/EthanZer0/StarHistory/main/star-history.svg" width="80%">
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/EthanZer0/StarHistory/main/svg/EthanZer0-FaceLogin.svg" width="80%">
   </a>
 </p>
 
