@@ -73,11 +73,11 @@ flowchart TB
 
 <p align="center">
   <a href="https://github.com/EthanZer0/FaceLogin/stargazers">
-    <img alt="Star History Chart" src="https://raw.githubusercontent.com/EthanZer0/FaceLogin/star-history/star-history.svg" width="80%">
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/EthanZer0/StarHistory/main/star-history.svg" width="80%">
   </a>
 </p>
 
-> 图表由 GitHub Actions 每日自动更新（[workflow](.github/workflows/star-history.yml)），数据与渲染完全自托管，不依赖第三方服务。
+> 图表由独立项目 [StarHistory](https://github.com/EthanZer0/StarHistory) 的 GitHub Actions 每日自动更新，数据与渲染完全自托管，不依赖第三方服务。
 
 ---
 
