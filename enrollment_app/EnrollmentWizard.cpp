@@ -55,9 +55,24 @@ static std::wstring GetSessionUpn() {
     auto pfn = reinterpret_cast<PFN_GetUserNameExW>(
         GetProcAddress(hSecur32, "GetUserNameExW"));
     if (pfn) {
+        // GetUserNameExW returns ERROR_INSUFFICIENT_BUFFER (122) and writes
+        // the REQUIRED size (in wchar, INCLUDING the terminator) back into
+        // *upnSize when the buffer is too small. A single 256-char probe
+        // would silently drop over-long UPNs (very long domains / AD UPNs),
+        // mislabeling the account as local — the same class of bug as
+        // docs/todo.md bug1, just the symmetric case. Retry once with the
+        // required size; ERROR_NONE_MAPPED (1332, local accounts) leaves
+        // upn empty as intended.
         ULONG upnSize = 256;
         std::vector<wchar_t> upnBuf(upnSize);
-        if (pfn(8 /* NameUserPrincipal */, upnBuf.data(), &upnSize)) {
+        if (!pfn(8 /* NameUserPrincipal */, upnBuf.data(), &upnSize)) {
+            if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && upnSize > 0) {
+                upnBuf.resize(upnSize);
+                if (pfn(8 /* NameUserPrincipal */, upnBuf.data(), &upnSize)) {
+                    upn = upnBuf.data();
+                }
+            }
+        } else {
             upn = upnBuf.data();
         }
     }
@@ -646,13 +661,27 @@ static std::string WstrToUtf8(const std::wstring& ws) {
     return result;
 }
 
-// Helper: UTF-8 string with JSON escaping (quotes, backslashes) — safe to
-// embed directly inside a JSON string literal for the face list.
+// Helper: UTF-8 string with JSON escaping — safe to embed directly inside a
+// JSON string literal for the face list and account-change responses. Escapes
+// per RFC 8259: quote, backslash, and the mandatory control characters
+// (U+0000–U+001F). Forward slash is intentionally NOT escaped (legal in JSON
+// and never needed for these fields). Other characters pass through UTF-8.
 static std::string WstrToUtf8Escaped(const std::wstring& ws) {
+    static const char* kHex = "0123456789abcdef";
     std::string out;
     for (wchar_t ch : ws) {
-        if (ch == L'"')       out += "\\\"";
-        else if (ch == L'\\') out += "\\\\";
+        if (ch == L'"')            out += "\\\"";
+        else if (ch == L'\\')      out += "\\\\";
+        else if (ch == L'\b')      out += "\\b";
+        else if (ch == L'\f')      out += "\\f";
+        else if (ch == L'\n')      out += "\\n";
+        else if (ch == L'\r')      out += "\\r";
+        else if (ch == L'\t')      out += "\\t";
+        else if (ch < 0x20) {      // other C0 control chars → \uXXXX
+            out += "\\u00";
+            out += kHex[(ch >> 4) & 0xF];
+            out += kHex[ch & 0xF];
+        }
         else {
             char mb[4] = {};
             int n = WideCharToMultiByte(CP_UTF8, 0, &ch, 1, mb, 4, nullptr, nullptr);
@@ -1140,9 +1169,16 @@ bool EnrollmentWizard::ClearStaleAccountUpn() {
         return false;
     }
 
+    // FindUserIndex tries SID first, then UPN, then username. We pass an
+    // EMPTY upn on purpose: m_upn is the value we are about to clear (the
+    // stale MSA email that a buggy build wrote into a local record), so
+    // matching by it would be circular and could pick another account's
+    // record if SIDs ever collided. The process-token SID is the trusted
+    // identity proof here (same source as passwordless enrollment), and
+    // username is kept as a last-resort fallback. See docs/todo.md bug1.
     std::wstring tokenSid = GetCurrentProcessUserSid();
     m_store.LoadDatabase();
-    size_t idx = m_store.FindUserIndex(tokenSid, m_upn, m_username);
+    size_t idx = m_store.FindUserIndex(tokenSid, L"", m_username);
     if (idx >= m_store.GetUsers().size()) {
         FACELOGIN_WARN(L"ClearStaleAccountUpn: record vanished before update");
         return false;

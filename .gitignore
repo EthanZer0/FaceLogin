@@ -8,6 +8,7 @@ vcpkg/
 # Model files (large, downloaded separately)
 models/*.dat
 models/*.bz2
+*.onnx
 
 # IDE / VS
 .vs/
@@ -40,6 +41,7 @@ __pycache__/
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # Wails
 installer/FaceLoginSetup/build/
