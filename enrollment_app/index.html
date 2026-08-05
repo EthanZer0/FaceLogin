@@ -331,6 +331,17 @@ body{
          dlib was dropped, the system is now pure ONNX (InsightFace + SCRFD). -->
 
     <div class="field">
+      <label>摄像头旋转 (Camera Rotation)</label>
+      <select id="cfg-rotation">
+        <option value="0">不旋转 (0°)</option>
+        <option value="90">顺时针 90°</option>
+        <option value="180">180°</option>
+        <option value="270">顺时针 270°</option>
+      </select>
+      <p class="dim" style="margin-top:4px;font-size:11px">摄像头物理安装方向不是正向上时（如竖屏安装），可在此调整。实时预览会立即反映旋转效果。</p>
+    </div>
+
+    <div class="field">
       <label>摄像头 (Camera)</label>
       <select id="cfg-camera">
         <option value="">默认（第一个设备）</option>
@@ -572,6 +583,7 @@ function loadSettings() {
     var json = H.GetConfig();
     var cfg = JSON.parse(json);
     document.getElementById('cfg-liveness').value = cfg.liveness_method || 'blink';
+    document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
     document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
 
@@ -626,6 +638,7 @@ function onSaveSettings() {
     anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
     low_light_enhance: document.getElementById('cfg-low-light').checked,
+    camera_rotation: parseInt(document.getElementById('cfg-rotation').value) || 0,
     camera_device: document.getElementById('cfg-camera').value
   };
   try {
