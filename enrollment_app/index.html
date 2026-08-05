@@ -1,152 +1,422 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
 <title>FaceLogin Console</title>
 <style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
-  background:#fff; color:#000;
-  overflow:hidden;user-select:none;-webkit-user-select:none;
+/* ================================================================
+   FaceLogin Console — 视觉方向：对准 / 光学仪器
+   ================================================================ */
+
+/* ---- Embedded display face: IBM Plex Mono (latin subset) ----
+   The whole instrument speaks mono. Chinese glyphs fall through to
+   Microsoft YaHei (always present on Windows). Three weights embedded
+   as data URIs so the single-file webview stays fully offline.     */
+/* Plex 400 */
+@font-face{font-family:'Plex';font-style:normal;font-weight:400;font-display:swap;src:url(data:font/woff2;base64,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) format('woff2')}
+/* Plex 500 */
+@font-face{font-family:'Plex';font-style:normal;font-weight:500;font-display:swap;src:url(data:font/woff2;base64,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) format('woff2')}
+/* Plex 600 */
+@font-face{font-family:'Plex';font-style:normal;font-weight:600;font-display:swap;src:url(data:font/woff2;base64,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) format('woff2')}
+
+/* ================================================================
+   Tokens & base
+   ================================================================ */
+:root{
+  --ground:#F6F7F9;     /* window base — cool optical bench      */
+  --face:#FFFFFF;       /* panel white                           */
+  --ink:#20242C;        /* primary text / ink                    */
+  --fog:#5C6370;        /* secondary text                        */
+  --hair:#E2E5EA;       /* hairlines, borders                    */
+  --lite:#EDEFF3;       /* raised surfaces, inputs               */
+  --deeper:#E8EBF0;     /* recessed wells (logs)                 */
+  --lens:#E3E6EC;       /* viewfinder well — frosted light gray  */
+  --live:#0E9F6E;       /* the only accent — viewfinder green    */
+  --err:#D02A2E;        /* error red                             */
+  --warn:#B7791F;       /* warn amber                            */
+  --radius:4px;
+  --font-data:'Plex','Cascadia Code','Consolas',monospace;
+  --font-ui:'Plex','Segoe UI','Microsoft YaHei',system-ui,sans-serif;
 }
-.screen{display:flex;width:100%;height:100vh;flex-direction:column;align-items:center;
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:var(--font-ui);
+  font-size:13px;
+  color:var(--ink);
+  background:radial-gradient(1200px 620px at 50% -140px, #FFFFFF 0%, var(--ground) 58%);
+  background-color:var(--ground);
+  overflow:hidden;
+  user-select:none;-webkit-user-select:none;
+  -webkit-font-smoothing:antialiased;
+}
+input,textarea,select{user-select:text;-webkit-user-select:text}
+button{font-family:inherit}
+.screen{
+  display:flex;width:100%;height:100%;flex-direction:column;align-items:center;
   position:absolute;top:0;left:0;
-  opacity:0;
-  pointer-events:none;
-  transition:opacity 0s ease}
+  opacity:0;pointer-events:none;
+  transition:opacity .16s ease;
+}
 .screen.active{opacity:1;pointer-events:auto}
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--live);outline-offset:2px;border-radius:2px}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{transition:none!important;animation:none!important}
+}
 
-/* ========== Header ========== */
-.header{width:100%;max-width:640px;padding:24px 0 8px;flex-shrink:0}
-.header h1{font-size:24px;font-weight:300;letter-spacing:-0.5px;color:#111827}
-.header p{font-size:13px;color:#9ca3af;font-weight:300}
+/* ================================================================
+   Header — instrument nameplate
+   ================================================================ */
+.header{width:100%;max-width:640px;padding:18px 0 10px;flex-shrink:0}
+.brand{display:flex;align-items:center;gap:12px}
+.brand-mark{
+  width:30px;height:30px;position:relative;flex-shrink:0;
+  border:1px solid var(--hair);border-radius:3px;
+}
+.brand-mark i{position:absolute;width:8px;height:8px;border:2px solid var(--live);opacity:.85}
+.brand-mark i:nth-child(1){top:-1px;left:-1px;border-right:0;border-bottom:0}
+.brand-mark i:nth-child(2){top:-1px;right:-1px;border-left:0;border-bottom:0}
+.brand-mark i:nth-child(3){bottom:-1px;left:-1px;border-right:0;border-top:0}
+.brand-mark i:nth-child(4){bottom:-1px;right:-1px;border-left:0;border-top:0}
+.brand-title{min-width:0}
+.brand-title h1{
+  font-size:15px;font-weight:600;letter-spacing:.04em;
+  color:var(--ink);line-height:1.1;white-space:nowrap;
+}
+.brand-fg{color:var(--ink)}
+.brand-console{color:var(--fog);font-weight:400}
+.brand-title p{font-size:10px;color:var(--fog);letter-spacing:.18em;margin-top:4px;white-space:nowrap}
+.chassis-badge{
+  margin-left:auto;flex-shrink:0;
+  font-size:9px;letter-spacing:.22em;color:#8A919E;
+  font-family:var(--font-data);
+  border:1px solid var(--hair);border-radius:2px;padding:3px 7px;
+  transform:translateY(2px);
+}
 
-/* ========== Mode Tabs ========== */
-.tabs{width:100%;max-width:640px;display:flex;gap:24px;border-bottom:1px solid #f3f4f6;flex-shrink:0}
-.tabs span{padding-bottom:8px;font-size:13px;font-weight:400;color:#9ca3af;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s}
-.tabs span:hover{color:#6b7280}
-.tabs span.active{font-weight:500;color:#111827;border-bottom-color:#111827}
-.tabs span.active:hover{color:#111827}
+/* ================================================================
+   Tabs — instrument mode selector
+   ================================================================ */
+.tabs{
+  width:100%;max-width:640px;display:flex;gap:26px;flex-shrink:0;
+  border-bottom:1px solid var(--hair);position:relative;
+}
+.tabs span{
+  padding:7px 0 9px;font-size:12px;font-weight:400;letter-spacing:.06em;
+  color:var(--fog);cursor:pointer;border-bottom:2px solid transparent;
+  transition:color .15s,border-color .15s;
+}
+.tabs span:hover{color:var(--ink)}
+.tabs span.active{color:var(--ink);border-bottom-color:var(--ink)}
+.tabs span:focus-visible{outline-offset:6px}
 
-/* ========== Cam Screen ========== */
-#screen-cam{justify-content:flex-start;padding-bottom:12px}
-.cam-body{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;
-  width:100%;max-width:640px}
-.cam-viewport{position:relative;width:100%;aspect-ratio:16/9;flex-shrink:0;
-  border-radius:2px;background:#e5e7eb;overflow:hidden}
+/* ================================================================
+   Viewfinder + metric strip (the signature)
+   ================================================================ */
+.cam-body{
+  flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;
+  width:100%;max-width:640px;
+}
+.cam-viewport{
+  position:relative;width:100%;aspect-ratio:16/9;flex-shrink:0;
+  border:1px solid var(--hair);border-radius:var(--radius);
+  background:var(--lens);overflow:hidden;
+}
 .cam-viewport canvas{position:absolute;top:0;left:0;width:100%;height:100%}
 #face-canvas{z-index:2}
-.status-bar{display:flex;align-items:center;justify-content:space-between;
-  width:100%;margin-top:8px;flex-shrink:0}
-.samples-tag{font-size:13px;font-weight:400;color:#6b7280;padding:4px 0}
-.hint{font-size:12px;color:#9ca3af;text-align:center;margin-top:8px;font-weight:300;flex-shrink:0}
+.br{position:absolute;width:13px;height:13px;pointer-events:none;z-index:4;border-color:var(--live);opacity:.75}
+.br-tl{top:7px;left:7px;border-top-width:2px;border-left-width:2px;border-top-style:solid;border-left-style:solid;border-top-left-radius:2px}
+.br-tr{top:7px;right:7px;border-top-width:2px;border-right-width:2px;border-top-style:solid;border-right-style:solid;border-top-right-radius:2px}
+.br-bl{bottom:7px;left:7px;border-bottom-width:2px;border-left-width:2px;border-bottom-style:solid;border-left-style:solid;border-bottom-left-radius:2px}
+.br-br{bottom:7px;right:7px;border-bottom-width:2px;border-right-width:2px;border-bottom-style:solid;border-right-style:solid;border-bottom-right-radius:2px}
+
+.metric-strip{
+  display:flex;width:100%;flex-shrink:0;align-items:stretch;
+  margin-top:10px;height:30px;
+  border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);
+}
+.metric{
+  display:flex;align-items:center;gap:7px;padding:0 12px;
+  font-family:var(--font-data);
+}
+.metric + .metric{border-left:1px solid var(--hair)}
+.mt-label{font-size:9px;letter-spacing:.18em;color:#8A919E}
+.mt-val{font-size:11px;color:var(--ink);letter-spacing:.02em;white-space:nowrap}
+.mt-dot{width:6px;height:6px;border-radius:50%;background:#C2C8D2;transition:background .3s,box-shadow .3s}
+.mt-dot.on{background:var(--live);box-shadow:0 0 7px rgba(14,159,110,.5)}
+
+.status-bar{display:none}
+
+.hint{font-size:11px;color:var(--fog);text-align:center;margin-top:10px;font-weight:400;letter-spacing:.02em;flex-shrink:0}
+
+/* ================================================================
+   Buttons
+   ================================================================ */
 .btn{
   border:none;outline:none;cursor:pointer;font-weight:500;font-size:13px;
-  padding:10px 0;margin-top:8px;transition:all .15s;width:100%;
-  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  letter-spacing:.05em;
+  padding:11px 0;margin-top:10px;transition:all .15s;width:100%;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  border-radius:var(--radius);
 }
-.btn-primary{background:#111827;color:#fff;flex-shrink:0}
-.btn-primary:hover{background:#1f2937}
-.btn-primary:active{transform:scale(.98)}
-.btn-primary:disabled{opacity:.4;cursor:default;transform:none}
-.btn-secondary{background:#fff;color:#111827;border:1px solid #e5e7eb;flex-shrink:0}
-.btn-secondary:hover{background:#f9fafb}
+.btn-primary{background:var(--ink);color:#FFFFFF;flex-shrink:0}
+.btn-primary:hover{background:#2B313C}
+.btn-primary:active{transform:scale(.985)}
+.btn-primary:disabled{opacity:.35;cursor:default;transform:none}
+.btn-secondary{background:transparent;color:var(--ink);border:1px solid var(--hair);flex-shrink:0}
+.btn-secondary:hover{border-color:#C2C8D2;background:var(--face)}
+.btn-secondary:active{transform:scale(.985)}
 
-/* ========== Pwd Screen ========== */
-#screen-pwd{justify-content:flex-start;padding-bottom:12px}
-.pwd-body{width:100%;max-width:640px;padding:16px 0 20px;flex:1}
-.pwd-body h2{font-size:20px;font-weight:300;letter-spacing:-0.3px;color:#111827;margin-bottom:16px}
-.field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
-.field label{font-size:11px;font-weight:500;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px}
-.field input{
-  border:1px solid #e5e7eb;padding:8px 12px;
-  font-size:13px;outline:none;background:#f9fafb;color:#1f2937;
-  transition:border-color .15s;
-}
-.field input:focus{border-color:#9ca3af;background:#fff}
-.field input[readonly]{color:#6b7280}
-.field select{
-  border:1px solid #e5e7eb;padding:8px 12px;
-  font-size:13px;outline:none;background:#f9fafb;color:#1f2937;
-  transition:border-color .15s;width:100%;
-}
-.field select:focus{border-color:#9ca3af;background:#fff}
-.field input[type=range]{padding:0;height:24px}
-.dim{font-size:12px;color:#9ca3af;line-height:1.5;font-weight:300;margin-bottom:8px}
-
-/* ========== Progress ========== */
+/* ================================================================
+   Progress
+   ================================================================ */
 #cap-progress{display:none;width:100%;flex-shrink:0;margin-top:12px}
-.progress-bar{position:relative;height:2px;background:#f3f4f6}
-.progress-bar .fill{position:absolute;top:0;left:0;height:100%;background:#111827;transition:width .3s ease-out}
-.progress-info{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
-.progress-info span{font-size:12px;color:#6b7280}
+.progress-bar{position:relative;height:2px;background:var(--hair);border-radius:1px}
+.progress-bar .fill{position:absolute;top:0;left:0;height:100%;background:var(--live);border-radius:1px;transition:width .3s ease-out}
+.progress-info{display:flex;align-items:center;justify-content:space-between;margin-top:7px}
+.progress-info span{font-size:11px;color:var(--fog);font-family:var(--font-data);letter-spacing:.04em}
 
-/* ========== Banner ========== */
-.banner{display:none;align-items:center;justify-content:center;gap:8px;
-  padding:8px 16px;font-size:12px;font-weight:400;width:100%;flex-shrink:0}
-.banner.error{display:flex;background:#fef2f2;color:#dc2626}
-.banner.ok{display:flex;background:#f0fdf4;color:#16a34a}
+/* ================================================================
+   Banner
+   ================================================================ */
+.banner{
+  position:fixed;top:98px;left:50%;z-index:200;
+  transform:translate(-50%,-130%);opacity:0;visibility:hidden;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  padding:10px 18px;font-size:12px;font-weight:400;letter-spacing:.02em;
+  border:1px solid var(--hair);border-radius:6px;box-shadow:0 8px 28px rgba(22,26,34,.16);
+  background:var(--face);color:var(--ink);
+  max-width:min(560px, calc(100% - 24px));white-space:nowrap;
+  pointer-events:none;
+  transition:transform .26s ease,opacity .26s ease,visibility .26s;
+}
+.banner.show{transform:translate(-50%,0);opacity:1;visibility:visible}
+.banner.error{border-color:rgba(208,42,46,.28);background:#FBEDED;color:var(--err)}
+.banner.ok{border-color:rgba(14,159,110,.28);background:#EAF7F1;color:var(--live)}
 
-/* ========== Spinner ========== */
-.spinner{display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);
-  border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
-.spinner-dark{display:inline-block;width:18px;height:18px;border:2px solid #e5e7eb;
-  border-top-color:#6b7280;border-radius:50%;animation:spin .6s linear infinite}
+/* ================================================================
+   Spinner
+   ================================================================ */
+.spinner{display:none;width:15px;height:15px;border:2px solid rgba(255,255,255,.3);
+  border-top-color:#FFFFFF;border-radius:50%;animation:spin .6s linear infinite}
+.spinner-dark{display:inline-block;width:20px;height:20px;border:2px solid #C2C8D2;
+  border-top-color:var(--ink);border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* ========== Loading Overlay ========== */
-.loading-overlay{position:absolute;inset:0;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;gap:10px;background:#e5e7eb;
-  z-index:10;transition:opacity .3s}
+/* ================================================================
+   Loading overlay (inside viewport)
+   ================================================================ */
+.loading-overlay{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:12px;
+  background:var(--lens);z-index:10;transition:opacity .3s;
+}
 .loading-overlay.fade{opacity:0;pointer-events:none}
-.loading-text{font-size:12px;color:#6b7280;font-weight:300}
+.loading-text{font-size:11px;color:#5C6370;letter-spacing:.12em;font-family:var(--font-data)}
 
-/* ========== Settings ========== */
-#screen-settings .settings-body{flex:1;min-height:0;overflow-y:auto;padding:16px 0}
+/* ================================================================
+   Password / append / settings forms
+   ================================================================ */
+.pwd-body{width:100%;max-width:640px;padding:16px 0 20px;flex:1;min-height:0}
+.pwd-body h2{
+  font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
+  margin-bottom:16px;text-transform:uppercase;
+}
+#screen-settings .settings-body{overflow-y:auto}
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.field label{font-size:10px;font-weight:500;color:var(--fog);letter-spacing:.1em}
+.field input,.field select{
+  border:1px solid var(--hair);padding:9px 12px;
+  font-size:13px;outline:none;background:#FFFFFF;color:var(--ink);
+  border-radius:var(--radius);transition:border-color .15s,box-shadow .15s;
+  width:100%;
+}
+.field input:focus,.field select:focus{border-color:#B9C0CC;box-shadow:0 0 0 3px rgba(14,159,110,.12)}
+.field input[readonly]{color:var(--fog)}
+.dim{font-size:11px;color:var(--fog);line-height:1.6;font-weight:400;margin-bottom:8px;letter-spacing:.01em}
+.check{
+  display:flex;gap:10px;align-items:flex-start;font-size:12px;cursor:pointer;
+  text-transform:none;letter-spacing:.01em;color:var(--ink);line-height:1.5;
+}
+.check input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.cbx{width:16px;height:16px;flex-shrink:0;border:1.5px solid #B9C0CC;border-radius:3px;
+  background:#FFFFFF;position:relative;top:1px;transition:border-color .15s,background .15s}
+.check:hover .cbx{border-color:var(--live)}
+.check input:focus-visible ~ .cbx{box-shadow:0 0 0 3px rgba(14,159,110,.18)}
+.cbx::after{content:'';position:absolute;left:4.5px;top:1px;width:4.5px;height:8px;
+  border-color:#0E9F6E;border-width:0 2px 2px 0;transform:rotate(45deg) scale(0);opacity:0;
+  transition:transform .12s ease,opacity .12s}
+.check input:checked ~ .cbx{background-color:var(--live);border-color:var(--live)}
+.check input:checked ~ .cbx::after{transform:rotate(45deg) scale(1);opacity:1}
+.check input:disabled ~ .cbx{opacity:.4}
+.range-wrap{width:100%}
+.rng{position:relative;width:100%;height:24px;cursor:pointer}
+.rng input[type=range]{
+  -webkit-appearance:none;appearance:none;
+  position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;border:none;background:transparent;
+  opacity:0;cursor:pointer;
+}
+/* Chromium maps range clicks with a thumb-radius inset on each end (default
+   thumb ≈16px → 8px). Keep that exact thumb size so the hit area is stable,
+   then inset the visible rail by the same 8px so click rail-end == value min/max. */
+.rng input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;background:transparent;border:none;opacity:0}
+.rng input[type=range]::-webkit-slider-runnable-track{-webkit-appearance:none;height:2px;background:transparent;border:none}
+.rng-rail{position:absolute;left:8px;right:8px;top:0;bottom:0;pointer-events:none}
+.rng-track{position:absolute;left:0;right:0;top:50%;height:2px;transform:translateY(-50%);
+  background:var(--hair);border-radius:1px}
+.rng-fill{position:absolute;left:0;top:50%;height:2px;transform:translateY(-50%);
+  background:var(--live);border-radius:1px}
+.rng-knob{position:absolute;top:50%;width:14px;height:14px;border-radius:50%;
+  background:#FFFFFF;border:2px solid var(--live);transform:translate(-50%,-50%);
+  box-shadow:0 1px 3px rgba(22,26,34,.18)}
+@media (prefers-reduced-motion: reduce){
+  .cbx,.cbx::after,.banner{transition:none}
+}
 
-/* ========== Logs ========== */
+/* ================================================================
+   Custom select — instrument selector dial
+   The native <select> is kept hidden (its .value is what JS reads);
+   a styled trigger + popover panel replace its look. Selecting writes
+   the value back to the hidden select and fires a change event, so
+   all existing .value / onchange code keeps working unchanged.
+   ================================================================ */
+.cs-wrap{position:relative;width:100%}
+.cs-native{display:none}
+.cs-trigger{
+  width:100%;display:flex;align-items:center;gap:10px;
+  border:1px solid var(--hair);background:#FFFFFF;color:var(--ink);
+  padding:9px 12px;font-size:13px;border-radius:var(--radius);
+  cursor:pointer;text-align:left;font-family:var(--font-ui);
+  transition:border-color .15s,box-shadow .15s;
+}
+.cs-trigger:hover{border-color:#B9C0CC}
+.cs-trigger:focus-visible{outline:none;border-color:#B9C0CC;box-shadow:0 0 0 3px rgba(14,159,110,.12)}
+.cs-trigger.open{border-color:#B9C0CC;box-shadow:0 0 0 3px rgba(14,159,110,.12)}
+.cs-val{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cs-arrow{
+  flex-shrink:0;width:7px;height:7px;
+  border-right:1.5px solid #8A919E;border-bottom:1.5px solid #8A919E;
+  transform:rotate(45deg);transition:transform .18s;
+}
+.cs-trigger.open .cs-arrow{transform:rotate(225deg)}
+.cs-list{
+  position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:60;
+  background:#FFFFFF;border:1px solid var(--hair);border-radius:var(--radius);
+  box-shadow:0 10px 32px rgba(22,26,34,.14);
+  max-height:224px;overflow-y:auto;padding:4px;
+  opacity:0;visibility:hidden;transform:translateY(-3px);
+  transition:opacity .14s ease,transform .14s ease,visibility .14s;
+}
+.cs-list.open{opacity:1;visibility:visible;transform:translateY(0)}
+.cs-opt{
+  display:flex;align-items:center;gap:9px;width:100%;
+  padding:8px 10px;font-size:13px;color:var(--ink);cursor:pointer;border-radius:3px;
+  font-family:var(--font-ui);background:transparent;border:none;text-align:left;
+  transition:background .12s;
+}
+.cs-opt:hover,.cs-opt.hl{background:#F1F3F6}
+.cs-opt .cs-tick{width:3px;height:13px;border-radius:1px;background:transparent;flex-shrink:0}
+.cs-opt.sel{font-weight:500}
+.cs-opt.sel .cs-tick{background:var(--live)}
+@media (prefers-reduced-motion: reduce){
+  .cs-arrow,.cs-list{transition:none}
+}
+
+/* ================================================================
+   Logs
+   ================================================================ */
 #screen-logs .logs-body{width:100%;max-width:640px;flex:1;min-height:0;display:flex;flex-direction:column;padding:16px 0}
-.logs-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-shrink:0}
-.logs-toolbar h2{font-size:20px;font-weight:300;letter-spacing:-0.3px;color:#111827}
-.logs-toolbar .btn{width:auto;padding:6px 18px;margin-top:0;font-size:12px}
-.log-viewer{flex:1;min-height:0;overflow-y:auto;background:#f9fafb;border:1px solid #e5e7eb;padding:8px 12px;font-family:"Cascadia Code","Consolas","Courier New",monospace;font-size:11px;line-height:1.6;color:#374151;white-space:pre-wrap;word-break:break-all}
-.log-viewer .log-debug{color:#9ca3af}
-.log-viewer .log-info{color:#111827}
-.log-viewer .log-warn{color:#d97706}
-.log-viewer .log-error{color:#dc2626;font-weight:500}
+.logs-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-shrink:0}
+.logs-toolbar h2{
+  font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);text-transform:uppercase;
+}
+.logs-toolbar .btn{width:auto;padding:6px 16px;margin-top:0;font-size:11px}
+.log-viewer{
+  flex:1;min-height:0;overflow-y:auto;background:var(--deeper);
+  border:1px solid var(--hair);border-radius:var(--radius);
+  padding:10px 12px;font-family:var(--font-data);
+  font-size:11px;line-height:1.7;color:#3A4150;
+  white-space:pre-wrap;word-break:break-all;
+}
+.log-viewer .log-debug{color:#9AA1AD}
+.log-viewer .log-info{color:#3A4150}
+.log-viewer .log-warn{color:var(--warn)}
+.log-viewer .log-error{color:var(--err);font-weight:500}
 
-/* ========== Faces (multi-face management) ========== */
+/* ================================================================
+   Faces
+   ================================================================ */
 #screen-faces .faces-body{width:100%;max-width:640px;flex:1;min-height:0;display:flex;flex-direction:column;padding:16px 0}
 .faces-head{display:flex;align-items:center;justify-content:space-between;flex-shrink:0;margin-bottom:12px}
-.faces-head h2{font-size:20px;font-weight:300;letter-spacing:-0.3px;color:#111827}
+.faces-head h2{
+  font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);text-transform:uppercase;
+}
 .face-list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
-.face-item{display:flex;align-items:center;gap:10px;border:1px solid #e5e7eb;padding:10px 12px;background:#f9fafb}
-.face-item .face-name{flex:1;font-size:13px;color:#1f2937;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.face-item .face-id{font-size:11px;color:#9ca3af;flex-shrink:0}
-.face-item .btn{width:auto;padding:5px 12px;margin-top:0;font-size:12px}
+.face-item{
+  display:flex;align-items:center;gap:10px;
+  border:1px solid var(--hair);border-radius:var(--radius);
+  padding:10px 12px;background:var(--face);transition:background .15s;
+}
+.face-item:hover{background:var(--lite)}
+.face-item .face-name{flex:1;font-size:13px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.face-item .face-id{font-size:10px;color:#8A919E;font-family:var(--font-data);flex-shrink:0}
+.face-item .btn{width:auto;padding:5px 12px;margin-top:0;font-size:11px}
 .faces-actions{display:flex;gap:8px;flex-shrink:0}
 .faces-actions .btn{margin-top:0;flex:1}
-.face-empty{text-align:center;color:#9ca3af;font-size:13px;padding:32px 0;flex:1}
+.face-empty{text-align:center;color:var(--fog);font-size:13px;padding:40px 0;flex:1}
 
-/* ========== First-run Camera Picker Modal ========== */
-.cam-picker-overlay{position:fixed;inset:0;z-index:100;display:none;
-  align-items:center;justify-content:center;background:rgba(17,24,39,.45)}
+/* ================================================================
+   Modals (camera picker, refresh)
+   ================================================================ */
+.cam-picker-overlay{
+  position:fixed;inset:0;z-index:100;display:none;
+  align-items:center;justify-content:center;
+  background:rgba(22,26,34,.5);backdrop-filter:blur(2px);
+}
 .cam-picker-overlay.active{display:flex}
-.cam-picker{width:90%;max-width:420px;background:#fff;border:1px solid #e5e7eb;
-  box-shadow:0 10px 40px rgba(0,0,0,.15);padding:24px}
-.cam-picker h2{font-size:18px;font-weight:300;letter-spacing:-0.3px;color:#111827;margin-bottom:6px}
-.cam-picker p.dim{font-size:12px;color:#9ca3af;line-height:1.5;margin-bottom:16px}
-.cam-picker select{width:100%;border:1px solid #e5e7eb;padding:8px 12px;font-size:13px;
-  outline:none;background:#f9fafb;color:#1f2937;margin-bottom:8px}
-.cam-picker select:focus{border-color:#9ca3af;background:#fff}
+.cam-picker{
+  width:90%;max-width:420px;background:var(--face);
+  border:1px solid var(--hair);border-radius:8px;
+  box-shadow:0 18px 60px rgba(22,26,34,.18);padding:24px;
+}
+.cam-picker h2{
+  font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
+  margin-bottom:8px;text-transform:uppercase;
+}
+.cam-picker p.dim{font-size:12px;color:var(--fog);line-height:1.6;margin-bottom:18px}
+.cam-picker select{
+  width:100%;border:1px solid var(--hair);border-radius:var(--radius);
+  padding:9px 12px;font-size:13px;outline:none;background:var(--face);color:var(--ink);
+  margin-bottom:8px;
+}
+.cam-picker select:focus{border-color:#B9C0CC;box-shadow:0 0 0 3px rgba(14,159,110,.12)}
 .cam-picker .btn{margin-top:0}
-.cam-picker .btn-secondary{margin-top:8px}
+.cam-picker .btn-secondary{margin-top:10px}
 
-/* ========== Footer ========== */
-.footer{width:100%;max-width:640px;padding:8px 0;flex-shrink:0;border-top:1px solid #f3f4f6}
-.footer p{font-size:11px;color:#d1d5db}
+/* ================================================================
+   Footer — instrument base
+   ================================================================ */
+.footer{
+  width:100%;max-width:640px;padding:9px 2px;flex-shrink:0;
+  border-top:1px solid var(--hair);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.footer .ft-l,.footer .ft-r{
+  font-size:9px;letter-spacing:.2em;color:#9AA1AD;font-family:var(--font-data);
+  display:flex;align-items:center;gap:7px;white-space:nowrap;
+}
+.footer .ft-l i{width:5px;height:5px;border-radius:50%;background:var(--hair)}
+
+/* ================================================================
+   Scrollbars (light)
+   ================================================================ */
+.settings-body::-webkit-scrollbar,.log-viewer::-webkit-scrollbar,.face-list::-webkit-scrollbar{width:8px}
+.settings-body::-webkit-scrollbar-track,.log-viewer::-webkit-scrollbar-track,.face-list::-webkit-scrollbar-track{background:transparent}
+.settings-body::-webkit-scrollbar-thumb,.log-viewer::-webkit-scrollbar-thumb,.face-list::-webkit-scrollbar-thumb{background:#D4D9E1;border-radius:4px}
+.settings-body::-webkit-scrollbar-thumb:hover,.log-viewer::-webkit-scrollbar-thumb:hover,.face-list::-webkit-scrollbar-thumb:hover{background:#C2C8D2}
 </style>
 </head>
 <body>
@@ -156,18 +426,25 @@ body{
 <!-- ================================================================== -->
 <div id="screen-cam" class="screen active">
   <div class="header">
-    <h1>FaceLogin Console</h1>
-    <p>人脸识别登录系统 · 控制台</p>
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div class="brand-title">
+        <h1><span class="brand-fg">FaceLogin</span><span class="brand-console"> Console</span></h1>
+        <p>生物识别登录 · 录入 / 校准</p>
+      </div>
+      <span class="chassis-badge">P/N&nbsp;FL-15</span>
+    </div>
   </div>
-  <div class="tabs">
-    <span class="tab active" onclick="switchTab('cam')">录入</span>
-    <span class="tab" onclick="switchTab('faces')">人脸</span>
-    <span class="tab" onclick="switchTab('settings')">设置</span>
-    <span class="tab" onclick="switchTab('logs')">日志</span>
+  <div class="tabs" role="tablist">
+    <span class="tab active" data-tab="cam" role="tab" tabindex="0" aria-selected="true" onclick="switchTab('cam')" onkeydown="tabKey(event,'cam')">录入</span>
+    <span class="tab" data-tab="faces" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('faces')" onkeydown="tabKey(event,'faces')">人脸</span>
+    <span class="tab" data-tab="settings" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('settings')" onkeydown="tabKey(event,'settings')">设置</span>
+    <span class="tab" data-tab="logs" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('logs')" onkeydown="tabKey(event,'logs')">日志</span>
   </div>
   <div class="cam-body">
     <div class="banner" id="cam-banner"></div>
     <div class="cam-viewport" id="viewport">
+      <i class="br br-tl"></i><i class="br br-tr"></i><i class="br br-bl"></i><i class="br br-br"></i>
       <div class="loading-overlay" id="cam-loading">
         <div class="spinner-dark"></div>
         <span class="loading-text">正在启动摄像头...</span>
@@ -175,8 +452,20 @@ body{
       <canvas id="bg-canvas"></canvas>
       <canvas id="face-canvas"></canvas>
     </div>
-    <div class="status-bar">
-      <span class="samples-tag" id="samples-tag">Samples: 0 / 10</span>
+    <div class="metric-strip">
+      <div class="metric">
+        <i class="mt-dot" id="live-dot"></i>
+        <span class="mt-label">LIVE</span>
+        <span class="mt-val" id="live-val">--</span>
+      </div>
+      <div class="metric">
+        <span class="mt-label">SAMPLES</span>
+        <span class="mt-val"><span id="samples-tag">0 / 10</span></span>
+      </div>
+      <div class="metric">
+        <span class="mt-label">RES</span>
+        <span class="mt-val" id="res-val">--</span>
+      </div>
     </div>
     <div class="hint" id="cam-hint">请将面部置于取景框内，确保光线充足。</div>
     <button class="btn btn-primary" id="btn-capture" onclick="onCapture()">
@@ -191,7 +480,10 @@ body{
       </div>
     </div>
   </div>
-  <div class="footer"><p>FaceLogin Console</p></div>
+  <div class="footer">
+    <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
+    <div class="ft-r">v1.5-DEV</div>
+  </div>
 </div>
 
 <!-- ================================================================== -->
@@ -199,10 +491,16 @@ body{
 <!-- ================================================================== -->
 <div id="screen-pwd" class="screen">
   <div class="header">
-    <h1>FaceLogin Console</h1>
-    <p>人脸识别登录系统 · 控制台</p>
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div class="brand-title">
+        <h1><span class="brand-fg">FaceLogin</span><span class="brand-console"> Console</span></h1>
+        <p>生物识别登录 · 录入 / 校准</p>
+      </div>
+      <span class="chassis-badge">P/N&nbsp;FL-15</span>
+    </div>
   </div>
-  <div class="tabs"><span class="tab active">录入</span></div>
+  <div class="tabs"><span class="tab active" role="tab" tabindex="0">录入</span></div>
   <div class="pwd-body">
     <div class="banner" id="pwd-banner"></div>
     <h2>完成录入</h2>
@@ -227,7 +525,7 @@ body{
       <input type="text" id="fld-face-label" placeholder="可留空，默认如“脸1”" maxlength="32">
     </div>
     <div class="field" id="field-skip-pass" style="display:none">
-      <label style="text-transform:none;display:flex;gap:8px;align-items:center;font-size:12px">
+      <label class="check">
         <input type="checkbox" id="fld-skip-pass">
         <span id="fld-skip-pass-label">该账号没有密码（仅使用 PIN/Hello），跳过密码录入</span>
       </label>
@@ -239,7 +537,10 @@ body{
       保存并录入
     </button>
   </div>
-  <div class="footer"><p>FaceLogin Console</p></div>
+  <div class="footer">
+    <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
+    <div class="ft-r">v1.5-DEV</div>
+  </div>
 </div>
 
 <!-- ================================================================== -->
@@ -247,20 +548,26 @@ body{
 <!-- ================================================================== -->
 <div id="screen-faces" class="screen">
   <div class="header">
-    <h1>FaceLogin Console</h1>
-    <p>人脸识别登录系统 · 控制台</p>
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div class="brand-title">
+        <h1><span class="brand-fg">FaceLogin</span><span class="brand-console"> Console</span></h1>
+        <p>生物识别登录 · 录入 / 校准</p>
+      </div>
+      <span class="chassis-badge">P/N&nbsp;FL-15</span>
+    </div>
   </div>
-  <div class="tabs">
-    <span class="tab" onclick="switchTab('cam')">录入</span>
-    <span class="tab active" onclick="switchTab('faces')">人脸</span>
-    <span class="tab" onclick="switchTab('settings')">设置</span>
-    <span class="tab" onclick="switchTab('logs')">日志</span>
+  <div class="tabs" role="tablist">
+    <span class="tab" data-tab="cam" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('cam')" onkeydown="tabKey(event,'cam')">录入</span>
+    <span class="tab active" data-tab="faces" role="tab" tabindex="0" aria-selected="true" onclick="switchTab('faces')" onkeydown="tabKey(event,'faces')">人脸</span>
+    <span class="tab" data-tab="settings" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('settings')" onkeydown="tabKey(event,'settings')">设置</span>
+    <span class="tab" data-tab="logs" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('logs')" onkeydown="tabKey(event,'logs')">日志</span>
   </div>
   <div class="faces-body">
     <div class="banner" id="faces-banner"></div>
     <div class="faces-head">
       <h2>人脸管理</h2>
-      <span class="samples-tag" id="faces-count">0 / 5 张</span>
+      <span class="mt-val" id="faces-count">0 / 5 张</span>
     </div>
     <p class="dim">当前账号：<span id="faces-user">-</span></p>
     <div class="face-list" id="face-list"></div>
@@ -269,7 +576,10 @@ body{
       <button class="btn btn-secondary" onclick="onClearAllFaces()">清空全部</button>
     </div>
   </div>
-  <div class="footer"><p>FaceLogin Console</p></div>
+  <div class="footer">
+    <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
+    <div class="ft-r">v1.5-DEV</div>
+  </div>
 </div>
 
 <!-- ================================================================== -->
@@ -277,10 +587,16 @@ body{
 <!-- ================================================================== -->
 <div id="screen-append" class="screen">
   <div class="header">
-    <h1>FaceLogin Console</h1>
-    <p>人脸识别登录系统 · 控制台</p>
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div class="brand-title">
+        <h1><span class="brand-fg">FaceLogin</span><span class="brand-console"> Console</span></h1>
+        <p>生物识别登录 · 录入 / 校准</p>
+      </div>
+      <span class="chassis-badge">P/N&nbsp;FL-15</span>
+    </div>
   </div>
-  <div class="tabs"><span class="tab active">录入</span></div>
+  <div class="tabs"><span class="tab active" role="tab" tabindex="0">录入</span></div>
   <div class="pwd-body">
     <div class="banner" id="append-banner"></div>
     <h2>添加新人脸</h2>
@@ -305,7 +621,10 @@ body{
       <button class="btn btn-secondary" id="btn-append-cancel" onclick="onAppendCancel()" style="flex:1">取消</button>
     </div>
   </div>
-  <div class="footer"><p>FaceLogin Console</p></div>
+  <div class="footer">
+    <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
+    <div class="ft-r">v1.5-DEV</div>
+  </div>
 </div>
 
 <!-- ================================================================== -->
@@ -313,16 +632,22 @@ body{
 <!-- ================================================================== -->
 <div id="screen-settings" class="screen">
   <div class="header">
-    <h1>FaceLogin Console</h1>
-    <p>人脸识别登录系统 · 控制台</p>
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div class="brand-title">
+        <h1><span class="brand-fg">FaceLogin</span><span class="brand-console"> Console</span></h1>
+        <p>生物识别登录 · 录入 / 校准</p>
+      </div>
+      <span class="chassis-badge">P/N&nbsp;FL-15</span>
+    </div>
   </div>
-  <div class="tabs">
-    <span class="tab" onclick="switchTab('cam')">录入</span>
-    <span class="tab" onclick="switchTab('faces')">人脸</span>
-    <span class="tab active">设置</span>
-    <span class="tab" onclick="switchTab('logs')">日志</span>
+  <div class="tabs" role="tablist">
+    <span class="tab" data-tab="cam" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('cam')" onkeydown="tabKey(event,'cam')">录入</span>
+    <span class="tab" data-tab="faces" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('faces')" onkeydown="tabKey(event,'faces')">人脸</span>
+    <span class="tab active" data-tab="settings" role="tab" tabindex="0" aria-selected="true" onclick="switchTab('settings')" onkeydown="tabKey(event,'settings')">设置</span>
+    <span class="tab" data-tab="logs" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('logs')" onkeydown="tabKey(event,'logs')">日志</span>
   </div>
-  <div class="pwd-body settings-body" style="width:100%;max-width:640px">
+  <div class="pwd-body settings-body">
     <div class="banner" id="settings-banner"></div>
     <h2>系统设置</h2>
     <p class="dim">修改设置后会自动通知后台服务，无需重启。</p>
@@ -332,43 +657,57 @@ body{
 
     <div class="field">
       <label>摄像头旋转 (Camera Rotation)</label>
-      <select id="cfg-rotation">
-        <option value="0">不旋转 (0°)</option>
-        <option value="90">顺时针 90°</option>
-        <option value="180">180°</option>
-        <option value="270">顺时针 270°</option>
-      </select>
+      <div class="cs-wrap" data-cs="rotation">
+        <select id="cfg-rotation" class="cs-native">
+          <option value="0">不旋转 (0°)</option>
+          <option value="90">顺时针 90°</option>
+          <option value="180">180°</option>
+          <option value="270">顺时针 270°</option>
+        </select>
+        <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false"><span class="cs-val"></span><span class="cs-arrow"></span></button>
+        <div class="cs-list" role="listbox"></div>
+      </div>
       <p class="dim" style="margin-top:4px;font-size:11px">摄像头物理安装方向不是正向上时（如竖屏安装），可在此调整。实时预览会立即反映旋转效果。</p>
     </div>
 
     <div class="field">
       <label>摄像头 (Camera)</label>
-      <select id="cfg-camera">
-        <option value="">默认（第一个设备）</option>
-      </select>
+      <div class="cs-wrap" data-cs="camera">
+        <select id="cfg-camera" class="cs-native">
+          <option value="">默认（第一个设备）</option>
+        </select>
+        <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false"><span class="cs-val"></span><span class="cs-arrow"></span></button>
+        <div class="cs-list" role="listbox"></div>
+      </div>
       <p class="dim" style="margin-top:4px;font-size:11px">有多台或虚拟摄像头时，可在此选择用于录入与登录的摄像头。</p>
     </div>
 
     <div class="field">
       <label>活体检测 (Liveness Method)</label>
-      <select id="cfg-liveness" onchange="onLivenessChange()">
-        <option value="blink">眨眼检测 (Blink)</option>
-        <option value="antispoof">反欺诈 (Anti-Spoof)</option>
-        <option value="none">无 (None)</option>
-      </select>
+      <div class="cs-wrap" data-cs="liveness">
+        <select id="cfg-liveness" class="cs-native" onchange="onLivenessChange()">
+          <option value="blink">眨眼检测 (Blink)</option>
+          <option value="antispoof">反欺诈 (Anti-Spoof)</option>
+          <option value="none">无 (None)</option>
+        </select>
+        <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false"><span class="cs-val"></span><span class="cs-arrow"></span></button>
+        <div class="cs-list" role="listbox"></div>
+      </div>
     </div>
 
     <div class="field" id="field-blink-glasses" style="display:none">
-      <label style="text-transform:none;display:flex;gap:8px;align-items:center;font-size:12px;cursor:pointer">
-        <input type="checkbox" id="cfg-blink-glasses" style="width:auto;cursor:pointer">
+      <label class="check">
+        <input type="checkbox" id="cfg-blink-glasses">
+        <span class="cbx"></span>
         <span>眼镜模式（戴眼镜导致眨眼检测不稳定时开启）</span>
       </label>
       <p class="dim" style="font-size:11px">眼镜模式使用自适应眨眼检测，对镜框/反光更鲁棒，但可能不如默认模式稳定。非必要建议保持关闭。</p>
     </div>
 
     <div class="field">
-      <label style="text-transform:none;display:flex;gap:8px;align-items:center;font-size:12px;cursor:pointer">
-        <input type="checkbox" id="cfg-low-light" style="width:auto;cursor:pointer">
+      <label class="check">
+        <input type="checkbox" id="cfg-low-light">
+        <span class="cbx"></span>
         <span>暗光增强（暗光环境下人脸识别不稳定时开启）</span>
       </label>
       <p class="dim" style="font-size:11px">暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。</p>
@@ -376,15 +715,33 @@ body{
 
     <div class="field" id="field-antispoof-threshold" style="display:none">
       <label>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.30</span></label>
-      <input type="range" id="cfg-antispoof-threshold" min="25" max="75" value="30" step="1"
-             oninput="document.getElementById('cfg-asthr-val').textContent=(this.value/100).toFixed(2)">
+      <div class="range-wrap">
+        <div class="rng">
+          <input type="range" id="cfg-antispoof-threshold" min="25" max="75" value="30" step="1"
+                 oninput="rngSync(this)">
+          <div class="rng-rail">
+            <div class="rng-track"></div>
+            <div class="rng-fill"></div>
+            <div class="rng-knob"></div>
+          </div>
+        </div>
+      </div>
       <p class="dim" style="margin-top:4px;font-size:11px">阈值越低越宽松（容易通过），越高越严格（更难通过）。默认0.30。</p>
     </div>
 
     <div class="field">
       <label>匹配严格度 (Match Strictness): <span id="cfg-threshold-val">70</span></label>
-      <input type="range" id="cfg-threshold" min="20" max="80" value="70" step="1"
-             oninput="document.getElementById('cfg-threshold-val').textContent=this.value">
+      <div class="range-wrap">
+        <div class="rng">
+          <input type="range" id="cfg-threshold" min="20" max="80" value="70" step="1"
+                 oninput="rngSync(this)">
+          <div class="rng-rail">
+            <div class="rng-track"></div>
+            <div class="rng-fill"></div>
+            <div class="rng-knob"></div>
+          </div>
+        </div>
+      </div>
       <p class="dim" style="margin-top:4px;font-size:11px">值越高越严格（人脸需更相似才能通过）。默认70。</p>
     </div>
 
@@ -392,7 +749,10 @@ body{
       保存设置
     </button>
   </div>
-  <div class="footer"><p>FaceLogin Console</p></div>
+  <div class="footer">
+    <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
+    <div class="ft-r">v1.5-DEV</div>
+  </div>
 </div>
 
 <!-- ================================================================== -->
@@ -400,20 +760,26 @@ body{
 <!-- ================================================================== -->
 <div id="screen-logs" class="screen">
   <div class="header">
-    <h1>FaceLogin Console</h1>
-    <p>人脸识别登录系统 · 控制台</p>
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div class="brand-title">
+        <h1><span class="brand-fg">FaceLogin</span><span class="brand-console"> Console</span></h1>
+        <p>生物识别登录 · 录入 / 校准</p>
+      </div>
+      <span class="chassis-badge">P/N&nbsp;FL-15</span>
+    </div>
   </div>
-  <div class="tabs">
-    <span class="tab" onclick="switchTab('cam')">录入</span>
-    <span class="tab" onclick="switchTab('faces')">人脸</span>
-    <span class="tab" onclick="switchTab('settings')">设置</span>
-    <span class="tab active">日志</span>
+  <div class="tabs" role="tablist">
+    <span class="tab" data-tab="cam" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('cam')" onkeydown="tabKey(event,'cam')">录入</span>
+    <span class="tab" data-tab="faces" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('faces')" onkeydown="tabKey(event,'faces')">人脸</span>
+    <span class="tab" data-tab="settings" role="tab" tabindex="0" aria-selected="false" onclick="switchTab('settings')" onkeydown="tabKey(event,'settings')">设置</span>
+    <span class="tab active" data-tab="logs" role="tab" tabindex="0" aria-selected="true" onclick="switchTab('logs')" onkeydown="tabKey(event,'logs')">日志</span>
   </div>
-  <div class="logs-body" style="width:100%;max-width:640px">
+  <div class="logs-body">
     <div class="logs-toolbar">
       <h2>运行日志</h2>
       <div style="display:flex;gap:8px;align-items:center">
-        <select id="log-source" onchange="refreshLogs()" style="font-size:12px;padding:4px 8px;border:1px solid #e5e7eb;background:#f9fafb">
+        <select id="log-source" onchange="refreshLogs()" style="font-size:11px;padding:5px 8px;border:1px solid var(--hair);border-radius:4px;background:#FFFFFF;color:var(--ink);font-family:var(--font-data)">
           <option value="console">Console</option>
           <option value="service">Service</option>
         </select>
@@ -422,7 +788,10 @@ body{
     </div>
     <div class="log-viewer" id="log-viewer"></div>
   </div>
-  <div class="footer"><p>FaceLogin Console</p></div>
+  <div class="footer">
+    <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
+    <div class="ft-r">v1.5-DEV</div>
+  </div>
 </div>
 
 <!-- ================================================================== -->
@@ -454,7 +823,7 @@ body{
       并更新本地密码。请输入当前 Windows 登录密码。
     </p>
     <input type="password" id="refresh-pass" placeholder="输入当前 Windows 登录密码"
-           style="width:100%;border:1px solid #e5e7eb;padding:8px 12px;font-size:13px;outline:none;background:#f9fafb;color:#1f2937;margin-bottom:8px">
+           style="width:100%;border:1px solid var(--hair);border-radius:4px;padding:9px 12px;font-size:13px;outline:none;background:#FFFFFF;color:var(--ink);margin-bottom:10px">
     <button class="btn btn-primary" id="refresh-confirm" onclick="onRefreshConfirm()">
       <span class="spinner" id="refresh-spinner"></span>
       刷新并保留人脸
@@ -466,7 +835,24 @@ body{
 </div>
 
 <script>
-var H = window.chrome.webview.hostObjects.sync.host;
+// Host bridge. In the real WebView2 this is the injected COM host object.
+// When the page is opened in a plain browser (no host, e.g. HTML preview),
+// we install a lazy proxy so the static UI still renders and tab switching
+// keeps working — any host method call fails loudly at call time instead of
+// killing the whole script at load.
+var H = (function() {
+  try {
+    var h = window.chrome.webview.hostObjects.sync.host;
+    if (h) return h;
+  } catch(e) {}
+  return new Proxy({}, {
+    get: function(_, name) {
+      return function() {
+        throw new Error('FaceLogin host unavailable (opened outside the app): ' + String(name));
+      };
+    }
+  });
+})();
 var viewing = true, lastB64 = '', lastFacesJson = '', timer = 0, faceImg = new Image();
 var camReady = false, currentTab = 'cam';
 
@@ -511,8 +897,8 @@ function drawBackgroundAndOverlay() {
   var srcH = faceImg.naturalHeight || 720;
   var m = containMapping(srcW, srcH, cw, ch);
   var ctx = c.getContext('2d');
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, cw, ch);       // letterbox bars
+  ctx.fillStyle = '#E3E6EC';   // letterbox bars = viewfinder well
+  ctx.fillRect(0, 0, cw, ch);
   ctx.drawImage(faceImg, m.ox, m.oy, srcW * m.sx, srcH * m.sy);
   drawOverlay(lastFacesJson);
 }
@@ -559,17 +945,174 @@ function drawOverlay(json) {
   var sx = m.sx, sy = m.sy, ox = m.ox, oy = m.oy;
 
   ctx.clearRect(0, 0, cw, ch);
-  ctx.strokeStyle = '#22c55e';
-  ctx.lineWidth = 2;
-  ctx.fillStyle = '#22c55e';
+  ctx.strokeStyle = '#0E9F6E';
+  ctx.lineWidth = 1.5;
+  ctx.fillStyle = '#0E9F6E';
 
   for (var fi = 0; fi < faces.length; fi++) {
     var f = faces[fi];
     ctx.strokeRect(f.x * sx + ox, f.y * sy + oy, f.w * sx, f.h * sy);
     for (var i = 0; i < f.landmarks.length; i += 2) {
-      ctx.fillRect(f.landmarks[i] * sx + ox - 1, f.landmarks[i + 1] * sy + oy - 1, 2, 2);
+      ctx.fillRect(f.landmarks[i] * sx + ox - 0.75, f.landmarks[i + 1] * sy + oy - 0.75, 1.5, 1.5);
     }
   }
+}
+
+// Keyboard activation for the mode tabs (a11y). Mouse path is unchanged.
+function tabKey(e, name) {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    switchTab(name);
+  }
+}
+
+// ================================================================
+// Custom select (instrument selector dial)
+// Wraps each hidden native <select> in a styled trigger + popover.
+// The native select's .value is what all existing JS reads, so we
+// sync list->native on pick and native->list on rebuild. Dynamic
+// lists (the camera dropdown) rebuild from the native <option>s each
+// time the list opens, so externally-populated options always match.
+// ================================================================
+function csOptEl(text) {
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'cs-opt';
+  b.innerHTML = '<span class="cs-tick"></span><span class="cs-text">' + text + '</span>';
+  return b;
+}
+
+function csSync(wrap, select) {
+  var list = wrap.querySelector('.cs-list');
+  var val = select.value;
+  var opts = list.querySelectorAll('.cs-opt');
+  var label = '';
+  for (var i = 0; i < opts.length; i++) {
+    var on = (opts[i].getAttribute('data-v') === val);
+    opts[i].classList.toggle('sel', on);
+    if (on) label = opts[i].getAttribute('data-t');
+  }
+  if (!label) {
+    // Fallback: selected option may have been added dynamically after the
+    // list was built (e.g. the camera list) — label from the native option.
+    for (var j = 0; j < select.options.length; j++) {
+      if (select.options[j].value === val) { label = select.options[j].textContent; break; }
+    }
+  }
+  wrap.querySelector('.cs-val').textContent = label || select.options[select.selectedIndex]?.textContent || '';
+}
+
+// Rebuild the popover list from the native <select> <option>s.
+function csPopulate(wrap, select) {
+  var list = wrap.querySelector('.cs-list');
+  list.innerHTML = '';
+  for (var i = 0; i < select.options.length; i++) {
+    var o = select.options[i];
+    var b = csOptEl(o.textContent);
+    b.setAttribute('data-v', o.value);
+    b.setAttribute('data-t', o.textContent);
+    b.addEventListener('click', function() {
+      select.value = this.getAttribute('data-v');
+      // Fire change so onLivenessChange()/etc. keep working.
+      select.dispatchEvent(new Event('change'));
+      csSync(wrap, select);
+      csClose(wrap);
+    });
+    list.appendChild(b);
+  }
+  csSync(wrap, select);
+}
+
+function csClose(wrap) {
+  wrap.querySelector('.cs-trigger').classList.remove('open');
+  wrap.querySelector('.cs-trigger').setAttribute('aria-expanded', 'false');
+  wrap.querySelector('.cs-list').classList.remove('open');
+}
+
+function csOpen(wrap) {
+  var select = wrap.querySelector('.cs-native');
+  csPopulate(wrap, select);   // rebuild (camera list may have changed)
+  wrap.querySelector('.cs-trigger').classList.add('open');
+  wrap.querySelector('.cs-trigger').setAttribute('aria-expanded', 'true');
+  wrap.querySelector('.cs-list').classList.add('open');
+  var hl = wrap.querySelector('.cs-opt.sel');
+  if (hl) {
+    hl.classList.add('hl');
+    var list = wrap.querySelector('.cs-list');
+    if (list.scrollTop > 0 || hl.offsetTop > list.clientHeight) list.scrollTop = Math.max(0, hl.offsetTop - list.clientHeight / 2);
+  }
+}
+
+function csKey(e, wrap) {
+  var list = wrap.querySelector('.cs-list');
+  if (e.key === 'Escape') { csClose(wrap); wrap.querySelector('.cs-trigger').focus(); return; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!list.classList.contains('open')) { csOpen(wrap); return; }
+    var opts = list.querySelectorAll('.cs-opt');
+    var cur = -1;
+    for (var i = 0; i < opts.length; i++) if (opts[i].classList.contains('hl')) { cur = i; break; }
+    var step = (e.key === 'ArrowDown') ? 1 : -1;
+    var next = (cur + step + opts.length) % opts.length;
+    opts[next].classList.add('hl');
+    if (cur >= 0) opts[cur].classList.remove('hl');
+    var item = opts[next];
+    if (item.offsetTop < list.scrollTop) list.scrollTop = item.offsetTop;
+    if (item.offsetTop + item.clientHeight > list.scrollTop + list.clientHeight) list.scrollTop = item.offsetTop + item.clientHeight - list.clientHeight;
+    return;
+  }
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    if (!list.classList.contains('open')) { csOpen(wrap); return; }
+    var hl = wrap.querySelector('.cs-opt.hl');
+    if (hl) hl.click();
+    return;
+  }
+  // Keep the dialog's native select from swallowing Tab out of the field.
+  if (e.key === 'Tab') { csClose(wrap); return; }
+}
+
+// Bind all custom selects on the page.
+(function initCustomSelects() {
+  var wraps = document.querySelectorAll('.cs-wrap');
+  for (var i = 0; i < wraps.length; i++) {
+    (function(wrap) {
+      var select = wrap.querySelector('.cs-native');
+      var trigger = wrap.querySelector('.cs-trigger');
+      trigger.addEventListener('click', function() {
+        if (wrap.querySelector('.cs-list').classList.contains('open')) csClose(wrap);
+        else csOpen(wrap);
+      });
+      trigger.addEventListener('keydown', function(e) { csKey(e, wrap); });
+      wrap.querySelector('.cs-list').addEventListener('keydown', function(e) { csKey(e, wrap); });
+      csPopulate(wrap, select);
+    })(wraps[i]);
+  }
+  // Clicking anywhere outside a list closes all open lists.
+  document.addEventListener('click', function(e) {
+    var all = document.querySelectorAll('.cs-wrap .cs-list.open');
+    for (var i = 0; i < all.length; i++) {
+      if (!all[i].closest('.cs-wrap').contains(e.target)) all[i].classList.remove('open');
+    }
+  });
+})();
+
+// Sync a custom range's fill, knob and readout from the native input value.
+// The native input keeps its .value (all existing JS reads it unchanged);
+// this only paints the track/knob + a small data readout below the rail.
+function rngSync(input) {
+  var rng = input.closest('.rng');
+  if (!rng) return;
+  var min = parseFloat(input.min), max = parseFloat(input.max);
+  var pct = max > min ? ((parseFloat(input.value) - min) / (max - min)) * 100 : 0;
+  pct = Math.max(0, Math.min(100, pct));
+  rng.querySelector('.rng-fill').style.width = pct + '%';
+  rng.querySelector('.rng-knob').style.left = pct + '%';
+  // Keep the field's value label (e.g. "匹配严格度 …: 70") in sync — it was
+  // previously updated by the inline oninput handler, now removed.
+  var labelSpan = input.closest('.field').querySelector('label > span');
+  if (labelSpan && input.id === 'cfg-threshold') labelSpan.textContent = input.value;
+  if (labelSpan && input.id === 'cfg-antispoof-threshold') labelSpan.textContent = (parseFloat(input.value) / 100).toFixed(2);
 }
 
 function switchTab(name) {
@@ -581,10 +1124,12 @@ function switchTab(name) {
   for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
   currentTab = name;
   newScreen.classList.add('active');
-  var tabNames = {cam: '录入', faces: '人脸', settings: '设置', logs: '日志'};
-  var allTabs = document.querySelectorAll('.tabs span');
+  // Match tabs by data-tab (not textContent — labels can repeat across screens).
+  var allTabs = document.querySelectorAll('.tabs span[data-tab]');
   for (var i = 0; i < allTabs.length; i++) {
-    allTabs[i].classList.toggle('active', allTabs[i].textContent === tabNames[name]);
+    var on = allTabs[i].getAttribute('data-tab') === name;
+    allTabs[i].classList.toggle('active', on);
+    allTabs[i].setAttribute('aria-selected', on ? 'true' : 'false');
   }
   if (name === 'settings') loadSettings();
   if (name === 'faces') loadFaces();
@@ -637,6 +1182,16 @@ function loadSettings() {
       }
     } catch(e) {}
 
+    // The camera dropdown is populated dynamically above — rebuild its custom
+    // list so the instrument dial reflects the fresh options.
+    var camWrap = camSel.closest('.cs-wrap');
+    if (camWrap) csPopulate(camWrap, camSel);
+    // The liveness dropdown value was just loaded from config — rebuild its
+    // custom list too, otherwise the dial keeps showing the page-load default
+    // (blink) even when config says antispoof/none.
+    var livWrap = document.getElementById('cfg-liveness').closest('.cs-wrap');
+    if (livWrap) csPopulate(livWrap, document.getElementById('cfg-liveness'));
+
     // match_threshold is stored as distance (lower = stricter).
     // Convert to UI strictness: strictness = 100 - threshold*100 (higher = stricter).
     var thr = Math.round(100 - (cfg.match_threshold || 0.30) * 100);
@@ -645,8 +1200,14 @@ function loadSettings() {
     var asThr = Math.round((cfg.anti_spoof_threshold || 0.30) * 100);
     document.getElementById('cfg-antispoof-threshold').value = asThr;
     document.getElementById('cfg-asthr-val').textContent = (asThr / 100).toFixed(2);
-    onLivenessChange();
+    // Custom range tracks/knobs follow the loaded values.
+    rngSync(document.getElementById('cfg-threshold'));
+    rngSync(document.getElementById('cfg-antispoof-threshold'));
   } catch(e) { showBanner('settings', '读取设置失败: ' + e.message, 'error'); }
+  // Always reconcile the liveness-dependent fields with the current select
+  // value, even if loading config failed above — so the glasses / anti-spoof
+  // threshold fields can never get stuck showing the wrong one.
+  onLivenessChange();
 }
 
 function onSaveSettings() {
@@ -730,7 +1291,7 @@ function onCapture() {
       var samplePoll = setInterval(function() {
         var n = H.GetSampleCount();
         var pct = Math.round(n / 10 * 100);
-        document.getElementById('samples-tag').textContent = 'Samples: ' + n + ' / 10';
+        document.getElementById('samples-tag').textContent = n + ' / 10';
         document.getElementById('cap-fill').style.width = pct + '%';
         document.getElementById('cap-pct').textContent = pct + '%';
         if (n >= 10) {
@@ -933,7 +1494,7 @@ function showRefreshPrompt(state, faces, upn) {
     title.textContent = '账号身份已变更';
     info.textContent = facesText
       + '检测到该账号曾使用微软账号（MSA）登录，现已切换为本地账号。'
-      + '为使人脸登录继续生效，需要刷新已保存的账号信息（人脸数据将保留），'
+      + '为使人脸登录继续保留，需要刷新已保存的账号信息（人脸数据将保留），'
       + '并更新本地密码。请输入当前 Windows 登录密码。';
   }
   document.getElementById('refresh-pass').value = '';
@@ -1008,7 +1569,7 @@ function onAppendConfirm() {
       document.getElementById('screen-append').classList.remove('active');
       document.getElementById('screen-cam').classList.add('active');
       currentTab = 'cam';
-      document.getElementById('samples-tag').textContent = 'Samples: 0 / 10';
+      document.getElementById('samples-tag').textContent = '0 / 10';
       showBanner('cam', '新脸已添加成功！可按 Win+L 锁定屏幕测试人脸登录。', 'ok');
       viewing = true;
       renderFrame();
@@ -1029,13 +1590,21 @@ function onAppendCancel() {
 }
 
 function showBanner(screen, text, type, durationMs) {
+  // All banners float at the same top-center position — dismiss any other
+  // visible one first so they never stack/overlap.
+  var all = document.querySelectorAll('.banner.show');
+  for (var i = 0; i < all.length; i++) all[i].classList.remove('show');
   var el = document.getElementById(screen + '-banner');
   el.className = 'banner ' + type;
   el.textContent = text;
+  // Force a reflow so the slide-down transition starts from the hidden state.
+  void el.offsetHeight;
+  el.classList.add('show');
   // Optional duration override; default 4s. Guidance messages (e.g. the
   // lock-screen password-refresh hint) need longer to be readable.
   var ms = (typeof durationMs === 'number') ? durationMs : 4000;
-  setTimeout(function() { el.className = 'banner'; }, ms);
+  clearTimeout(el._bannerTimer);
+  el._bannerTimer = setTimeout(function() { el.classList.remove('show'); }, ms);
 }
 
 function onSave() {
@@ -1073,7 +1642,7 @@ function onSave() {
       document.getElementById('screen-cam').classList.add('active');
       currentTab = 'cam';
       document.getElementById('fld-pass').value = '';
-      document.getElementById('samples-tag').textContent = 'Samples: 0 / 10';
+      document.getElementById('samples-tag').textContent = '0 / 10';
       showBanner('cam', '录入成功！可按 Win+L 锁定屏幕测试人脸登录。', 'ok');
       viewing = true;
       renderFrame();
@@ -1188,6 +1757,14 @@ function onCamPickerSkip() {
 
 (function init() {
   try { document.getElementById('fld-user').value = H.GetUsername(); } catch(e) {}
+
+  // Paint custom range tracks/knobs from their initial (default) values even
+  // before config loads — loadSettings() re-syncs them when host data arrives.
+  (function primeRanges() {
+    var inputs = document.querySelectorAll('.rng input[type=range]');
+    for (var i = 0; i < inputs.length; i++) rngSync(inputs[i]);
+  })();
+
   setTimeout(function() {
     try { if (H.StartPreview()) renderFrame(); } catch(e) {}
   }, 100);
@@ -1210,7 +1787,16 @@ function onCamPickerSkip() {
     if (!viewing) return;
     try {
       var n = H.GetSampleCount();
-      document.getElementById('samples-tag').textContent = 'Samples: ' + n + ' / 10';
+      document.getElementById('samples-tag').textContent = n + ' / 10';
+    } catch(e) {}
+    // Live / resolution readouts on the metric strip (pure instrumentation).
+    try {
+      var ld = document.getElementById('live-dot');
+      if (ld) ld.classList.toggle('on', camReady);
+      var lv = document.getElementById('live-val');
+      if (lv) lv.textContent = camReady ? 'ACTIVE' : '--';
+      var rv = document.getElementById('res-val');
+      if (rv) rv.textContent = (faceImg.complete && faceImg.naturalWidth) ? faceImg.naturalWidth + '×' + faceImg.naturalHeight : '--';
     } catch(e) {}
   }, 300);
 
