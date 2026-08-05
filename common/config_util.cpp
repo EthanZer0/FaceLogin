@@ -109,6 +109,12 @@ static float jsonGetFloat(const std::string& json, const std::string& key, float
     try { return std::stof(s); } catch (...) { return defVal; }
 }
 
+static int jsonGetInt(const std::string& json, const std::string& key, int defVal) {
+    auto s = jsonGetString(json, key);
+    if (s.empty()) return defVal;
+    try { return std::stoi(s); } catch (...) { return defVal; }
+}
+
 std::string ConfigToJson(const AppConfig& cfg) {
     std::ostringstream ss;
     ss << "{\n";
@@ -119,6 +125,7 @@ std::string ConfigToJson(const AppConfig& cfg) {
     ss << "  "; jsonWriteString(ss, "anti_spoof_threshold"); ss << ": " << cfg.anti_spoof_threshold << ",\n";
     ss << "  "; jsonWriteString(ss, "blink_glasses_mode"); ss << ": " << (cfg.blink_glasses_mode ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "low_light_enhance"); ss << ": " << (cfg.low_light_enhance ? "true" : "false") << ",\n";
+    ss << "  "; jsonWriteString(ss, "camera_rotation"); ss << ": " << cfg.camera_rotation << ",\n";
     ss << "  "; jsonWriteString(ss, "camera_device"); ss << ": "; jsonWriteString(ss, cfg.camera_device); ss << "\n";
     ss << "}\n";
     return ss.str();
@@ -136,6 +143,7 @@ AppConfig ConfigFromJson(const std::string& json) {
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
     cfg.blink_glasses_mode = (jsonGetString(json, "blink_glasses_mode") == "true");
     cfg.low_light_enhance = (jsonGetString(json, "low_light_enhance") == "true");
+    cfg.camera_rotation = jsonGetInt(json, "camera_rotation", 0);
     auto cam = jsonGetString(json, "camera_device");
     if (!cam.empty()) cfg.camera_device = cam;
     return cfg;
@@ -175,10 +183,11 @@ AppConfig LoadConfig(const std::wstring& dataDir) {
     file.close();
 
     AppConfig cfg = ConfigFromJson(buf.str());
-    FACELOGIN_INFO(L"Loaded config.json: rec=%hs det=%hs live=%hs thr=%.2f camera=%hs",
+    FACELOGIN_INFO(L"Loaded config.json: rec=%hs det=%hs live=%hs thr=%.2f camera=%hs rotation=%d",
                   cfg.recognition_model.c_str(), cfg.detector.c_str(),
                   LivenessMethodToString(cfg.liveness_method).c_str(),
-                  cfg.match_threshold, cfg.camera_device.c_str());
+                  cfg.match_threshold, cfg.camera_device.c_str(),
+                  cfg.camera_rotation);
     return cfg;
 }
 

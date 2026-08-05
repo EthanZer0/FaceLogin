@@ -4,6 +4,7 @@
 #include "../common/ipc_protocol.h"
 #include "../common/registry_util.h"
 #include "../common/config_util.h"
+#include "../common/image_utils.h"
 #include <comdef.h>
 #include <shlobj.h>
 #include <wincodec.h>
@@ -327,6 +328,8 @@ bool EnrollmentWizard::StartPreview() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
+
+            RotateFrame(frame, m_config.camera_rotation);
 
             std::string b64 = EncodeJPEGBase64(frame);
             // Preview overlay: detect the face with SCRFD and show its box.
@@ -1291,10 +1294,10 @@ bool EnrollmentWizard::SetConfig(const std::string& json) {
         CloseHandle(hPipe);
     }
 
-    FACELOGIN_INFO(L"Configuration updated: rec=%hs det=%hs live=%hs thr=%.2f",
+    FACELOGIN_INFO(L"Configuration updated: rec=%hs det=%hs live=%hs thr=%.2f rotation=%d",
                   m_config.recognition_model.c_str(), m_config.detector.c_str(),
                   LivenessMethodToString(m_config.liveness_method).c_str(),
-                  m_config.match_threshold);
+                  m_config.match_threshold, m_config.camera_rotation);
 
     // If the camera selection changed and the preview is running, restart the
     // preview so the new camera takes effect immediately.

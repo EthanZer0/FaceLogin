@@ -23,6 +23,10 @@ struct AppConfig {
     // anti-spoof, so matches/scores don't degrade in dark scenes.
     bool           low_light_enhance      = false;
     std::string    camera_device          = "";          // device symbolic link; empty = first camera
+    // Camera rotation in degrees clockwise. Valid: 0, 90, 180, 270.
+    // Use when the camera is physically mounted in a non-standard
+    // orientation (e.g., vertical PC mount / sideways webcam).
+    int            camera_rotation        = 0;
 };
 
 AppConfig LoadConfig(const std::wstring& dataDir);

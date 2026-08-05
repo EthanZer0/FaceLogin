@@ -4,6 +4,7 @@
 #include "../common/secure_buffer.h"
 #include "../common/registry_util.h"
 #include "../common/config_util.h"
+#include "../common/image_utils.h"
 #include "liveness_detector.h"
 #include <shlobj.h>
 #include <chrono>
@@ -256,11 +257,11 @@ bool FaceService::Initialize() {
         FACELOGIN_INFO(L"DirectShow webcam will be initialized on demand%s",
                        m_config.camera_device.empty() ? L"" : L" (configured device)");
     } else {
-        m_webcamMF = std::make_unique<WebcamCapture>();
-        if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
-            FACELOGIN_ERROR(L"Failed to initialize MF webcam");
-            return false;
-        }
+        // Media Foundation camera is also initialized on demand — keeping
+        // it open across auth sessions causes the source reader to stall
+        // (especially when FaceLoginConsole is running concurrently).
+        FACELOGIN_INFO(L"MF webcam will be initialized on demand%s",
+                       m_config.camera_device.empty() ? L"" : L" (configured device)");
     }
 
     m_pipeServer = std::make_unique<PipeServer>();
@@ -332,11 +333,11 @@ void FaceService::Run() {
             if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(m_config.low_light_enhance);
             m_pipeServer->WriteMessage(ipc::MSG_CONFIG_RELOAD_OK);
             m_pipeServer->Disconnect();
-            FACELOGIN_INFO(L"Configuration reloaded: rec=%hs det=%hs live=%hs thr=%.2f",
+            FACELOGIN_INFO(L"Configuration reloaded: rec=%hs det=%hs live=%hs thr=%.2f rotation=%d",
                           m_config.recognition_model.c_str(), m_config.detector.c_str(),
                           m_livenessMethod == LivenessMethod::Blink ? "blink" :
                           m_livenessMethod == LivenessMethod::AntiSpoof ? "antispoof" : "none",
-                          m_matchThreshold);
+                          m_matchThreshold, m_config.camera_rotation);
         }
         else if (request == ipc::MSG_GET_LOGS) {
             auto lines = Logger::Instance().GetRecentLogs(500);
@@ -371,12 +372,31 @@ void FaceService::Run() {
                     }
                     FACELOGIN_INFO(L"DS camera initialized on demand for auth");
                 }
+            } else {
+                if (!m_webcamMF) {
+                    m_webcamMF = std::make_unique<WebcamCapture>();
+                    if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+                        FACELOGIN_ERROR(L"MF camera init failed on demand");
+                        m_webcamMF.reset();
+                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
+                        FlushFileBuffers(m_pipeServer->GetHandle());
+                        m_pipeServer->DrainOutput(5000);
+                        m_pipeServer->Disconnect();
+                        continue;
+                    }
+                    FACELOGIN_INFO(L"MF camera initialized on demand for auth");
+                }
             }
             ProcessAuthRequest();
             if (m_isServiceMode && m_webcamDS) {
                 m_webcamDS->Shutdown();
                 m_webcamDS.reset();
                 FACELOGIN_INFO(L"DS camera released after auth");
+            }
+            if (!m_isServiceMode && m_webcamMF) {
+                m_webcamMF->Shutdown();
+                m_webcamMF.reset();
+                FACELOGIN_INFO(L"MF camera released after auth");
             }
             m_pipeServer->Disconnect();
         }
@@ -472,6 +492,8 @@ bool FaceService::ProcessAuthRequest() {
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
+
+        RotateFrame(frame, m_config.camera_rotation);
 
         // Face detection + landmarks: SCRFD detects, dlib shape predictor
         // (GetLandmarks) extracts 68 points for alignment + blink.
