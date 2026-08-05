@@ -80,13 +80,16 @@ func main() {
 	internal.NoticeEnabled = true
 	internal.NoticeVersion = "1.4.0"
 	internal.NoticeTitle = "FaceLogin 1.4.0 更新说明"
-	internal.NoticeBody = "优化：\n" +
-		"- 移除未使用的旧版 dlib 模型，安装包体积更小\n" +
+	internal.NoticeBody = "新功能：\n" +
+		"- 账号切换检测：识别微软账号(MSA)与本地账户切换后遗留的旧人脸数据与过期密码，输入当前密码即可一键刷新，人脸无需重新录入\n" +
+		"- 眼镜模式：针对戴眼镜用户的眨眼检测优化，镜框/反光不再干扰解锁\n" +
+		"- 暗光增强：暗光下自动做亮度归一化，提升识别与反欺诈通过率\n\n" +
+		"优化：\n" +
+		"- 移除未使用的旧版 dlib 模型，安装包体积更小\n\n" +
+		"修复：\n" +
 		"- 修复控制台启动时的模型检查（改为校验实际使用的 ONNX 模型）\n\n" +
-		"新功能：\n" +
-		"- 检测并处理微软账号(MSA)与本地账户之间切换后遗留的旧人脸数据与过期密码，人脸无需重新录入\n\n" +
 		"说明：\n" +
-		"- 现有的人脸数据和配置完全兼容"
+		"- 现有的人脸数据和配置完全兼容，无需重新录入"
 
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
