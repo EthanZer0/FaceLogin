@@ -469,7 +469,11 @@ body{
 var H = window.chrome.webview.hostObjects.sync.host;
 var viewing = true, lastB64 = '', lastFacesJson = '', timer = 0, faceImg = new Image();
 var camReady = false, currentTab = 'cam';
-var refreshState = 0;  // account-type-change state shown in the refresh modal (0/1/2)
+// The account-type-change state (0/1/2) is stashed on #refresh-overlay's
+// dataset rather than a module-level var so the dismiss handler always reads
+// the state captured AT OPEN TIME of THIS prompt — a later showRefreshPrompt()
+// (e.g. a re-check while the modal is up) can't race the 50ms deferred
+// dismiss callback and flip it to a different branch.
 
 faceImg.onload = function() {
   drawBackgroundAndOverlay();
@@ -916,8 +920,8 @@ function checkAccountRefresh() {
 }
 
 function showRefreshPrompt(state, faces, upn) {
-  refreshState = state;
   var overlay = document.getElementById('refresh-overlay');
+  overlay.dataset.refreshState = String(state);  // snapshot at open time
   var info = document.getElementById('refresh-info');
   var title = document.getElementById('refresh-title');
   var dismissBtn = document.getElementById('refresh-dismiss');
@@ -980,11 +984,17 @@ function onRefreshConfirm() {
 function onRefreshDismiss() {
   var btn = document.getElementById('refresh-dismiss');
   btn.disabled = true;
+  // Snapshot the state captured when THIS prompt opened. Reading it inside
+  // the deferred callback (rather than a shared module var) avoids a TOCTOU
+  // where a re-check while the modal is up overwrites the state and sends
+  // the dismiss down the wrong branch.
+  var overlay = document.getElementById('refresh-overlay');
+  var state = parseInt(overlay.dataset.refreshState || '0', 10);
   // Defer the synchronous COM call so the disabled state paints first.
   setTimeout(function() {
     btn.disabled = false;
-    document.getElementById('refresh-overlay').classList.remove('active');
-    if (refreshState !== 1) {
+    overlay.classList.remove('active');
+    if (state !== 1) {
       // state 2 (local→MSA) needs the refresh to write the current email and
       // re-encrypt the password — there is nothing safe to auto-clean.
       showBanner('faces', '已暂不处理。下次进入“人脸”页仍会提示刷新账号信息。', 'ok', 6000);
