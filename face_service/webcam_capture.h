@@ -15,6 +15,11 @@
 
 namespace facelogin {
 
+// GrabFrame failures beyond this count mark the SourceReader as stalled
+// (typically after system resume while the USB camera is in low-power
+// recovery). WebcamCapture self-shuts-down so the caller can re-init fresh.
+constexpr int kMaxConsecutiveGrabFailures = 3;
+
 // Webcam capture using Media Foundation IMFSourceReader.
 // Captures frames in NV12 format and converts to RGB for dlib.
 // Falls back to native camera format if NV12 is not available.
@@ -55,6 +60,10 @@ private:
     int m_height = 720;
     bool m_initialized = false;
     bool m_isNV12 = true;
+    // Consecutive GrabFrame failures. When a camera stalls after system resume
+    // (low-power recovery), ReadSample keeps failing on a stale SourceReader;
+    // after kMaxConsecutiveFailures we self-shutdown so the caller re-inits.
+    int m_consecutiveFailures = 0;
     static bool s_mfInitialized;
     static int s_mfRefCount;
 };

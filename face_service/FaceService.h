@@ -80,6 +80,12 @@ private:
 
     bool m_isServiceMode = false;  // set by ServiceMain
 
+    // Set when the system resumes from sleep/hibernate (PBT_APMRESUMESUSPEND).
+    // The MF platform survives resume but the USB camera may still be in
+    // low-power recovery — force a fresh camera init on the next auth so we
+    // don't reuse a stale SourceReader that returns no frames.
+    std::atomic<bool> m_resumedFlag{false};
+
     // Settings
     std::wstring m_dataDir;
     std::wstring m_modelsDir;

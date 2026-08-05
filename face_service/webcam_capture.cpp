@@ -306,8 +306,18 @@ bool WebcamCapture::GrabFrame(dlib::matrix<dlib::rgb_pixel>& outFrame) {
         &streamIndex, &flags, &timestamp, &pSample);
 
     if (FAILED(hr) || !pSample) {
+        // A device stall after resume makes ReadSample fail repeatedly on a
+        // stale SourceReader. A few consecutive failures means it's dead, not
+        // a transient glitch — self-shutdown so the caller re-inits fresh.
+        if (++m_consecutiveFailures >= kMaxConsecutiveGrabFailures) {
+            FACELOGIN_WARN(L"GrabFrame failed %d times — camera stalled, releasing for re-init",
+                           m_consecutiveFailures);
+            m_consecutiveFailures = 0;
+            Shutdown();
+        }
         return false;
     }
+    m_consecutiveFailures = 0;
 
     bool result = false;
     if (m_isNV12) {
