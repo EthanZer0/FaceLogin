@@ -302,6 +302,11 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"RenameFace") *ids = 29;
     else if (n == L"CheckAccountTypeChanged") *ids = 30;
     else if (n == L"RefreshAccountIdentity") *ids = 31;
+    // NOTE: DISPID 32 is skipped on main — GetCaptureStatus() is a
+    // feature/multi-angle-recognition-only method not present here. Keeping
+    // ClearStaleAccountUpn at 33 matches that branch, so the future merge
+    // slots GetCaptureStatus into 32 without renumbering.
+    else if (n == L"ClearStaleAccountUpn") *ids = 33;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -438,6 +443,7 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
             if (res) *res = MakeBool(m_wizard->RefreshAccountIdentity(pass));
             break;
         }
+        case 33: if (res) *res = MakeBool(m_wizard->ClearStaleAccountUpn()); break;
         default: return DISP_E_MEMBERNOTFOUND;
         }
         return S_OK;

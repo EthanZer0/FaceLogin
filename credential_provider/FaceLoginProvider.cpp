@@ -394,7 +394,15 @@ static std::wstring GetMSAUpnFromIdentityStore(const std::wstring& userSid) {
                 RegQueryValueExW(hEntry, L"Sid", nullptr, nullptr,
                     reinterpret_cast<LPBYTE>(sidValue), &sidSize);
 
-                if (identityName[0] != L'\0' && wcschr(identityName, L'@')) {
+                // Only adopt the email when it is genuinely linked to the
+                // requested user SID. The cache holds MSA identities for ALL
+                // accounts ever seen on the machine (other profiles, previous
+                // users, or an MSA later converted to local); taking the first
+                // email found would misattribute it to the wrong user (same
+                // class of bug as docs/todo.md bug1).
+                if (identityName[0] != L'\0' && wcschr(identityName, L'@') &&
+                    !userSid.empty() && sidValue[0] != L'\0' &&
+                    wcscmp(sidValue, userSid.c_str()) == 0) {
                     upn = identityName;
                     FACELOGIN_INFO(L"MSA UPN found in IdentityStore: %s (SID=%s)",
                                   identityName, sidValue);
