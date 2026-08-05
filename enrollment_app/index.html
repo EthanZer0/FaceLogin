@@ -482,16 +482,38 @@ faceImg.onload = function() {
   }
 };
 
+// Compute the contain-fit mapping for the video frame inside the viewport:
+// scale = min(cw/sw, ch/sh), then center the scaled image. Returns {sx,sy,ox,oy}
+// where frame point (x,y) → (x*sx+ox, y*sy+oy). BOTH the background draw and
+// the overlay draw MUST use this same mapping so the face box/landmarks always
+// line up with the visible face. (Changed from stretch → contain in 1.4.1 so a
+// portrait/rotated frame isn't distorted: 90/270 rotation makes the JPEG
+// portrait, and stretching that into a 16:9 box squashes the face.)
+function containMapping(srcW, srcH, cw, ch) {
+  if (srcW <= 0 || srcH <= 0 || cw <= 0 || ch <= 0) return { sx: 1, sy: 1, ox: 0, oy: 0 };
+  var s = Math.min(cw / srcW, ch / srcH);
+  var ox = (cw - srcW * s) / 2;
+  var oy = (ch - srcH * s) / 2;
+  return { sx: s, sy: s, ox: ox, oy: oy };
+}
+
 // Draw the background image AND its paired overlay (same frame). The background
-// stretches to fill the viewport; the overlay uses the same stretch mapping so
-// the face box/landmarks always line up with the visible face.
+// fills the viewport with contain-fit (keeps aspect ratio, letterboxes), and
+// the overlay uses the SAME contain mapping so the face box/landmarks always
+// line up with the visible face.
 function drawBackgroundAndOverlay() {
   var c = document.getElementById('bg-canvas');
   var vp = document.getElementById('viewport');
   var cw = vp.clientWidth, ch = vp.clientHeight;
   c.width = cw;
   c.height = ch;
-  c.getContext('2d').drawImage(faceImg, 0, 0, cw, ch);
+  var srcW = faceImg.naturalWidth || 1280;
+  var srcH = faceImg.naturalHeight || 720;
+  var m = containMapping(srcW, srcH, cw, ch);
+  var ctx = c.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, cw, ch);       // letterbox bars
+  ctx.drawImage(faceImg, m.ox, m.oy, srcW * m.sx, srcH * m.sy);
   drawOverlay(lastFacesJson);
 }
 
@@ -526,15 +548,15 @@ function drawOverlay(json) {
   if (faces.length === 0) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
 
   // Use the ACTUAL video frame size (from the loaded image), NOT a hardcoded
-  // 1280x720 — the camera may negotiate a different resolution. And stretch to
-  // the canvas exactly like the background does (drawImage fills the canvas),
-  // so the overlay always lines up with the visible face regardless of window
-  // aspect. A contain/letterbox mapping here would drift from the stretched
-  // background whenever the viewport isn't exactly 16:9.
+  // 1280x720 — the camera may negotiate a different resolution. And use the
+  // SAME contain mapping as drawBackgroundAndOverlay, so the overlay always
+  // lines up with the visible face (a contain/letterbox background would drift
+  // from a stretch overlay, so both share containMapping()).
   var srcW = faceImg.naturalWidth || 1280;
   var srcH = faceImg.naturalHeight || 720;
   var cw = canvas.width, ch = canvas.height;
-  var sx = cw / srcW, sy = ch / srcH;
+  var m = containMapping(srcW, srcH, cw, ch);
+  var sx = m.sx, sy = m.sy, ox = m.ox, oy = m.oy;
 
   ctx.clearRect(0, 0, cw, ch);
   ctx.strokeStyle = '#22c55e';
@@ -543,9 +565,9 @@ function drawOverlay(json) {
 
   for (var fi = 0; fi < faces.length; fi++) {
     var f = faces[fi];
-    ctx.strokeRect(f.x * sx, f.y * sy, f.w * sx, f.h * sy);
+    ctx.strokeRect(f.x * sx + ox, f.y * sy + oy, f.w * sx, f.h * sy);
     for (var i = 0; i < f.landmarks.length; i += 2) {
-      ctx.fillRect(f.landmarks[i] * sx - 1, f.landmarks[i + 1] * sy - 1, 2, 2);
+      ctx.fillRect(f.landmarks[i] * sx + ox - 1, f.landmarks[i + 1] * sy + oy - 1, 2, 2);
     }
   }
 }

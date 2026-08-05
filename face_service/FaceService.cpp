@@ -433,12 +433,17 @@ void FaceService::Stop() {
 bool FaceService::ProcessAuthRequest() {
     FACELOGIN_INFO(L"Starting face authentication...");
 
+    // Single grab helper used by ALL auth stages (match, anti-spoof, blink,
+    // final verify): it applies the configured camera rotation so every stage
+    // operates on identically-oriented frames. Previously rotation was only
+    // applied in the match loop, leaving the liveness/verify stages to process
+    // unrotated frames — with 90/270 rotation the face was sideways there and
+    // detection/landmarks/EAR failed, blocking unlock.
     auto grabFrame = [this](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
-        if (m_isServiceMode)
-            return m_webcamDS->GrabFrame(f);
-        if (m_webcamMF)
-            return m_webcamMF->GrabFrame(f);
-        return false;
+        bool ok = m_isServiceMode ? m_webcamDS->GrabFrame(f)
+                                  : (m_webcamMF ? m_webcamMF->GrabFrame(f) : false);
+        if (ok) RotateFrame(f, m_config.camera_rotation);
+        return ok;
     };
 
     if (m_store->GetUserCount() == 0) {
@@ -492,8 +497,6 @@ bool FaceService::ProcessAuthRequest() {
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
-
-        RotateFrame(frame, m_config.camera_rotation);
 
         // Face detection + landmarks: SCRFD detects, dlib shape predictor
         // (GetLandmarks) extracts 68 points for alignment + blink.
