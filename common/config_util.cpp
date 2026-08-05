@@ -143,7 +143,16 @@ AppConfig ConfigFromJson(const std::string& json) {
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
     cfg.blink_glasses_mode = (jsonGetString(json, "blink_glasses_mode") == "true");
     cfg.low_light_enhance = (jsonGetString(json, "low_light_enhance") == "true");
-    cfg.camera_rotation = jsonGetInt(json, "camera_rotation", 0);
+    int rotation = jsonGetInt(json, "camera_rotation", 0);
+    // Only accept 0/90/180/270; anything else silently does nothing in
+    // RotateFrame, so fall back to 0 and log it — a configured-but-ignored
+    // rotation is a silent failure the user can't diagnose.
+    if (rotation != 90 && rotation != 180 && rotation != 270) {
+        if (rotation != 0)
+            FACELOGIN_WARN(L"Invalid camera_rotation=%d in config, falling back to 0", rotation);
+        rotation = 0;
+    }
+    cfg.camera_rotation = rotation;
     auto cam = jsonGetString(json, "camera_device");
     if (!cam.empty()) cfg.camera_device = cam;
     return cfg;
