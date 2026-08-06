@@ -213,7 +213,20 @@ bool EnrollmentWizard::StartPreview() {
     // success to gate the background work. Model loading (dlib shape predictor
     // + ONNX sessions) is deferred to the frame thread so a cold start never
     // blocks the UI and the user can switch tabs while "starting camera".
-    if (!m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+    //
+    // Retry briefly: right after unlock the credential-provider service may
+    // still be releasing the camera it used for auth, so a first init can fail
+    // with the device busy. A couple of short retries absorb that window.
+    constexpr int kInitRetries = 5;
+    bool webcamOk = false;
+    for (int attempt = 0; attempt < kInitRetries && !webcamOk; attempt++) {
+        webcamOk = m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device));
+        if (!webcamOk && attempt + 1 < kInitRetries) {
+            FACELOGIN_WARN(L"Webcam init attempt %d failed — camera may still be releasing, retrying", attempt + 1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
+    if (!webcamOk) {
         FACELOGIN_ERROR(L"Failed to initialize webcam%s",
                         m_config.camera_device.empty() ? L"" : L" (configured device)");
         return false;
@@ -221,6 +234,7 @@ bool EnrollmentWizard::StartPreview() {
 
     m_previewRunning = true;
     m_frameRunning = true;
+    m_frameReinitCount = 0;
 
     // Single background thread: load models (if needed) → GrabFrame → JPEG
     // encode → detect → update caches. The UI thread stays completely free;
@@ -234,7 +248,28 @@ bool EnrollmentWizard::StartPreview() {
         while (m_frameRunning) {
             dlib::matrix<dlib::rgb_pixel> frame;
             if (!m_webcam->GrabFrame(frame)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                // GrabFrame self-shuts-down after repeated failures (e.g. the
+                // camera was taken over by the credential provider and the
+                // SourceReader went stale). Rebuild the camera here so preview
+                // recovers instead of spinning on a dead SourceReader until the
+                // next StartPreview. Bounded retries: if the device truly is
+                // gone, stop hammering it and wait for the caller to retry.
+                if (!m_webcam->IsInitialized() && m_frameRunning) {
+                    if (++m_frameReinitCount >= 3) {
+                        FACELOGIN_ERROR(L"Preview camera re-init exceeded limit — giving up until next start");
+                        break;
+                    }
+                    FACELOGIN_WARN(L"Preview camera stalled — re-initializing (%d/3)", m_frameReinitCount);
+                    m_webcam->Shutdown();
+                    if (m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+                        FACELOGIN_INFO(L"Preview camera re-initialized");
+                        m_frameReinitCount = 0;   // a successful re-init resets the budget
+                    } else {
+                        FACELOGIN_ERROR(L"Preview camera re-init failed — giving up until next start");
+                        break;   // exit frame loop; next StartPreview retries
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
                 continue;
             }
 
@@ -340,14 +375,18 @@ void EnrollmentWizard::StopPreview() {
     m_frameRunning = false;
     m_capturing = false;
 
-    // Join background threads before shutting down camera
+    // Shut down the camera FIRST so a synchronous ReadSample that is blocked
+    // (camera taken over by the credential provider at lock) returns an error.
+    // Otherwise the thread join below would block forever on the UI thread
+    // (the "console freezes after unlock" bug).
+    if (m_webcam)
+        m_webcam->Shutdown();
+
+    // Join background threads now that the camera is closed.
     if (m_captureThread.joinable())
         m_captureThread.join();
     if (m_frameThread.joinable())
         m_frameThread.join();
-
-    if (m_webcam)
-        m_webcam->Shutdown();
 }
 
 // ============================================================================

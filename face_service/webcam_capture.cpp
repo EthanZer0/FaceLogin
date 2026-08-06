@@ -459,6 +459,15 @@ bool WebcamCapture::ConvertYUY2toRGB(IMFSample* pSample,
 }
 
 void WebcamCapture::Shutdown() {
+    // Force-close the media source BEFORE releasing our references. A blocked
+    // synchronous ReadSample (e.g. the camera was just taken over by the
+    // credential provider at lock) would otherwise keep the source referenced
+    // and the caller's thread join would hang forever. IMFMediaSource::Shutdown
+    // makes an in-flight ReadSample return MF_E_SHUTDOWN so the frame thread
+    // can exit cleanly.
+    if (m_pSource) {
+        m_pSource->Shutdown();
+    }
     if (m_pReader) {
         m_pReader->Release();
         m_pReader = nullptr;

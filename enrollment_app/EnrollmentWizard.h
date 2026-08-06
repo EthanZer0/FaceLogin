@@ -157,6 +157,10 @@ private:
     // Frame-grab thread (runs off UI thread — GrabFrame + JPEG encode + detection)
     std::thread m_frameThread;
     bool m_frameRunning = false;
+    // Consecutive camera re-inits inside the frame thread (stalled SourceReader
+    // after the credential provider took the camera). Bounded so a truly-dead
+    // device doesn't cause an infinite re-init loop; reset on success or start.
+    int m_frameReinitCount = 0;
 
     // WIC factory (created once)
     IWICImagingFactory* m_wicFactory = nullptr;
