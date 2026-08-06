@@ -289,8 +289,12 @@ bool PipeServer::WriteMessage(const std::wstring& message) {
 
     if (!result || bytesWritten == 0) {
         DWORD err = GetLastError();
-        if (err == ERROR_BROKEN_PIPE) {
-            FACELOGIN_INFO(L"Pipe broken during write");
+        // 109 (ERROR_BROKEN_PIPE) and 232 (ERROR_NO_DATA) are both normal
+        // "the client closed its end" signals — a benign race when the client
+        // disconnects between our disconnect check and this write. Not an
+        // error; log at INFO so the service log isn't polluted.
+        if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA) {
+            FACELOGIN_INFO(L"Pipe closed during write (err=%lu)", err);
         } else if (!result) {
             FACELOGIN_ERROR(L"WriteFile failed: %lu", err);
         }
