@@ -10,6 +10,7 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>
+#include <cmath>
 #include <wtsapi32.h>
 
 #pragma comment(lib, "wtsapi32.lib")
@@ -222,14 +223,16 @@ bool FaceService::Initialize() {
         FACELOGIN_INFO(L"Initialize: ServiceStartUptime = %llu", uptime);
     }
 
-    m_detector = std::make_unique<FaceDetector>();
-    std::wstring shapePredictorPath = m_modelsDir + L"\\shape_predictor_68_face_landmarks.dat";
-    if (!m_detector->Initialize(shapePredictorPath)) {
-        FACELOGIN_ERROR(L"Failed to initialize face detector");
-        return false;
-    }
+    m_detector = nullptr;  // loaded by the background thread — see StartBackgroundModelLoad()
 
-    // Load SCRFD ONNX detector (the only detector).
+    // Load SCRFD ONNX detector (the only detector, and the lightest model —
+    // 2.5MB). This is loaded SYNCHRONOUSLY in Initialize() because the pipe
+    // listener must be up as soon as possible: SCRFD is needed for the very
+    // first frame of auth, and it loads in a few hundred ms even on a cold
+    // mechanical disk. Everything heavier (the 99.7MB dlib shape predictor,
+    // InsightFace recognizer, anti-spoof) is deferred to a background thread —
+    // see StartBackgroundModelLoad(). The lock screen therefore connects to
+    // the pipe the moment it appears instead of waiting out the model loads.
     m_onnxDetector = std::make_unique<OnnxDetector>();
     std::wstring onnxDetPath = m_modelsDir + L"\\det_500m.onnx";
     if (m_onnxDetector->Initialize(onnxDetPath)) {
@@ -239,27 +242,9 @@ bool FaceService::Initialize() {
         return false;
     }
 
-    // Try loading InsightFace ONNX model (the only recognizer).
-    m_onnxRecognizer = std::make_unique<OnnxRecognizer>();
-    std::wstring onnxRecPath = m_modelsDir + L"\\w600k_mbf.onnx";
-    if (m_onnxRecognizer->Initialize(onnxRecPath)) {
-        FACELOGIN_INFO(L"ONNX recognizer loaded — using InsightFace buffalo_s");
-    } else {
-        FACELOGIN_ERROR(L"ONNX recognizer failed to load — recognition unavailable");
-        return false;
-    }
-    m_onnxRecognizer->SetLowLightEnhance(m_config.low_light_enhance);
-
-    // Try loading anti-spoof model (MiniFASNetV2).
-    m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
-    std::wstring antiSpoofPath = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
-    if (m_antiSpoof->Initialize(antiSpoofPath)) {
-        FACELOGIN_INFO(L"Anti-spoof model loaded (MiniFASNetV2)");
-    } else {
-        FACELOGIN_WARN(L"Anti-spoof model not available");
-        m_antiSpoof.reset();
-    }
-    if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(m_config.low_light_enhance);
+    // Heavy models (shape predictor + recognizer + anti-spoof) load in a
+    // background thread. See StartBackgroundModelLoad().
+    StartBackgroundModelLoad();
 
     if (m_isServiceMode) {
         // Camera is initialized lazily per auth request to avoid
@@ -280,11 +265,9 @@ bool FaceService::Initialize() {
     // recognition_model/detector config values are ignored (only onnx/scrfd
     // are supported; anything else logs a warning for backwards compat).
 
-    // Validate liveness method — fall back if model unavailable
-    if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
-        FACELOGIN_WARN(L"Anti-spoof configured but model not loaded, falling back to blink");
-        m_livenessMethod = LivenessMethod::Blink;
-    }
+    // NOTE: liveness-method validation (anti-spoof fallback to blink) happens
+    // in LoadHeavyModels() after the anti-spoof model actually loads — at this
+    // point it is still being loaded in the background.
 
     FACELOGIN_INFO(L"Liveness method: %hs", m_livenessMethod == LivenessMethod::Blink ? "blink" :
                   m_livenessMethod == LivenessMethod::AntiSpoof ? "antispoof" : "none");
@@ -292,6 +275,147 @@ bool FaceService::Initialize() {
     FACELOGIN_INFO(L"Initialization complete");
 
     return true;
+}
+
+// ============================================================================
+// Lazy model loading (1.5.0)
+//
+// The pipe listener must be up as soon as possible so the credential provider
+// connects the moment the lock screen appears. Loading the 99.7MB dlib shape
+// predictor + 3 ONNX sessions synchronously in Initialize() pushed that by
+// seconds on a cold boot. Instead:
+//   - SCRFD (2.5MB) loads synchronously in Initialize() — light, needed for
+//     the first frame, and its absence would block even a liveness-less auth.
+//   - Everything heavier loads in this background thread, kicked off right
+//     before Run() enters the pipe loop. The lock screen shows ~10-20s after
+//     SCM starts the service, which is normally enough for the loads to finish
+//     in the background — the user never waits.
+//   - If a request arrives before they finish, ProcessAuthRequest() calls
+//     EnsureModelsLoaded(), which blocks until ready (or fails/stop).
+// ============================================================================
+
+bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
+    FACELOGIN_INFO(L"Loading heavy models in background...");
+
+    // 1. dlib 68-point shape predictor (99.7MB — the biggest single load).
+    {
+        auto detector = std::make_unique<FaceDetector>();
+        std::wstring path = m_modelsDir + L"\\shape_predictor_68_face_landmarks.dat";
+        if (!detector->Initialize(path)) {
+            FACELOGIN_ERROR(L"Shape predictor failed to load — landmarks unavailable");
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(m_modelMutex);
+        m_detector = std::move(detector);
+    }
+    FACELOGIN_INFO(L"Shape predictor loaded");
+
+    // 2. InsightFace recognizer (w600k_mbf.onnx).
+    {
+        auto recognizer = std::make_unique<OnnxRecognizer>();
+        std::wstring path = m_modelsDir + L"\\w600k_mbf.onnx";
+        if (!recognizer->Initialize(path)) {
+            FACELOGIN_ERROR(L"ONNX recognizer failed to load — recognition unavailable");
+            return false;
+        }
+        recognizer->SetLowLightEnhance(lowLightEnhance);
+        std::lock_guard<std::mutex> lock(m_modelMutex);
+        m_onnxRecognizer = std::move(recognizer);
+    }
+    FACELOGIN_INFO(L"ONNX recognizer loaded (InsightFace buffalo_s)");
+
+    // 3. Anti-spoof model (MiniFASNetV2) — optional.
+    {
+        auto antiSpoof = std::make_unique<OnnxAntiSpoof>();
+        std::wstring path = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
+        if (antiSpoof->Initialize(path)) {
+            antiSpoof->SetLowLightEnhance(lowLightEnhance);
+            std::lock_guard<std::mutex> lock(m_modelMutex);
+            m_antiSpoof = std::move(antiSpoof);
+            FACELOGIN_INFO(L"Anti-spoof model loaded (MiniFASNetV2)");
+        } else {
+            FACELOGIN_WARN(L"Anti-spoof model not available");
+        }
+    }
+
+    // NOTE: liveness-method validation (anti-spoof → blink fallback) is NOT
+    // done here. It touches m_livenessMethod / m_antiSpoof, which the main
+    // thread (CONFIG_RELOAD) also mutates — doing it on this background thread
+    // would race. It happens on the main thread in ValidateLivenessMethod(),
+    // called after the models are known ready.
+
+    FACELOGIN_INFO(L"Heavy models loaded");
+    return true;
+}
+
+void FaceService::StartBackgroundModelLoad() {
+    // Capture the config values the loader needs NOW. The main thread can
+    // rewrite m_config via CONFIG_RELOAD while the loader is running; reading
+    // the struct here avoids a data race and the loader's low-light toggle is
+    // overridden by CONFIG_RELOAD afterward anyway.
+    const bool lowLightEnhance = m_config.low_light_enhance;
+
+    m_modelsLoading.store(true);
+    m_modelLoadThread = std::thread([this, lowLightEnhance]() {
+        // Load under a scoped RAII so the flags are cleared on every exit path
+        // (including exceptions).
+        struct LoadGuard {
+            FaceService* svc;
+            bool ok;
+            ~LoadGuard() {
+                svc->m_modelsLoading.store(false);
+                svc->m_modelsReady.store(ok);
+                svc->m_modelsFailed.store(!ok);
+                svc->m_modelCv.notify_all();
+            }
+        };
+        bool ok = false;
+        try {
+            ok = LoadHeavyModels(lowLightEnhance);
+        } catch (const std::exception& e) {
+            FACELOGIN_ERROR(L"Model loader threw: %hs", e.what());
+        }
+        LoadGuard guard{ this, ok };
+    });
+}
+
+// Validate the configured liveness method against the loaded models. Falls
+// back to blink if anti-spoof was configured but its model is unavailable.
+// Safe to call once the heavy models are known loaded (the loader thread has
+// finished mutating the model pointers). Takes m_modelMutex to read
+// m_antiSpoof consistently with any CONFIG_RELOAD.
+void FaceService::ValidateLivenessMethod() {
+    std::lock_guard<std::mutex> lock(m_modelMutex);
+    if (m_livenessMethod == LivenessMethod::AntiSpoof &&
+        (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
+        FACELOGIN_WARN(L"Anti-spoof configured but model not loaded, falling back to blink");
+        m_livenessMethod = LivenessMethod::Blink;
+    }
+}
+
+// Called from the main auth path before the first inference. Blocks until the
+// heavy models are ready, or fails, or the service is stopping. Returns false
+// only if a REQUIRED model failed to load (auth cannot proceed) or the service
+// is stopping.
+bool FaceService::EnsureModelsLoaded() {
+    if (m_modelsReady.load()) return true;
+    if (m_modelsFailed.load() && !m_modelsLoading.load()) return false;
+
+    std::unique_lock<std::mutex> lock(m_modelMutex);
+    m_modelCv.wait(lock, [this]() {
+        return m_modelsReady.load() || m_modelsFailed.load() || m_modelsAbort.load();
+    });
+    return m_modelsReady.load();
+}
+
+// Release anyone blocked in EnsureModelsLoaded() during service shutdown so
+// Stop() can join the loader thread without deadlocking.
+void FaceService::AbortModelLoadWait() {
+    m_modelsAbort.store(true);
+    m_modelCv.notify_all();
+    if (m_modelLoadThread.joinable()) {
+        m_modelLoadThread.join();
+    }
 }
 
 void FaceService::Run() {
@@ -325,6 +449,23 @@ void FaceService::Run() {
 
             // dlib recognizer/detector were removed — recognition_model and
             // detector config values are ignored (pure ONNX now).
+
+            // The heavy models load in the background (1.5.0). If they aren't
+            // done yet, wait for them so the config edits below don't race the
+            // loader thread's model-pointer writes. Models are required for
+            // auth anyway — if they failed to load there is no recognizer to
+            // configure, so fail the reload with a descriptive error.
+            if (!EnsureModelsLoaded()) {
+                FACELOGIN_ERROR(L"CONFIG_RELOAD: required models failed to load");
+                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"服务模型加载失败"));
+                FlushFileBuffers(m_pipeServer->GetHandle());
+                m_pipeServer->DrainOutput(5000);
+                m_pipeServer->Disconnect();
+                continue;
+            }
+
+            // Now that the models are ready (loader finished), the pointer
+            // mutations below are safe on the main thread.
 
             // Retry loading anti-spoof model if configured and not yet loaded
             if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
@@ -443,6 +584,10 @@ void FaceService::Stop() {
     if (!m_isServiceMode && m_webcamMF) {
         m_webcamMF->Shutdown();
     }
+    // Signal the model loader to stop and join it. If an auth request was
+    // blocked in EnsureModelsLoaded(), the abort flag releases it so it can
+    // exit cleanly (m_running is false → ProcessAuthRequest returns false).
+    AbortModelLoadWait();
     if (m_pipeServer) {
         m_pipeServer->Close();
     }
@@ -472,12 +617,115 @@ bool FaceService::ProcessAuthRequest() {
         return false;
     }
 
-    // Drop initial frames to let camera exposure adjust. 5 frames is enough
-    // (exposure settles within 3-5 frames); 10 frames wasted ~0.3s per auth.
-    dlib::matrix<dlib::rgb_pixel> frame;
-    for (int i = 0; i < 5; i++) {
-        grabFrame(frame);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // E: If the heavy models are still loading in the background (unusually
+    // fast lock screen right after boot), tell the lock screen what's
+    // happening instead of silently blocking. The CP updates the tile's status
+    // text live via STATUS:, so the user sees "\u6b63\u5728\u52a0\u8f7d\u6a21\u578b..." rather than a
+    // frozen "\u8bc6\u522b\u4e2d". The message is NOT flushed until after the wait below \u2014
+    // if the models are already ready, this whole block is a no-op and no
+    // extra STATUS message is sent.
+    if (!m_modelsReady.load() && m_modelsLoading.load()) {
+        m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u6b63\u5728\u52a0\u8f7d\u6a21\u578b...");
+    }
+
+    // Heavy models (shape predictor + recognizer, optionally anti-spoof) load
+    // in the background during startup. Normally they're ready by the time the
+    // user triggers auth; if the lock screen appeared unusually fast, block
+    // here until they finish. The auth timeout is running from when the CP
+    // connected, so this only ever costs the tail of the boot time.
+    if (!EnsureModelsLoaded()) {
+        FACELOGIN_ERROR(L"Required models not loaded \u2014 cannot authenticate");
+        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"\u670d\u52a1\u6a21\u578b\u52a0\u8f7d\u5931\u8d25"));
+        FlushFileBuffers(m_pipeServer->GetHandle());
+        m_pipeServer->DrainOutput(5000);
+        return false;
+    }
+
+    // Models are now known loaded \u2014 validate the liveness method once (e.g.
+    // anti-spoof configured but model unavailable \u2192 fall back to blink). This
+    // ran on the main thread only (see LoadHeavyModels: the loader never
+    // touches liveness method), so no race with CONFIG_RELOAD.
+    ValidateLivenessMethod();
+
+    // C: Warm up the camera exposure ADAPTIVELY instead of a fixed 5-frame
+    // delay. Dropping frames until the mean luma settles lets us exit the
+    // moment the exposure is stable (usually after 2-3 frames) instead of
+    // always waiting 5\u00d750ms \u2248 250ms. The saved time goes straight to the
+    // "press key \u2192 camera ready" latency.
+    //
+    // Safety: the very first frames after camera start can be dark or
+    // saturated. We require at least 2 frames and keep a short rolling window
+    // so a single outlier (a hand passing the lens, a light flicker) doesn't
+    // prematurely declare the exposure stable. If the camera never settles
+    // (e.g. extreme backlight), the MAX cap (10 frames) bounds the wait and we
+    // proceed anyway \u2014 a slightly under-exposed frame still detects a face.
+    {
+        constexpr int kWarmupMinFrames = 2;    // never exit before this many
+        constexpr int kWarmupMaxFrames = 10;   // hard cap \u2014 proceed regardless
+        constexpr int kWarmupWindow     = 3;   // rolling window size
+        constexpr float kLumaTol        = 12.0f;  // mean-luma delta that counts as "stable"
+        constexpr int kStableFrames     = 3;   // consecutive stable frames to exit
+
+        dlib::matrix<dlib::rgb_pixel> warmFrame;
+        int dropped = 0;
+        int stableRun = 0;
+        std::vector<float> window;      // rolling mean-luma window
+        window.reserve(kWarmupWindow);
+
+        for (; dropped < kWarmupMaxFrames; dropped++) {
+            if (!grabFrame(warmFrame)) {
+                // No frame yet \u2014 the camera is still starting. Wait and retry.
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+
+            if (dropped >= kWarmupMinFrames) {
+                // Compute mean luma over a subsampled grid (every 4th pixel in
+                // each direction \u2014 180\u00d7101 samples for 1280\u00d7720) to keep the
+                // warmup cheap; full-frame mean luma would cost ~2ms per frame
+                // and we already know the exposure within \u00b1few percent.
+                double sum = 0.0;
+                long count = 0;
+                const long rows = warmFrame.nr();
+                const long cols = warmFrame.nc();
+                for (long r = 0; r < rows; r += 4) {
+                    for (long c = 0; c < cols; c += 4) {
+                        const auto& px = warmFrame(r, c);
+                        sum += 0.299 * px.red + 0.587 * px.green + 0.114 * px.blue;
+                        count++;
+                    }
+                }
+                float luma = static_cast<float>(sum / count);
+
+                // Rolling window: stable if all entries stay within tolerance.
+                window.push_back(luma);
+                if (static_cast<long>(window.size()) > kWarmupWindow) {
+                    window.erase(window.begin());
+                }
+                if (static_cast<long>(window.size()) == kWarmupWindow) {
+                    float minV = *std::min_element(window.begin(), window.end());
+                    float maxV = *std::max_element(window.begin(), window.end());
+                    if (maxV - minV <= kLumaTol) {
+                        stableRun++;
+                    } else {
+                        stableRun = 0;
+                    }
+                    if (stableRun >= kStableFrames) {
+                        FACELOGIN_INFO(L"Warmup: exposure stable after %d frames (luma=%.0f)", dropped + 1, luma);
+                        break;
+                    }
+                }
+            }
+
+            // Slow the polling to ~30ms once we've dropped the minimum, so the
+            // warmup doesn't spin the CPU at full grab rate while it waits.
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                dropped < kWarmupMinFrames ? 30 : 50));
+        }
+        if (dropped >= kWarmupMaxFrames) {
+            FACELOGIN_INFO(L"Warmup: max %d frames dropped, proceeding (exposure not settled)",
+                           kWarmupMaxFrames);
+        }
     }
 
     // STATUS: Notify credential provider that recognition has started.
@@ -487,6 +735,7 @@ bool FaceService::ProcessAuthRequest() {
         m_pipeServer->WriteMessage(statusMsg);
     }
 
+    dlib::matrix<dlib::rgb_pixel> frame;  // reused by the match loop below
     auto startTime = std::chrono::steady_clock::now();
     bool authSent = false;
     int consecutiveMatches = 0;

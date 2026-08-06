@@ -4,6 +4,9 @@
 #include <string>
 #include <memory>
 #include <atomic>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 #include "face_detector.h"
 #include "liveness_detector.h"
@@ -50,8 +53,15 @@ public:
 private:
     void Run();          // Main service loop
     void Stop();
-    bool Initialize();   // Load models, DB, camera
+    bool Initialize();   // Load DB, config, lightweight SCRFD; queue heavy models
     bool ProcessAuthRequest();  // Handle one auth session
+
+    // Lazy model loading (1.5.0)
+    void StartBackgroundModelLoad();   // spawn the async loader thread
+    bool EnsureModelsLoaded();         // block until heavy models are ready
+    bool LoadHeavyModels(bool lowLightEnhance);  // shape pred + recognizer + anti-spoof
+    void ValidateLivenessMethod();     // anti-spoof → blink fallback (main thread only)
+    void AbortModelLoadWait();         // release anyone blocked in EnsureModelsLoaded
 
     // Configuration
     std::wstring GetModelsDir();
@@ -91,6 +101,22 @@ private:
     std::wstring m_modelsDir;
     float m_matchThreshold = 0.30f;
     int m_authTimeoutSeconds = 15;
+
+    // --- Lazy model loading (1.5.0) ---
+    // The 99.7MB dlib shape predictor + 3 ONNX sessions take seconds to load.
+    // Loading them synchronously in Initialize() delayed the named-pipe
+    // listener by that much, so the credential provider (which appears the
+    // moment the lock screen shows) had to wait. Now the service starts with
+    // only the lightweight SCRFD detector loaded and immediately begins
+    // listening; the heavy models load in a background thread. If a request
+    // arrives before they finish, EnsureModelsLoaded() blocks until ready.
+    std::atomic<bool> m_modelsReady{false};      // heavy models loaded OK
+    std::atomic<bool> m_modelsFailed{false};     // heavy models failed to load
+    std::atomic<bool> m_modelsLoading{false};    // loader in flight (or done)
+    std::atomic<bool> m_modelsAbort{false};      // service stopping — release waiters
+    std::thread m_modelLoadThread;
+    std::mutex m_modelMutex;                     // guards the model pointers
+    std::condition_variable m_modelCv;           // signaled when ready/failed/abort
 };
 
 } // namespace facelogin
