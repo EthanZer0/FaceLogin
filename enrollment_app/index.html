@@ -238,15 +238,15 @@ button{font-family:inherit}
 .field input[readonly]{color:var(--fog)}
 .dim{font-size:11px;color:var(--fog);line-height:1.6;font-weight:400;margin-bottom:8px;letter-spacing:.01em}
 .check{
-  display:flex;gap:10px;align-items:flex-start;font-size:12px;cursor:pointer;
+  display:flex;gap:9px;align-items:center;font-size:12px;cursor:pointer;
   text-transform:none;letter-spacing:.01em;color:var(--ink);line-height:1.5;
 }
 .check input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
-.cbx{width:16px;height:16px;flex-shrink:0;border:1.5px solid #B9C0CC;border-radius:3px;
-  background:#FFFFFF;position:relative;top:1px;transition:border-color .15s,background .15s}
+.cbx{width:14px;height:14px;flex-shrink:0;border:1.5px solid #B9C0CC;border-radius:3px;
+  background:#FFFFFF;position:relative;transition:border-color .15s,background .15s}
 .check:hover .cbx{border-color:var(--live)}
 .check input:focus-visible ~ .cbx{box-shadow:0 0 0 3px rgba(14,159,110,.18)}
-.cbx::after{content:'';position:absolute;left:4.5px;top:1px;width:4.5px;height:8px;
+.cbx::after{content:'';position:absolute;left:3.5px;top:0.5px;width:4px;height:7px;
   border-color:#0E9F6E;border-width:0 2px 2px 0;transform:rotate(45deg) scale(0);opacity:0;
   transition:transform .12s ease,opacity .12s}
 .check input:checked ~ .cbx{background-color:var(--live);border-color:var(--live)}
