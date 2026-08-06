@@ -260,68 +260,28 @@ EnrollmentWizard::~EnrollmentWizard() {
 bool EnrollmentWizard::StartPreview() {
     if (m_previewRunning) return true;
 
+    // Only the camera is opened on the UI thread — it's fast and we need its
+    // success to gate the background work. Model loading (dlib shape predictor
+    // + ONNX sessions) is deferred to the frame thread so a cold start never
+    // blocks the UI and the user can switch tabs while "starting camera".
     if (!m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
         FACELOGIN_ERROR(L"Failed to initialize webcam%s",
                         m_config.camera_device.empty() ? L"" : L" (configured device)");
         return false;
     }
 
-    std::wstring modelsDir = m_dataDir + L"\\models";
-    std::wstring shapePath = modelsDir + L"\\shape_predictor_68_face_landmarks.dat";
-
-    if (!m_detector->Initialize(shapePath)) {
-        FACELOGIN_ERROR(L"Failed to load shape predictor");
-        m_webcam->Shutdown();
-        return false;
-    }
-
-    // Load SCRFD ONNX detector (the only detector).
-    m_onnxDetector = std::make_unique<OnnxDetector>();
-    std::wstring detPath = modelsDir + L"\\det_500m.onnx";
-    if (!m_onnxDetector->Initialize(detPath)) {
-        FACELOGIN_ERROR(L"SCRFD detector failed to load — enrollment unavailable");
-        m_webcam->Shutdown();
-        return false;
-    }
-
-    // Load InsightFace ONNX recognizer (the only recognizer).
-    m_onnxRecognizer = std::make_unique<OnnxRecognizer>();
-    std::wstring onnxPath = modelsDir + L"\\w600k_mbf.onnx";
-    if (!m_onnxRecognizer->Initialize(onnxPath)) {
-        FACELOGIN_ERROR(L"ONNX recognizer failed to load — enrollment unavailable");
-        m_webcam->Shutdown();
-        return false;
-    }
-    m_onnxRecognizer->SetLowLightEnhance(m_config.low_light_enhance);
-
-    // Try loading anti-spoof model
-    m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
-    std::wstring antiSpoofPath = modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
-    if (!m_antiSpoof->Initialize(antiSpoofPath)) {
-        FACELOGIN_WARN(L"Anti-spoof model not available");
-        m_antiSpoof.reset();
-    }
-    if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(m_config.low_light_enhance);
-
-    // dlib recognizer/detector were removed — pure ONNX. recognition_model
-    // and detector config values are ignored.
-
-    // Validate liveness method
-    if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
-        FACELOGIN_WARN(L"Anti-spoof configured but unavailable, falling back to blink");
-        m_livenessMethod = LivenessMethod::Blink;
-    }
-
-    FACELOGIN_INFO(L"Liveness method: %hs | Preview started: 1280x720",
-                  m_livenessMethod == LivenessMethod::Blink ? "blink" :
-                  m_livenessMethod == LivenessMethod::AntiSpoof ? "antispoof" : "none");
-
     m_previewRunning = true;
     m_frameRunning = true;
 
-    // Single background thread: GrabFrame → JPEG encode → detect → update caches.
-    // The UI thread stays completely free; JS polls the caches via GetLatest*().
+    // Single background thread: load models (if needed) → GrabFrame → JPEG
+    // encode → detect → update caches. The UI thread stays completely free;
+    // JS polls the caches via GetLatest*(). On a cold start the models are
+    // loaded first here, off the UI thread.
     m_frameThread = std::thread([this]() {
+        if (!EnsureModelsLoaded()) {
+            FACELOGIN_ERROR(L"Model loading failed — no frames will be produced");
+            return;
+        }
         while (m_frameRunning) {
             dlib::matrix<dlib::rgb_pixel> frame;
             if (!m_webcam->GrabFrame(frame)) {
@@ -357,6 +317,71 @@ bool EnrollmentWizard::StartPreview() {
             }
         }
     });
+
+    return true;
+}
+
+// Load the shape predictor + ONNX models if not already loaded. Called from
+// the background frame thread so a cold start never blocks the UI thread.
+// Models survive StopPreview() (only the camera is torn down), so a restart
+// (e.g. cancel back to the camera screen from the append dialog) reuses them.
+bool EnrollmentWizard::EnsureModelsLoaded() {
+    std::wstring modelsDir = m_dataDir + L"\\models";
+    std::wstring shapePath = modelsDir + L"\\shape_predictor_68_face_landmarks.dat";
+
+    if (!m_detector->IsInitialized() && !m_detector->Initialize(shapePath)) {
+        FACELOGIN_ERROR(L"Failed to load shape predictor");
+        return false;
+    }
+
+    // Load SCRFD ONNX detector (the only detector).
+    std::wstring detPath = modelsDir + L"\\det_500m.onnx";
+    if (!m_onnxDetector) {
+        m_onnxDetector = std::make_unique<OnnxDetector>();
+        if (!m_onnxDetector->Initialize(detPath)) {
+            FACELOGIN_ERROR(L"SCRFD detector failed to load — enrollment unavailable");
+            m_onnxDetector.reset();
+            return false;
+        }
+    }
+
+    // Load InsightFace ONNX recognizer (the only recognizer).
+    std::wstring onnxPath = modelsDir + L"\\w600k_mbf.onnx";
+    if (!m_onnxRecognizer) {
+        m_onnxRecognizer = std::make_unique<OnnxRecognizer>();
+        if (!m_onnxRecognizer->Initialize(onnxPath)) {
+            FACELOGIN_ERROR(L"ONNX recognizer failed to load — enrollment unavailable");
+            m_onnxRecognizer.reset();
+            return false;
+        }
+    }
+
+    // Try loading anti-spoof model
+    std::wstring antiSpoofPath = modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
+    if (!m_antiSpoof) {
+        m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
+        if (!m_antiSpoof->Initialize(antiSpoofPath)) {
+            FACELOGIN_WARN(L"Anti-spoof model not available");
+            m_antiSpoof.reset();
+        }
+    }
+
+    // Apply runtime settings to freshly-loaded models.
+    m_onnxRecognizer->SetLowLightEnhance(m_config.low_light_enhance);
+    if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(m_config.low_light_enhance);
+
+    // dlib recognizer/detector were removed — pure ONNX. recognition_model
+    // and detector config values are ignored.
+
+    // Validate liveness method
+    if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
+        FACELOGIN_WARN(L"Anti-spoof configured but unavailable, falling back to blink");
+        m_livenessMethod = LivenessMethod::Blink;
+    }
+
+    FACELOGIN_INFO(L"Liveness method: %hs | Models ready",
+                   m_livenessMethod == LivenessMethod::Blink ? "blink" :
+                   m_livenessMethod == LivenessMethod::AntiSpoof ? "antispoof" : "none");
 
     return true;
 }

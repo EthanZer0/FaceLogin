@@ -123,6 +123,10 @@ private:
     std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
     std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces);
 
+    // Load the shape predictor + ONNX models if not already loaded (called from
+    // the background frame thread, so a cold start never blocks the UI thread).
+    bool EnsureModelsLoaded();
+
     bool SaveEnrollmentImpl(const std::wstring& password, bool passwordless,
                             const std::wstring& label);
     static std::wstring GetCurrentProcessUserSid();

@@ -1326,8 +1326,7 @@ function onCapture() {
             return;
           }
 
-          document.getElementById('screen-cam').classList.remove('active');
-          document.getElementById('screen-pwd').classList.add('active');
+          activateScreen('screen-pwd');
           try { document.getElementById('fld-user').value = H.GetUsername(); } catch(e) {}
           try { document.getElementById('fld-acct-type').value = H.GetAccountType(); } catch(e) {}
           try { document.getElementById('fld-sid').value = H.GetUserSid(); } catch(e) {}
@@ -1536,10 +1535,19 @@ function onRefreshDismiss() {
   showBanner('faces', '已跳过。下次进入“人脸”页仍会提示刷新账号信息。', 'ok', 6000);
 }
 
+// Deactivate every .screen, then show the one with the given id. Unlike
+// switchTab() this is for one-way jumps (e.g. enrollment completing while the
+// user has already moved to another tab) — it guarantees no two screens are
+// ever active, so the target can't overlap whatever is currently showing.
+function activateScreen(id) {
+  var all = document.querySelectorAll('.screen');
+  for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
+  document.getElementById(id).classList.add('active');
+}
+
 // Show the append-face confirmation screen (current account already has faces).
 function showAppendScreen(faceCount) {
-  document.getElementById('screen-cam').classList.remove('active');
-  document.getElementById('screen-append').classList.add('active');
+  activateScreen('screen-append');
   try { document.getElementById('append-user').value = H.GetUsername(); } catch(e) {}
   try { document.getElementById('append-sid').value = H.GetUserSid(); } catch(e) {}
   try { document.getElementById('append-face-label').value = ''; } catch(e) {}
@@ -1566,8 +1574,7 @@ function onAppendConfirm() {
     spinner.style.display = 'none';
 
     if (ok) {
-      document.getElementById('screen-append').classList.remove('active');
-      document.getElementById('screen-cam').classList.add('active');
+      activateScreen('screen-cam');
       currentTab = 'cam';
       document.getElementById('samples-tag').textContent = '0 / 10';
       showBanner('cam', '新脸已添加成功！可按 Win+L 锁定屏幕测试人脸登录。', 'ok');
@@ -1581,8 +1588,7 @@ function onAppendConfirm() {
 }
 
 function onAppendCancel() {
-  document.getElementById('screen-append').classList.remove('active');
-  document.getElementById('screen-cam').classList.add('active');
+  activateScreen('screen-cam');
   currentTab = 'cam';
   viewing = true;
   renderFrame();
@@ -1638,8 +1644,7 @@ function onSave() {
 
     if (ok) {
       // Return to the camera (main) screen immediately
-      document.getElementById('screen-pwd').classList.remove('active');
-      document.getElementById('screen-cam').classList.add('active');
+      activateScreen('screen-cam');
       currentTab = 'cam';
       document.getElementById('fld-pass').value = '';
       document.getElementById('samples-tag').textContent = '0 / 10';
