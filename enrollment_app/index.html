@@ -286,6 +286,12 @@ button{font-family:inherit}
    ================================================================ */
 .cs-wrap{position:relative;width:100%}
 .cs-native{display:none}
+/* Compact variant for toolbar contexts (e.g. the log source picker). */
+.cs-wrap-sm{width:auto}
+.cs-wrap-sm .cs-trigger{padding:6px 10px;font-size:11px;gap:8px}
+.cs-wrap-sm .cs-val{font-family:var(--font-data)}
+.cs-wrap-sm .cs-list{font-size:12px;min-width:140px}
+.cs-wrap-sm .cs-opt{padding:7px 10px;font-size:12px}
 .cs-trigger{
   width:100%;display:flex;align-items:center;gap:10px;
   border:1px solid var(--hair);background:#FFFFFF;color:var(--ink);
@@ -780,10 +786,14 @@ button{font-family:inherit}
     <div class="logs-toolbar">
       <h2>运行日志</h2>
       <div style="display:flex;gap:8px;align-items:center">
-        <select id="log-source" onchange="refreshLogs()" style="font-size:11px;padding:5px 8px;border:1px solid var(--hair);border-radius:4px;background:#FFFFFF;color:var(--ink);font-family:var(--font-data)">
-          <option value="console">Console</option>
-          <option value="service">Service</option>
-        </select>
+        <div class="cs-wrap cs-wrap-sm" data-cs="logsource" style="width:auto">
+          <select id="log-source" class="cs-native" onchange="refreshLogs()">
+            <option value="console">Console</option>
+            <option value="service">Service</option>
+          </select>
+          <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false"><span class="cs-val"></span><span class="cs-arrow"></span></button>
+          <div class="cs-list" role="listbox"></div>
+        </div>
         <button class="btn btn-secondary" onclick="clearLogs()">清空日志</button>
       </div>
     </div>
@@ -1742,12 +1752,25 @@ function refreshLogs() {
       return;
     }
     var lines = JSON.parse(json);
+    if (lines.length === 0) {
+      // Valid empty array — show a friendly placeholder instead of a blank box.
+      document.getElementById('log-viewer').innerHTML = '<div class="log-warn">暂无日志</div>';
+      return;
+    }
     var html = '';
+    // Match the level tag only where it belongs — right after the leading
+    // timestamp ("[2026-..] [LEVEL] [tid]"), not arbitrary "[LEVEL]" text
+    // that happens to appear inside a message body.
+    var levelRe = /^\s*\[[^\]]*\]\s*\[(DEBUG|INFO|WARN|ERROR)\]/;
     for (var i = 0; i < lines.length; i++) {
+      var m = levelRe.exec(lines[i]);
       var cls = 'log-info';
-      if (lines[i].indexOf('[DEBUG]') >= 0) cls = 'log-debug';
-      else if (lines[i].indexOf('[WARN]') >= 0) cls = 'log-warn';
-      else if (lines[i].indexOf('[ERROR]') >= 0) cls = 'log-error';
+      if (m) {
+        var lvl = m[1];
+        if (lvl === 'DEBUG') cls = 'log-debug';
+        else if (lvl === 'WARN') cls = 'log-warn';
+        else if (lvl === 'ERROR') cls = 'log-error';
+      }
       html += '<div class="' + cls + '">' + escapeHtml(lines[i]) + '</div>';
     }
     var viewer = document.getElementById('log-viewer');

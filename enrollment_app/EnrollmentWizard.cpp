@@ -1371,25 +1371,38 @@ std::string EnrollmentWizard::GetServiceLogLines() {
         return "[\"Service log is empty\"]";
     }
 
-    // Cap at ~256KB of raw bytes
-    DWORD capSize = fileSize;
-    if (capSize > 256 * 1024) capSize = 256 * 1024;
+    // Cap at ~256KB of raw bytes, reading the TAIL (latest log lines) so a
+    // long-running service doesn't show the oldest logs forever.
+    DWORD capSize = 256 * 1024;
+    LARGE_INTEGER li = {};
+    if (fileSize > capSize) {
+        li.QuadPart = static_cast<LONGLONG>(fileSize) - capSize;
+        SetFilePointerEx(hFile, li, nullptr, FILE_BEGIN);
+    }
+    DWORD toRead = (fileSize < capSize) ? fileSize : capSize;
 
-    std::vector<wchar_t> wbuf(capSize / sizeof(wchar_t) + 1);
+    std::vector<wchar_t> wbuf(toRead / sizeof(wchar_t) + 1);
     DWORD bytesRead = 0;
-    if (!ReadFile(hFile, wbuf.data(), capSize, &bytesRead, nullptr) || bytesRead < 2) {
+    if (!ReadFile(hFile, wbuf.data(), toRead, &bytesRead, nullptr) || bytesRead < 2) {
         CloseHandle(hFile);
         return "[\"Failed to read service log\"]";
     }
     CloseHandle(hFile);
 
     size_t wlen = bytesRead / sizeof(wchar_t);
+    size_t start = 0;
+    if (fileSize > capSize) {
+        // We started mid-line — drop the partial first line so only complete
+        // lines are shown. Find the first \n after the start.
+        while (start < wlen && wbuf[start] != L'\r' && wbuf[start] != L'\n') start++;
+        while (start < wlen && (wbuf[start] == L'\r' || wbuf[start] == L'\n')) start++;
+    }
 
     // Parse lines: each log line ends with \r\n (wchar_t)
     std::ostringstream ss;
     ss << "[";
     bool first = true;
-    size_t pos = 0;
+    size_t pos = start;
     while (pos < wlen) {
         // Find end of line
         size_t lineStart = pos;
