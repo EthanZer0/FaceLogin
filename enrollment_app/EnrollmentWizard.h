@@ -95,6 +95,16 @@ public:
     // GetAccountTypeChanged()!=0 and the password validates.
     bool RefreshAccountIdentity(const std::wstring& password);
 
+    // Light-weight dismiss path for the stale-account prompt. State 1 only:
+    // clears the bogus MSA email from the current local account's record
+    // WITHOUT validating or re-encrypting the password (no input needed).
+    // Faces and the stored password are preserved; the lock-screen credential
+    // then packs with domain\username instead of the misattributed email.
+    // This is also the only self-heal for passwordless local accounts, whose
+    // full refresh always fails because RefreshAccountIdentity requires a
+    // non-empty password. Returns false unless the record is in state 1.
+    bool ClearStaleAccountUpn();
+
     // Configuration
     std::string GetConfig() const;
     bool SetConfig(const std::string& json);

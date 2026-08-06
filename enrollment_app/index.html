@@ -855,6 +855,11 @@ var H = (function() {
 })();
 var viewing = true, lastB64 = '', lastFacesJson = '', timer = 0, faceImg = new Image();
 var camReady = false, currentTab = 'cam';
+// The account-type-change state (0/1/2) is stashed on #refresh-overlay's
+// dataset rather than a module-level var so the dismiss handler always reads
+// the state captured AT OPEN TIME of THIS prompt — a later showRefreshPrompt()
+// (e.g. a re-check while the modal is up) can't race the 50ms deferred
+// dismiss callback and flip it to a different branch.
 
 faceImg.onload = function() {
   drawBackgroundAndOverlay();
@@ -1476,8 +1481,10 @@ function checkAccountRefresh() {
 
 function showRefreshPrompt(state, faces, upn) {
   var overlay = document.getElementById('refresh-overlay');
+  overlay.dataset.refreshState = String(state);  // snapshot at open time
   var info = document.getElementById('refresh-info');
   var title = document.getElementById('refresh-title');
+  var dismissBtn = document.getElementById('refresh-dismiss');
   var facesText = (faces > 0) ? '你已录入 ' + faces + ' 张人脸，' : '';
   if (state === 2) {
     // local→MSA: record is local-era, now signed in with a Microsoft account.
@@ -1488,13 +1495,17 @@ function showRefreshPrompt(state, faces, upn) {
       + '需要刷新已保存的账号信息（人脸数据将保留），并更新微软账号密码。'
       + (upn ? '将绑定微软账号：' + upn + '。' : '')
       + '请输入当前微软账号密码。';
+    dismissBtn.textContent = '暂不处理';
   } else {
     // MSA→local: record still carries the old Microsoft email.
     title.textContent = '账号身份已变更';
     info.textContent = facesText
       + '检测到该账号曾使用微软账号（MSA）登录，现已切换为本地账号。'
       + '为使人脸登录继续保留，需要刷新已保存的账号信息（人脸数据将保留），'
-      + '并更新本地密码。请输入当前 Windows 登录密码。';
+      + '并更新本地密码。请输入当前 Windows 登录密码。'
+      + '也可点击下方「仅清理账号邮箱」立即清除残留邮箱、恢复锁屏登录'
+      + '（保留人脸与密码，但不更新已保存的密码）。';
+    dismissBtn.textContent = '仅清理账号邮箱';
   }
   document.getElementById('refresh-pass').value = '';
   overlay.classList.add('active');
@@ -1531,8 +1542,37 @@ function onRefreshConfirm() {
 }
 
 function onRefreshDismiss() {
-  document.getElementById('refresh-overlay').classList.remove('active');
-  showBanner('faces', '已跳过。下次进入“人脸”页仍会提示刷新账号信息。', 'ok', 6000);
+  var btn = document.getElementById('refresh-dismiss');
+  btn.disabled = true;
+  // Snapshot the state captured when THIS prompt opened. Reading it inside
+  // the deferred callback (rather than a shared module var) avoids a TOCTOU
+  // where a re-check while the modal is up overwrites the state and sends
+  // the dismiss down the wrong branch.
+  var overlay = document.getElementById('refresh-overlay');
+  var state = parseInt(overlay.dataset.refreshState || '0', 10);
+  // Defer the synchronous COM call so the disabled state paints first.
+  setTimeout(function() {
+    btn.disabled = false;
+    overlay.classList.remove('active');
+    if (state !== 1) {
+      // state 2 (local→MSA) needs the refresh to write the current email and
+      // re-encrypt the password — there is nothing safe to auto-clean.
+      showBanner('faces', '已暂不处理。下次进入“人脸”页仍会提示刷新账号信息。', 'ok', 6000);
+      return;
+    }
+    // state 1 (MSA→local): clear the stale MSA email so the lock-screen stops
+    // packing the misattributed identity — faces and the stored password are
+    // preserved. The full "刷新" path remains the right choice if the Windows
+    // password changed since enrollment.
+    var ok = false;
+    try { ok = H.ClearStaleAccountUpn(); } catch(e) { ok = false; }
+    if (ok) {
+      showBanner('faces', '已清理残留的账号邮箱，人脸已保留，锁屏登录将改用本地账号身份。若密码已更改，请改用「刷新并保留人脸」。', 'ok', 6000);
+      loadFaces();
+    } else {
+      showBanner('faces', '清理未完成。请点击「刷新并保留人脸」验证密码，或删除该录入后重新录入。', 'error', 6000);
+    }
+  }, 50);
 }
 
 // Deactivate every .screen, then show the one with the given id. Unlike
