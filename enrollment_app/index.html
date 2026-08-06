@@ -1539,10 +1539,26 @@ function onRefreshDismiss() {
 // switchTab() this is for one-way jumps (e.g. enrollment completing while the
 // user has already moved to another tab) — it guarantees no two screens are
 // ever active, so the target can't overlap whatever is currently showing.
+// It also reconciles the tab highlight / currentTab to match the shown screen,
+// so returning to the camera screen never leaves the tab bar stuck on a tab
+// the user had switched to mid-capture.
 function activateScreen(id) {
   var all = document.querySelectorAll('.screen');
   for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
   document.getElementById(id).classList.add('active');
+  // Map the screen to the tab it belongs to. Enroll-only screens (password /
+  // append) are part of the "录入" (cam) flow, so they keep that tab lit.
+  var tabFor = { 'screen-cam':'cam', 'screen-faces':'faces',
+                 'screen-settings':'settings', 'screen-logs':'logs',
+                 'screen-pwd':'cam', 'screen-append':'cam' };
+  var tabName = tabFor[id] || 'cam';
+  currentTab = tabName;
+  var allTabs = document.querySelectorAll('.tabs span[data-tab]');
+  for (var j = 0; j < allTabs.length; j++) {
+    var on = allTabs[j].getAttribute('data-tab') === tabName;
+    allTabs[j].classList.toggle('active', on);
+    allTabs[j].setAttribute('aria-selected', on ? 'true' : 'false');
+  }
 }
 
 // Show the append-face confirmation screen (current account already has faces).
