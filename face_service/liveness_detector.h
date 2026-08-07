@@ -118,9 +118,11 @@ public:
     void Reset();
 
 private:
-    // Compute EAR for a single eye given the 6 landmark indices.
+    // Compute EAR for a single eye from its 3 upper + 3 lower lid points
+    // and inner/outer corner indices (106-point layout).
     static float ComputeEyeEAR(const dlib::full_object_detection& landmarks,
-                                const int indices[6]);
+                               const int upper[3], const int lower[3],
+                               int innerIdx, int outerIdx);
     static float ComputeLeftEAR(const dlib::full_object_detection& landmarks);
     static float ComputeRightEAR(const dlib::full_object_detection& landmarks);
 

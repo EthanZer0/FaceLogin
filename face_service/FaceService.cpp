@@ -229,7 +229,7 @@ bool FaceService::Initialize() {
     // 2.5MB). This is loaded SYNCHRONOUSLY in Initialize() because the pipe
     // listener must be up as soon as possible: SCRFD is needed for the very
     // first frame of auth, and it loads in a few hundred ms even on a cold
-    // mechanical disk. Everything heavier (the 99.7MB dlib shape predictor,
+    // mechanical disk. Everything heavier (2d106det landmark detector,
     // InsightFace recognizer, anti-spoof) is deferred to a background thread —
     // see StartBackgroundModelLoad(). The lock screen therefore connects to
     // the pipe the moment it appears instead of waiting out the model loads.
@@ -297,18 +297,19 @@ bool FaceService::Initialize() {
 bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
     FACELOGIN_INFO(L"Loading heavy models in background...");
 
-    // 1. dlib 68-point shape predictor (99.7MB — the biggest single load).
+    // 1. 106-point landmark detector (2d106det.onnx, ~5MB — replaces the
+    // 99.7MB dlib shape predictor).
     {
-        auto detector = std::make_unique<FaceDetector>();
-        std::wstring path = m_modelsDir + L"\\shape_predictor_68_face_landmarks.dat";
+        auto detector = std::make_unique<OnnxLandmarkDetector>();
+        std::wstring path = m_modelsDir + L"\\2d106det.onnx";
         if (!detector->Initialize(path)) {
-            FACELOGIN_ERROR(L"Shape predictor failed to load — landmarks unavailable");
+            FACELOGIN_ERROR(L"2d106det failed to load — landmarks unavailable");
             return false;
         }
         std::lock_guard<std::mutex> lock(m_modelMutex);
         m_detector = std::move(detector);
     }
-    FACELOGIN_INFO(L"Shape predictor loaded");
+    FACELOGIN_INFO(L"2d106det landmark detector loaded");
 
     // 2. InsightFace recognizer (w600k_mbf.onnx).
     {
@@ -778,21 +779,20 @@ bool FaceService::ProcessAuthRequest() {
             continue;
         }
 
-        // Face detection + landmarks: SCRFD detects, dlib shape predictor
-        // (GetLandmarks) extracts 68 points for alignment + blink.
+        // Face detection + landmarks: SCRFD detects, 2d106det extracts the
+        // 106 points for alignment + blink.
         std::optional<CredentialStore::MatchResult> match;
         dlib::full_object_detection landmarks;
         bool haveLandmarks = false;
 
         auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
         if (onnxDet) {
-            // SCRFD gives bbox — use dlib shape predictor for landmarks
+            // SCRFD gives bbox — 2d106det extracts 106 landmarks.
             dlib::rectangle dlibRect(static_cast<long>(onnxDet->x1),
                                      static_cast<long>(onnxDet->y1),
                                      static_cast<long>(onnxDet->x2),
                                      static_cast<long>(onnxDet->y2));
-            landmarks = m_detector->GetLandmarks(frame, dlibRect);
-            haveLandmarks = true;
+            haveLandmarks = m_detector->DetectLandmarks(frame, dlibRect, landmarks);
         }
 
         if (!haveLandmarks) {
@@ -900,15 +900,16 @@ bool FaceService::ProcessAuthRequest() {
                         dlib::matrix<dlib::rgb_pixel> asFrame;
                         if (!grabFrame(asFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
 
-                        // Detect with SCRFD, extract 68-point landmarks.
+                        // Detect with SCRFD, extract 106-point landmarks.
                         dlib::full_object_detection asLandmarks;
                         auto asDet = m_onnxDetector->DetectLargestFace(asFrame);
+                        asLandmarks = dlib::full_object_detection();  // reset for this frame
                         if (asDet) {
                             dlib::rectangle asRect(static_cast<long>(asDet->x1),
                                                    static_cast<long>(asDet->y1),
                                                    static_cast<long>(asDet->x2),
                                                    static_cast<long>(asDet->y2));
-                            asLandmarks = m_detector->GetLandmarks(asFrame, asRect);
+                            m_detector->DetectLandmarks(asFrame, asRect, asLandmarks);
                         }
                         if (asLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
 
@@ -946,7 +947,7 @@ bool FaceService::ProcessAuthRequest() {
                         }
                         dlib::matrix<dlib::rgb_pixel> livenessFrame;
                         if (!grabFrame(livenessFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
-                        // Detect with SCRFD, extract 68-point landmarks for EAR.
+                        // Detect with SCRFD, extract 106-point landmarks for EAR.
                         dlib::full_object_detection livenessLandmarks;
                         auto livenessDet = m_onnxDetector->DetectLargestFace(livenessFrame);
                         if (livenessDet) {
@@ -954,7 +955,7 @@ bool FaceService::ProcessAuthRequest() {
                                                   static_cast<long>(livenessDet->y1),
                                                   static_cast<long>(livenessDet->x2),
                                                   static_cast<long>(livenessDet->y2));
-                            livenessLandmarks = m_detector->GetLandmarks(livenessFrame, lRect);
+                            m_detector->DetectLandmarks(livenessFrame, lRect, livenessLandmarks);
                         }
                         if (livenessLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
                         if (liveness.ProcessFrame(livenessLandmarks)) {
@@ -1016,7 +1017,7 @@ bool FaceService::ProcessAuthRequest() {
                                               static_cast<long>(det->y1),
                                               static_cast<long>(det->x2),
                                               static_cast<long>(det->y2));
-                            verifyLandmarks = m_detector->GetLandmarks(verifyFrame, r);
+                            m_detector->DetectLandmarks(verifyFrame, r, verifyLandmarks);
                         }
                         if (verifyLandmarks.num_parts() == 0) {
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));

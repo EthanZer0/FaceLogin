@@ -145,10 +145,31 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
 std::vector<float> OnnxRecognizer::ComputeEmbedding(
     const dlib::matrix<dlib::rgb_pixel>& image,
     const dlib::full_object_detection& landmarks) {
-    // Align face using dlib's chip extraction, then ONNX infer
-    auto chipDetails = dlib::get_face_chip_details(landmarks, 112, 0.25);
-    dlib::matrix<dlib::rgb_pixel> faceChip;
-    dlib::extract_image_chip(image, chipDetails, faceChip);
+    // Align face using a 5-point similarity transform (arcface template) and
+    // the 106-point landmark indices, then ONNX infer. The 106-point model's
+    // "subject-first-person" eye layout:
+    //   right eye outer corner = 39, left eye outer corner = 93
+    //   nose bridge end (nose tip) = 80
+    //   mouth corners = 52 (left, image-left) / 69 (right, image-right)
+    // Matches insightface's arcface_dst template:
+    //   [right eye, left eye, nose, left mouth, right mouth]
+    const int kArc[5] = {39, 93, 80, 52, 69};
+    std::vector<dlib::vector<double, 2>> src, dst;
+    src.reserve(5); dst.reserve(5);
+    const double arcface_dst[5][2] = {
+        {38.2946, 51.6963}, {73.5318, 51.5014}, {56.0252, 71.7366},
+        {41.5493, 92.3655}, {70.7299, 92.2041}
+    };
+    for (int i = 0; i < 5; i++) {
+        auto& p = landmarks.part(kArc[i]);
+        src.emplace_back(static_cast<double>(p.x()), static_cast<double>(p.y()));
+        dst.emplace_back(arcface_dst[i][0], arcface_dst[i][1]);
+    }
+
+    // Similarity transform src→dst, warp to 112×112, then embed.
+    dlib::point_transform_affine tform = dlib::find_similarity_transform(src, dst);
+    dlib::matrix<dlib::rgb_pixel> faceChip(112, 112);
+    dlib::transform_image(image, faceChip, dlib::interpolate_bilinear(), tform);
     return ComputeEmbedding(faceChip);
 }
 

@@ -150,14 +150,14 @@ FaceLogin/
 ### 前置条件
 
 - **Visual Studio 2022**（含 C++ 工作负载）
-- **vcpkg** — dlib（仅用于 68 点地标）、onnxruntime
+- **vcpkg** — dlib（图像工具库：matrix/rectangle/变换）、onnxruntime
 - **Go 1.21+** + **Wails v2**（仅安装程序）
 - **CMake 3.20+**
 
 ### C++ 组件
 
 ```powershell
-# vcpkg 依赖（dlib 仅用于 shape predictor 地标，识别/检测用 ONNX）
+# vcpkg 依赖（识别/检测/地标全部用 ONNX）
 vcpkg install dlib[core] onnxruntime --triplet x64-windows
 
 # 构建
@@ -178,7 +178,7 @@ wails build -clean -platform windows/amd64
 
 | 文件 | 用途 | 下载 |
 |---|---|---|
-| `shape_predictor_68_face_landmarks.dat` | 面部地标提取 | `scripts/download_models.ps1` |
+| `2d106det.onnx` | 106点面部地标提取 | [InsightFace](https://github.com/deepinsight/insightface) |
 | `det_500m.onnx` | SCRFD 人脸检测 | [InsightFace](https://github.com/deepinsight/insightface) |
 | `w600k_mbf.onnx` | InsightFace 人脸识别 | [InsightFace](https://github.com/deepinsight/insightface) |
 | `OULU_Protocol_2_model_0_0.onnx` | 静默反欺诈 | [MiniFASNet](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing) |

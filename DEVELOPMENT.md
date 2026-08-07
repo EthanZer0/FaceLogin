@@ -4,7 +4,7 @@
 
 ### 1.1 项目简介
 
-FaceLogin 是一个 Windows 人脸识别登录系统，允许用户通过摄像头人脸识别解锁 Windows 桌面。项目基于 Windows Credential Provider 框架实现锁屏/登录界面集成，使用 dlib 深度学习模型与 ONNX Runtime 进行人脸检测、识别与活体检测。
+FaceLogin 是一个 Windows 人脸识别登录系统，允许用户通过摄像头人脸识别解锁 Windows 桌面。项目基于 Windows Credential Provider 框架实现锁屏/登录界面集成，使用 ONNX Runtime 进行人脸检测、地标提取、识别与活体检测。
 
 ### 1.2 技术栈
 
@@ -13,9 +13,9 @@ FaceLogin 是一个 Windows 人脸识别登录系统，允许用户通过摄像�
 | 编程语言 | C++20, Go (安装程序) |
 | 构建系统 | CMake 3.20+ |
 | 包管理 | vcpkg |
-| 人脸检测 | dlib HOG + SCRFD ONNX |
-| 地标提取 | dlib 68点 Shape Predictor |
-| 人脸识别 | dlib ResNet-34 (128维) + InsightFace buffalo_s ONNX (128维) |
+| 人脸检测 | SCRFD ONNX |
+| 地标提取 | 2d106det ONNX (106点) |
+| 人脸识别 | InsightFace buffalo_s ONNX (128维) |
 | 活体检测 | EAR眨眼检测 + MiniFASNetV2 静默反欺诈 |
 | 相机采集 | Media Foundation / DirectShow |
 | 凭据提供 | Windows Credential Provider COM (ICredentialProvider) |
@@ -54,8 +54,7 @@ FaceLogin/
 │   ├── CMakeLists.txt
 │   ├── main.cpp                    # 服务入口 (SCM / standalone)
 │   ├── FaceService.cpp/h           # 服务核心逻辑 + 认证主循环
-│   ├── face_detector.cpp/h         # HOG人脸检测 + 68点地标提取
-│   ├── face_recognizer.cpp/h       # dlib ResNet-34 128维嵌入
+│   ├── landmark_detector.cpp/h     # 2d106det 106点地标提取
 │   ├── liveness_detector.cpp/h     # EAR眨眼活体检测
 │   ├── liveness_types.h            # 活体检测方法枚举
 │   ├── onnx_models.cpp/h           # ONNX 模型封装 (SCRFD / buffalo_s / MiniFASNet)
@@ -97,7 +96,7 @@ FaceLogin/
 │   │   └── resources/              # 部署文件 (编译时嵌入)
 │   └── wails.json                  # Wails 项目配置
 ├── scripts/                        # 辅助脚本
-│   ├── download_models.ps1         # 模型文件下载 (shape predictor)
+│   ├── download_models.ps1         # 模型文件下载 (ONNX 模型)
 │   └── start_standalone.bat        # 开发模式快速启动
 └── assets/                         # 静态资源 (图标等)
 ```
@@ -411,11 +410,11 @@ ServiceMain()
 5. 重置活体检测器
 6. 循环 (最长时间 m_authTimeoutSeconds = 15秒):
    a. 抓取一帧
-   b. 人脸检测 (SCRFD ONNX 或 dlib HOG)
+   b. 人脸检测 (SCRFD ONNX)
    c. 检测最大人脸
-   d. 提取68点地标
+   d. 提取106点地标
    e. 活体检测 (眨眼EAR 或 静默反欺诈)
-   f. 计算128维嵌入向量 (ONNX buffalo_s 或 dlib ResNet)
+   f. 计算128维嵌入向量 (ONNX buffalo_s)
    g. 数据库匹配 (欧氏距离 < 阈值 + 最佳/次佳比)
    h. 匹配成功 → 发送 STATUS: 识别成功 → 构建 AUTH_SUCCESS → 发送凭据 → 退出
    i. 匹配失败 → 继续循环
@@ -443,21 +442,21 @@ ServiceMain()
 | `match_threshold` | 0.30 | 欧氏距离阈值 (越小越严格) |
 | `anti_spoof_threshold` | 0.30 | 反欺诈阈值 (越高越严格) |
 
-### 5.3 人脸检测 (`face_detector.h/cpp`)
+### 5.3 人脸地标 (`landmark_detector.h/cpp`)
 
 ```cpp
-class FaceDetector {
-    dlib::frontal_face_detector m_hogDetector;  // HOG检测器 (内置)
-    dlib::shape_predictor m_shapePredictor;       // 68点地标模型
+class OnnxLandmarkDetector {
+    std::unique_ptr<Ort::Env> m_env;
+    std::unique_ptr<Ort::Session> m_session;  // 2d106det.onnx
 };
 ```
 
-**初始化**: 加载 `shape_predictor_68_face_landmarks.dat` (~97 MB)
+**初始化**: 加载 `2d106det.onnx` (~5 MB, insightface buffalo_l)
 
 **方法**:
-- `Detect()`: 返回所有检测到的人脸 + 68点地标
-- `DetectLargestFace()`: 返回面积最大的人脸（离摄像头最近）
-- `GetLandmarks()`: 对给定矩形提取地标
+- `DetectLandmarks()`: 对给定矩形提取 106 点地标（SCRFD bbox → 192×192 相似变换 crop → ONNX → 逆变换回原图）
+
+**输入归一化**: 与 SCRFD 不同，2d106det 是 PyTorch 导出模型，图以 `Sub/Mul` 开头，insightface 判定 `input_mean=0, input_std=1`——直接喂原始像素 [0,255]，**不做** `(p-127.5)/128` 居中（居中会导致右眼偏移 ~10px）。
 
 ### 5.4 人脸识别 (`onnx_models.h/cpp`)
 
@@ -480,8 +479,9 @@ class OnnxRecognizer {
 ```
 EAR = (||P2-P6|| + ||P3-P5||) / (2 * ||P1-P4||)
 
-地标索引 (dlib 68点):
-  左眼: 36-41, 右眼: 42-47
+地标索引 (2d106det 106点, 第一视角):
+  右眼(图左): 外角39 内角35 上睑41-40-42 下睑36-33-37
+  左眼(图右): 外角93 内角89 上睑96-94-95 下睑91-87-90
   EAR_avg = (EAR_left + EAR_right) / 2
 ```
 
@@ -673,7 +673,7 @@ Win32 GUI 应用程序。
 **页面一：人脸采集**
 
 - 摄像头 MF 采集，30fps 回调
-- 实时人脸检测 (SCRFD ONNX 或 dlib HOG) + 68点地标叠加
+- 实时人脸检测 (SCRFD ONNX) + 106点地标叠加
 - 采集流程:
   1. 活体检测 (眨眼 / 反欺诈，根据配置)
   2. 活体通过 → 采集 10 帧人脸嵌入向量
@@ -806,10 +806,10 @@ C:\Program Files\FaceLogin\               # 安装目录 (用户可选)
 │   ├── credential_provider.log
 │   └── enrollment.log
 └── models/
-    ├── shape_predictor_68_face_landmarks.dat       (~97 MB)
-    ├── det_500m.onnx                                 (~16 MB)
-    ├── w600k_mbf.onnx                                 (~6 MB)
-    └── OULU_Protocol_2_model_0_0.onnx                 (~1 MB)
+    ├── 2d106det.onnx                                  (~5 MB)
+    ├── det_500m.onnx                                 (~2.5 MB)
+    ├── w600k_mbf.onnx                                 (~13 MB)
+    └── OULU_Protocol_2_model_0_0.onnx                 (~13 MB)
 
 C:\ProgramData\FaceLogin\                   # 数据目录
 ├── data/
@@ -827,12 +827,12 @@ C:\ProgramData\FaceLogin\                   # 数据目录
 
 | 文件 | 大小 | 用途 | 来源 |
 |---|---|---|---|
-| `shape_predictor_68_face_landmarks.dat` | ~97 MB | 68点面部地标提取 | dlib.net |
-| `det_500m.onnx` | ~16 MB | SCRFD 人脸检测 | InsightFace |
-| `w600k_mbf.onnx` | ~6 MB | buffalo_s MobileFaceNet 512维嵌入 | InsightFace |
-| `OULU_Protocol_2_model_0_0.onnx` | ~1 MB | MiniFASNetV2 静默反欺诈 | MiniFASNet |
+| `2d106det.onnx` | ~5 MB | 106点面部地标提取 | InsightFace buffalo_l |
+| `det_500m.onnx` | ~2.5 MB | SCRFD 人脸检测 | InsightFace |
+| `w600k_mbf.onnx` | ~13 MB | buffalo_s MobileFaceNet 512维嵌入 | InsightFace |
+| `OULU_Protocol_2_model_0_0.onnx` | ~13 MB | MiniFASNetV2 静默反欺诈 | MiniFASNet |
 
-下载脚本: `scripts/download_models.ps1` 可下载 dlib shape predictor 模型。ONNX 模型（det_500m / w600k_mbf / OULU）随安装包分发。
+所有 ONNX 模型随安装包分发。
 
 ---
 
@@ -842,7 +842,7 @@ C:\ProgramData\FaceLogin\                   # 数据目录
 
 **vcpkg**:
 ```
-dlib[core]
+dlib[core]    # 图像工具库 (matrix/rectangle/几何变换)
 onnxruntime
 ```
 

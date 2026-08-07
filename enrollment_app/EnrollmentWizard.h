@@ -10,7 +10,7 @@
 #include <dlib/matrix.h>
 #include <dlib/pixel.h>
 
-#include "../face_service/face_detector.h"
+#include "../face_service/landmark_detector.h"
 #include "../face_service/liveness_detector.h"
 #include "../face_service/liveness_types.h"
 #include "../face_service/onnx_models.h"
@@ -149,7 +149,7 @@ private:
 
     // Camera & face processing
     std::unique_ptr<WebcamCapture>  m_webcam;
-    std::unique_ptr<FaceDetector>   m_detector;       // 68-point shape predictor
+    std::unique_ptr<OnnxLandmarkDetector> m_detector;   // 106-point landmarks (2d106det)
     std::unique_ptr<OnnxDetector>   m_onnxDetector;   // SCRFD detection
     std::unique_ptr<OnnxRecognizer> m_onnxRecognizer; // InsightFace recognition
     std::unique_ptr<OnnxAntiSpoof>  m_antiSpoof;

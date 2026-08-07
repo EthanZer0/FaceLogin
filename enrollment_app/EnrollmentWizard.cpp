@@ -188,7 +188,7 @@ EnrollmentWizard::EnrollmentWizard() {
     }
 
     m_webcam     = std::make_unique<WebcamCapture>();
-    m_detector   = std::make_unique<FaceDetector>();
+    m_detector   = std::make_unique<OnnxLandmarkDetector>();
     m_store.SetDataDir(m_dataDir);
 
     m_config = LoadConfig(m_dataDir);
@@ -211,8 +211,8 @@ bool EnrollmentWizard::StartPreview() {
     if (m_previewRunning) return true;
 
     // Only the camera is opened on the UI thread — it's fast and we need its
-    // success to gate the background work. Model loading (dlib shape predictor
-    // + ONNX sessions) is deferred to the frame thread so a cold start never
+    // success to gate the background work. Model loading (2d106det + ONNX
+    // sessions) is deferred to the frame thread so a cold start never
     // blocks the UI and the user can switch tabs while "starting camera".
     //
     // Retry briefly: right after unlock the credential-provider service may
@@ -288,7 +288,7 @@ bool EnrollmentWizard::StartPreview() {
                                                static_cast<long>(det->y1),
                                                static_cast<long>(det->x2),
                                                static_cast<long>(det->y2));
-                    fwl.landmarks = m_detector->GetLandmarks(frame, fwl.rect);
+                    m_detector->DetectLandmarks(frame, fwl.rect, fwl.landmarks);
                     faces.push_back(std::move(fwl));
                     faceJson = FacesToJson(faces);
                 }
@@ -312,10 +312,10 @@ bool EnrollmentWizard::StartPreview() {
 // (e.g. cancel back to the camera screen from the append dialog) reuses them.
 bool EnrollmentWizard::EnsureModelsLoaded() {
     std::wstring modelsDir = m_dataDir + L"\\models";
-    std::wstring shapePath = modelsDir + L"\\shape_predictor_68_face_landmarks.dat";
+    std::wstring shapePath = modelsDir + L"\\2d106det.onnx";
 
     if (!m_detector->IsInitialized() && !m_detector->Initialize(shapePath)) {
-        FACELOGIN_ERROR(L"Failed to load shape predictor");
+        FACELOGIN_ERROR(L"Failed to load 2d106det landmark detector");
         return false;
     }
 
@@ -593,7 +593,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                     if (m_latestFrame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                     frame = m_latestFrame;
                 }
-                // Detect with SCRFD, extract 68-point landmarks.
+                // Detect with SCRFD, extract 106-point landmarks.
                 dlib::full_object_detection asLandmarks;
                 auto asDet = m_onnxDetector->DetectLargestFace(frame);
                 if (asDet) {
@@ -601,7 +601,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                                            static_cast<long>(asDet->y1),
                                            static_cast<long>(asDet->x2),
                                            static_cast<long>(asDet->y2));
-                    asLandmarks = m_detector->GetLandmarks(frame, asRect);
+                    m_detector->DetectLandmarks(frame, asRect, asLandmarks);
                 }
                 if (asLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
 
@@ -632,7 +632,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                     if (m_latestFrame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                     frame = m_latestFrame;
                 }
-                // Detect with SCRFD, extract 68-point landmarks for EAR.
+                // Detect with SCRFD, extract 106-point landmarks for EAR.
                 dlib::full_object_detection livenessLandmarks;
                 auto livenessDet = m_onnxDetector->DetectLargestFace(frame);
                 if (livenessDet) {
@@ -640,7 +640,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                                           static_cast<long>(livenessDet->y1),
                                           static_cast<long>(livenessDet->x2),
                                           static_cast<long>(livenessDet->y2));
-                    livenessLandmarks = m_detector->GetLandmarks(frame, lRect);
+                    m_detector->DetectLandmarks(frame, lRect, livenessLandmarks);
                 }
                 if (livenessLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                 if (liveness.ProcessFrame(livenessLandmarks)) {
@@ -676,7 +676,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 frame = m_latestFrame;
             }
 
-            // Detect with SCRFD (the only detector), extract 68-point landmarks.
+            // Detect with SCRFD (the only detector), extract 106-point landmarks.
             dlib::full_object_detection landmarks;
             auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
             if (onnxDet) {
@@ -684,7 +684,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                                      static_cast<long>(onnxDet->y1),
                                      static_cast<long>(onnxDet->x2),
                                      static_cast<long>(onnxDet->y2));
-                landmarks = m_detector->GetLandmarks(frame, rect);
+                m_detector->DetectLandmarks(frame, rect, landmarks);
             }
             if (landmarks.num_parts() == 0) {
                 if (++failCount > 300) { m_capturing = false; break; }
