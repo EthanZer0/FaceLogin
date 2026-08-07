@@ -242,7 +242,7 @@ bool FaceService::Initialize() {
         return false;
     }
 
-    // Heavy models (shape predictor + recognizer + anti-spoof) load in a
+    // Heavy models (2d106det + recognizer + anti-spoof) load in a
     // background thread. See StartBackgroundModelLoad().
     StartBackgroundModelLoad();
 
@@ -629,7 +629,7 @@ bool FaceService::ProcessAuthRequest() {
         m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u6b63\u5728\u52a0\u8f7d\u6a21\u578b...");
     }
 
-    // Heavy models (shape predictor + recognizer, optionally anti-spoof) load
+    // Heavy models (2d106det + recognizer, optionally anti-spoof) load
     // in the background during startup. Normally they're ready by the time the
     // user triggers auth; if the lock screen appeared unusually fast, block
     // here until they finish. The auth timeout is running from when the CP

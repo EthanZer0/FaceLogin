@@ -306,7 +306,7 @@ bool EnrollmentWizard::StartPreview() {
     return true;
 }
 
-// Load the shape predictor + ONNX models if not already loaded. Called from
+// Load the 2d106det + ONNX models if not already loaded. Called from
 // the background frame thread so a cold start never blocks the UI thread.
 // Models survive StopPreview() (only the camera is torn down), so a restart
 // (e.g. cancel back to the camera screen from the append dialog) reuses them.
@@ -1305,7 +1305,7 @@ std::string EnrollmentWizard::GetCameraList() {
 
 // Console version — bump with each release. Used to decide whether to show the
 // About-card star hint again (it reappears on every new version).
-static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.5.0";
+static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.6.0";
 // Registry value holding the version the user last saw the About card at.
 static const wchar_t REGVAL_ABOUT_SEEN_VERSION[] = L"AboutSeenVersion";
 
