@@ -404,6 +404,121 @@ button{font-family:inherit}
 .cam-picker .btn-secondary{margin-top:10px}
 
 /* ================================================================
+   About modal — click the footer version tag
+   ================================================================ */
+.about-overlay{
+  position:fixed;inset:0;z-index:110;
+  align-items:center;justify-content:center;
+  background:rgba(22,26,34,.42);backdrop-filter:blur(2px);
+  display:flex;
+  visibility:hidden;opacity:0;pointer-events:none;
+  /* visibility swaps with a delay so the fade-out is actually visible —
+     closing: opacity animates first, then visibility flips to hidden. */
+  transition:opacity .22s ease,visibility 0s .22s;
+}
+.about-overlay.active{
+  visibility:visible;opacity:1;pointer-events:auto;
+  /* opening: visibility goes visible immediately, no delay. */
+  transition:opacity .22s ease,visibility 0s;
+}
+/* Confetti canvas: full-screen, above the card, never intercepts clicks. */
+.confetti-canvas{
+  position:absolute;inset:0;width:100%;height:100%;
+  pointer-events:none;z-index:1;
+}
+.about-card{
+  width:90%;max-width:340px;background:var(--face);
+  border:1px solid var(--hair);border-radius:8px;
+  box-shadow:0 18px 60px rgba(22,26,34,.2);padding:22px 22px 16px;
+  /* Entrance: rise from below with a gentle overshoot + fade. */
+  opacity:0;transform:translateY(20px) scale(.96);
+  transition:
+    opacity .24s ease,
+    transform .30s cubic-bezier(.34,1.45,.5,1);
+}
+.about-overlay.active .about-card{
+  opacity:1;transform:translateY(0) scale(1);
+}
+/* -- head: MARK badge + stacked brand/version -- */
+.about-card .ab-head{
+  display:flex;align-items:center;gap:14px;margin-bottom:16px;
+}
+.about-card .ab-mark{
+  width:30px;height:30px;position:relative;flex-shrink:0;
+  border:1px solid var(--hair);border-radius:3px;
+}
+.about-card .ab-mark i{position:absolute;width:8px;height:8px;border:2px solid var(--live);opacity:.85}
+.about-card .ab-mark i:nth-child(1){top:-1px;left:-1px;border-right:0;border-bottom:0}
+.about-card .ab-mark i:nth-child(2){top:-1px;right:-1px;border-left:0;border-bottom:0}
+.about-card .ab-mark i:nth-child(3){bottom:-1px;left:-1px;border-right:0;border-top:0}
+.about-card .ab-mark i:nth-child(4){bottom:-1px;right:-1px;border-left:0;border-top:0}
+.about-card .ab-title{min-width:0}
+.about-card .ab-brand{display:flex;align-items:baseline;gap:8px}
+.about-card .ab-name{
+  font-family:var(--font-data);font-size:16px;font-weight:600;
+  letter-spacing:.04em;color:var(--ink);
+}
+.about-card .ab-console{
+  font-family:var(--font-data);font-size:16px;font-weight:400;
+  letter-spacing:.08em;color:var(--fog);
+}
+.about-card .ab-ver{
+  font-family:var(--font-data);font-size:10px;letter-spacing:.24em;
+  color:#9AA1AD;margin-top:5px;
+}
+/* -- link plate: compact -- */
+.about-card .ab-link{
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  background:var(--lite);border:1px solid var(--hair);border-radius:6px;
+  padding:9px 14px;text-decoration:none;margin:0 0 14px;
+  transition:border-color .15s,background .15s;
+}
+.about-card .ab-link:hover{border-color:#C2C8D2;background:#F0F2F6}
+.about-card .ab-link .ab-link-text{
+  font-family:var(--font-data);font-size:11px;letter-spacing:.14em;
+  color:var(--ink);
+}
+.about-card .ab-link .ab-link-arrow{color:var(--live);font-size:12px}
+.about-card .ab-link .ab-gh{fill:var(--ink);flex-shrink:0;transition:fill .15s}
+.about-card .ab-link:hover .ab-gh{fill:var(--live)}
+/* -- contributors: compact nameplate list (sits under the brand) -- */
+.about-card .ab-contrib{
+  border-bottom:1px solid var(--hair);
+  padding:8px 2px 12px;margin:0 0 14px;
+}
+.about-card .ab-contrib-title{
+  font-size:11px;letter-spacing:.42em;color:var(--fog);text-align:center;
+  text-transform:uppercase;margin-bottom:10px;
+}
+.about-card .ab-contrib-row{
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--font-data);padding:2px 6px;
+}
+.about-card .ab-contrib-name{font-size:11px;color:var(--ink);letter-spacing:.06em}
+/* -- copyright, alone on its own line, centered -- */
+.about-card .ab-copy{
+  font-size:9px;letter-spacing:.22em;color:#B4BAC5;text-align:center;
+  margin-bottom:2px;display:flex;align-items:center;justify-content:center;gap:5px;
+}
+.about-card .ab-copy .ab-heart{font-size:8px;line-height:1;flex-shrink:0;margin-top:-1px;opacity:.9}
+.about-card .btn{margin-top:14px;width:100%}
+/* footer version tag becomes a clickable nameplate on hover */
+.ft-r{
+  cursor:pointer;
+  padding:2px 7px;margin:-2px -7px;   /* expand hit area w/o layout shift */
+  border:1px solid transparent;border-radius:3px;
+  transition:color .18s,border-color .18s,transform .18s,box-shadow .18s;
+}
+.ft-r:hover{
+  color:var(--live);
+  border-color:rgba(14,159,110,.5);
+  transform:translateY(-1px);
+  box-shadow:0 2px 8px rgba(14,159,110,.18);
+}
+/* one-time star hint next to the version tag */
+.ft-star{font-size:8px;line-height:1;margin-right:1px}
+
+/* ================================================================
    Footer — instrument base
    ================================================================ */
 .footer{
@@ -412,9 +527,10 @@ button{font-family:inherit}
   display:flex;align-items:center;justify-content:space-between;
 }
 .footer .ft-l,.footer .ft-r{
-  font-size:9px;letter-spacing:.2em;color:#9AA1AD;font-family:var(--font-data);
-  display:flex;align-items:center;gap:7px;white-space:nowrap;
+  font-size:9px;color:#9AA1AD;font-family:var(--font-data);
+  display:flex;align-items:center;gap:4px;white-space:nowrap;
 }
+.footer .ft-r .ft-ver{letter-spacing:.2em;margin-right:-.2em} /* optically center tracked text */
 .footer .ft-l i{width:5px;height:5px;border-radius:50%;background:var(--hair)}
 
 /* ================================================================
@@ -489,7 +605,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r">v1.5-DEV</div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
   </div>
 </div>
 
@@ -546,7 +662,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r">v1.5-DEV</div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
   </div>
 </div>
 
@@ -585,7 +701,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r">v1.5-DEV</div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
   </div>
 </div>
 
@@ -630,7 +746,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r">v1.5-DEV</div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
   </div>
 </div>
 
@@ -758,7 +874,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r">v1.5-DEV</div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
   </div>
 </div>
 
@@ -801,7 +917,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r">v1.5-DEV</div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
   </div>
 </div>
 
@@ -842,6 +958,41 @@ button{font-family:inherit}
     <button class="btn btn-secondary" id="refresh-dismiss" onclick="onRefreshDismiss()">
       暂不处理
     </button>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- About Modal — click the footer version tag                        -->
+<!-- ================================================================== -->
+<div class="about-overlay" id="about-overlay" onclick="if(event.target===this)closeAbout()">
+  <canvas class="confetti-canvas" id="confetti-canvas"></canvas>
+  <div class="about-card">
+    <div class="ab-head">
+      <span class="ab-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <div class="ab-title">
+        <div class="ab-brand">
+          <span class="ab-name">FaceLogin</span><span class="ab-console">Console</span>
+        </div>
+        <div class="ab-ver">VERSION 1.5.0</div>
+      </div>
+    </div>
+    <div class="ab-contrib">
+      <div class="ab-contrib-title">Contributors</div>
+      <div class="ab-contrib-row"><span class="ab-contrib-name">EthanZer0</span></div>
+      <div class="ab-contrib-row"><span class="ab-contrib-name">Link2323</span></div>
+    </div>
+    <a class="ab-link" href="https://github.com/EthanZer0/FaceLogin" onclick="event.preventDefault();openExternal(this.href)" role="link">
+      <svg class="ab-gh" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+      <span class="ab-link-text">GitHub</span><span class="ab-link-arrow">查看项目 ↗</span>
+    </a>
+    <div class="ab-copy">
+      <span>Made with</span>
+      <span class="ab-heart" aria-hidden="true">❤️</span>
+      <span>by EthanZer0</span>
+    </div>
+    <button class="btn btn-primary" onclick="closeAbout()">关闭</button>
   </div>
 </div>
 
@@ -1790,6 +1941,197 @@ function clearLogs() {
   try { H.ClearLog(); } catch(e) {}
   document.getElementById('log-viewer').textContent = '';
 }
+
+// ==================================================================
+// About modal — opened by clicking the footer version tag
+// ==================================================================
+// Star-seen flag. In the real Console the HTML is loaded via NavigateToString
+// (opaque origin), where localStorage throws — so persistence goes through the
+// host object (a marker file in the data dir). In a browser preview there is
+// no host, so fall back to localStorage.
+function hideStars() {
+  var stars = document.querySelectorAll('.ft-star');
+  for (var i = 0; i < stars.length; i++) stars[i].style.display = 'none';
+}
+function aboutSeen() {
+  try { if (H.GetAboutSeen) return !!H.GetAboutSeen(); } catch (e) {}
+  try { return localStorage.getItem('facelogin_about_seen') === '1'; } catch (e) {}
+  return false;
+}
+function markAboutSeen() {
+  try { if (H.SetAboutSeen) { H.SetAboutSeen(true); return; } } catch (e) {}
+  try { localStorage.setItem('facelogin_about_seen', '1'); } catch (e) {}
+}
+function openAbout() {
+  document.getElementById('about-overlay').classList.add('active');
+  // One-time star hint: hide it forever once the About card is opened.
+  markAboutSeen();
+  hideStars();
+}
+function closeAbout() {
+  document.getElementById('about-overlay').classList.remove('active');
+}
+// On load: if the user already opened the About card once, don't show the
+// star hint again.
+(function() {
+  if (aboutSeen()) hideStars();
+})();
+// Open a URL in the OS default browser via the host object (WebView2 popups
+// are blocked). No-op if the host isn't available (e.g. browser preview).
+function openExternal(url) {
+  try {
+    if (H.OpenExternal) { H.OpenExternal(url); return; }
+  } catch (e) {}
+  window.open(url, '_blank', 'noopener');
+}
+// ESC closes the about card too (matches other modals).
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    var a = document.getElementById('about-overlay');
+    if (a) a.classList.remove('active');
+  }
+});
+
+// ==================================================================
+// Starlight motes — on opening the About card, a drift of tiny luminous
+// specks fades in across the card, sinks slowly with a gentle sway, and
+// fades out. Quiet, layered, stays inside the card. Canvas2D, no deps,
+// honours prefers-reduced-motion, pointer-events:none so it never blocks.
+// ==================================================================
+(function() {
+  var canvas = document.getElementById('confetti-canvas');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var particles = [];
+  var rafId = 0;
+  var running = false;
+  var spawnAccum = 0;
+
+  // Palette: mostly the calm instrument tones, a few brighter specks.
+  var COLORS = ['#0E9F6E', '#0E9F6E', '#7FB69F', '#9AA1AD', '#E8710A', '#3B82C4'];
+
+  function fit() {
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', fit);
+
+  function cardRect() {
+    var el = document.querySelector('.about-card');
+    return el ? el.getBoundingClientRect() : null;
+  }
+
+  // One mote: tiny rounded square / dot, fades in, drifts down, sways, fades.
+  function spawn(r) {
+    particles.push({
+      x: r.left + Math.random() * r.width,
+      y: r.top - 6 + Math.random() * 8,          // start just above the card top
+      vy: 0.25 + Math.random() * 0.5,            // slow sink
+      swayAmp: 0.4 + Math.random() * 1.4,
+      swayFreq: 0.03 + Math.random() * 0.06,
+      swayPhase: Math.random() * Math.PI * 2,
+      size: 2 + Math.random() * 2.5,             // 2–4.5 px specks
+      rot: Math.random() * Math.PI,
+      vr: (Math.random() - 0.5) * 0.05,
+      color: COLORS[Math.floor(Math.random() * COLORS.length)],
+      age: 0,
+      // per-mote lifecycle: fade-in ~0.5s, float ~3–5s, fade-out ~0.8s
+      total: 0.5 + Math.random() * 4.0 + 0.8,
+      fadeIn: 0.5,
+      fadeOut: 0.8
+    });
+  }
+
+  function burst() {
+    fit();
+    particles = [];
+    spawnAccum = 0;
+    // Light opening seed only — the bulk of the motes trickle in over the
+    // next ~1.5s (see the spawn cadence in tick) so they rise and scatter
+    // gradually instead of piling up in one frame.
+    var r = cardRect();
+    if (r) {
+      var seed = Math.round(r.width * r.height / 10000);  // sparse opener
+      for (var i = 0; i < seed; i++) spawn(r);
+    }
+    if (!running) { running = true; rafId = requestAnimationFrame(tick); }
+  }
+
+  function tick() {
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+
+    var r = cardRect();
+    if (r) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(r.left, r.top, r.width, r.height);
+      ctx.clip();
+    }
+
+    var dt = 1 / 60;
+
+    // Continually top up with a gentle trickle so the motes appear to rise
+    // and scatter gradually (no initial pile-up). ~8/s — sparse and calm.
+    spawnAccum += dt;
+    if (spawnAccum > 0.12) {
+      spawnAccum = 0;
+      if (r && particles.length < 160) spawn(r);
+    }
+
+    particles = particles.filter(function(p) {
+      p.age += dt;
+      if (p.age >= p.total) return false;          // lifespan done
+
+      // alpha: rise during fade-in, hold, fall during fade-out
+      var a;
+      if (p.age < p.fadeIn) a = p.age / p.fadeIn;
+      else if (p.age > p.total - p.fadeOut) a = (p.total - p.age) / p.fadeOut;
+      else a = 1;
+      if (a <= 0) return false;
+
+      p.y += p.vy;
+      p.x = p.x + Math.sin(p.swayPhase) * p.swayAmp * 0.02;  // sway
+      p.swayPhase += p.swayFreq;
+      p.rot += p.vr;
+
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, a);
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+      ctx.restore();
+      return true;
+    });
+
+    // End when the trickle has run its course (≈4s) and all specks faded.
+    animT += dt;
+    if (animT >= stopAt && particles.length === 0) {
+      running = false;
+      ctx.clearRect(0, 0, w, h);
+      rafId = 0;
+      return;
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  var animT = 0;
+  var stopAt = 5.0;
+
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var origOpen = openAbout;
+  openAbout = function() {
+    origOpen();
+    if (reduceMotion) return;
+    animT = 0;
+    stopAt = 5.0;
+    setTimeout(burst, 120);
+  };
+})();
 
 // ==================================================================
 // First-run camera picker: if config has no camera_device (fresh install

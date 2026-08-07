@@ -2,6 +2,7 @@
 #include "EnrollmentWizard.h"
 #include "../common/logger.h"
 #include "resource.h"
+#include <shellapi.h>
 #include <wtsapi32.h>
 
 #pragma comment(lib, "user32.lib")
@@ -307,6 +308,9 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     // ClearStaleAccountUpn at 33 matches that branch, so the future merge
     // slots GetCaptureStatus into 32 without renumbering.
     else if (n == L"ClearStaleAccountUpn") *ids = 33;
+    else if (n == L"OpenExternal")        *ids = 34;
+    else if (n == L"GetAboutSeen")        *ids = 35;
+    else if (n == L"SetAboutSeen")        *ids = 36;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -444,6 +448,25 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
             break;
         }
         case 33: if (res) *res = MakeBool(m_wizard->ClearStaleAccountUpn()); break;
+        case 34: {
+            // OpenExternal(url) — open a URL in the OS default browser
+            // instead of a WebView2 popup window. Used by the About card's
+            // GitHub link.
+            std::wstring url = OptionalArg(p, 0);
+            if (url.empty()) return DISP_E_BADPARAMCOUNT;
+            HINSTANCE r = ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            // ShellExecute returns >32 on success (e.g. 42 = instance handle);
+            // ERROR_FILE_NOT_FOUND or similar (<32) means it failed.
+            if (res) *res = MakeBool(reinterpret_cast<INT_PTR>(r) > 32);
+            break;
+        }
+        case 35: if (res) *res = MakeBool(m_wizard->GetAboutSeen()); break;
+        case 36: {
+            if (p->cArgs < 1) return DISP_E_BADPARAMCOUNT;
+            if (p->rgvarg[0].vt != VT_BOOL) return DISP_E_TYPEMISMATCH;
+            m_wizard->SetAboutSeen(p->rgvarg[0].boolVal == VARIANT_TRUE);
+            break;
+        }
         default: return DISP_E_MEMBERNOTFOUND;
         }
         return S_OK;

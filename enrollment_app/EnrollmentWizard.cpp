@@ -17,6 +17,7 @@
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <fstream>
 #include <chrono>
 
 #pragma comment(lib, "ole32.lib")
@@ -1301,6 +1302,38 @@ std::string EnrollmentWizard::GetCameraList() {
 // ============================================================================
 // Configuration
 // ============================================================================
+
+// Console version — bump with each release. Used to decide whether to show the
+// About-card star hint again (it reappears on every new version).
+static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.5.0";
+// Registry value holding the version the user last saw the About card at.
+static const wchar_t REGVAL_ABOUT_SEEN_VERSION[] = L"AboutSeenVersion";
+
+// The About-card star is a per-version one-time hint. Persisted in the
+// registry (HKLM\SOFTWARE\FaceLogin\AboutSeenVersion) rather than a file so
+// it leaves no trace in the data dir and rides along with the normal config
+// registry key. (localStorage is unavailable — the page is served via
+// NavigateToString → opaque origin.)
+bool EnrollmentWizard::GetAboutSeen() {
+    std::wstring seen = ReadRegString(REGVAL_ABOUT_SEEN_VERSION, L"");
+    return seen == FACELOGIN_CONSOLE_VERSION;
+}
+
+void EnrollmentWizard::SetAboutSeen(bool seen) {
+    HKEY hKey;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, FACELOGIN_REG_KEY,
+            0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr,
+            &hKey, nullptr) == ERROR_SUCCESS) {
+        if (seen) {
+            RegSetValueExW(hKey, REGVAL_ABOUT_SEEN_VERSION, 0, REG_SZ,
+                reinterpret_cast<const BYTE*>(FACELOGIN_CONSOLE_VERSION),
+                static_cast<DWORD>((wcslen(FACELOGIN_CONSOLE_VERSION) + 1) * sizeof(wchar_t)));
+        } else {
+            RegDeleteValueW(hKey, REGVAL_ABOUT_SEEN_VERSION);
+        }
+        RegCloseKey(hKey);
+    }
+}
 
 std::string EnrollmentWizard::GetConfig() const {
     return ConfigToJson(m_config);

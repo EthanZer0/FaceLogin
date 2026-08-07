@@ -129,6 +129,12 @@ public:
     bool IsPreviewRunning() const { return m_previewRunning; }
     std::wstring GetDataDir() const { return m_dataDir; }
 
+    // About-card "star seen once" flag for the CURRENT version, persisted in
+    // the registry (HKLM\SOFTWARE\FaceLogin\AboutSeenVersion). The star shows
+    // again whenever the console version changes (AboutSeenVersion != current).
+    bool GetAboutSeen();
+    void SetAboutSeen(bool seen);
+
 private:
     std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
     std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces);
