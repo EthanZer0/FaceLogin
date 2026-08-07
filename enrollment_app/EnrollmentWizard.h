@@ -135,6 +135,11 @@ public:
     bool GetAboutSeen();
     void SetAboutSeen(bool seen);
 
+    // Console version string (single source of truth — FACELOGIN_CONSOLE_VERSION
+    // in EnrollmentWizard.cpp). The HTML footer/about-card version tags are
+    // populated from this via the host object instead of being hardcoded.
+    std::string GetConsoleVersion() const;
+
 private:
     std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
     std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces);

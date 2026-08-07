@@ -311,6 +311,7 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"OpenExternal")        *ids = 34;
     else if (n == L"GetAboutSeen")        *ids = 35;
     else if (n == L"SetAboutSeen")        *ids = 36;
+    else if (n == L"GetConsoleVersion")   *ids = 37;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -467,6 +468,7 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
             m_wizard->SetAboutSeen(p->rgvarg[0].boolVal == VARIANT_TRUE);
             break;
         }
+        case 37: if (res) *res = MakeStr(m_wizard->GetConsoleVersion()); break;
         default: return DISP_E_MEMBERNOTFOUND;
         }
         return S_OK;

@@ -1335,6 +1335,12 @@ void EnrollmentWizard::SetAboutSeen(bool seen) {
     }
 }
 
+std::string EnrollmentWizard::GetConsoleVersion() const {
+    // Version string is ASCII ("1.6.0"); narrow conversion is lossless.
+    std::wstring wv = FACELOGIN_CONSOLE_VERSION;
+    return std::string(wv.begin(), wv.end());
+}
+
 std::string EnrollmentWizard::GetConfig() const {
     return ConfigToJson(m_config);
 }
