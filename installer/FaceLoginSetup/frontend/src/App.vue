@@ -26,6 +26,32 @@ const noticeLines = computed(() =>
     : []
 )
 
+// Notice body parsed into {group, items} sections. A line ending with '：'
+// (e.g. "核心变更：" or "新功能：") starts a new section whose following
+// '-' bullets belong to it; lines before any such header go into a default
+// section. Falls back to a single unnamed section when the body has no
+// group headers, so the legacy flat format still renders.
+interface NoticeSection { group: string; items: string[] }
+const noticeSections = computed<NoticeSection[]>(() => {
+  const lines = noticeLines.value
+  const sections: NoticeSection[] = []
+  let cur: NoticeSection | null = null
+  for (const raw of lines) {
+    const line = raw.replace(/^[-•]\s*/, '').trim()
+    if (!line) continue
+    // Group header: "前缀：" on its own line (e.g. "新功能：", "修复：")
+    const m = line.match(/^(.+?)：$/)
+    if (m) {
+      cur = { group: m[1], items: [] }
+      sections.push(cur)
+      continue
+    }
+    if (!cur) { cur = { group: '', items: [] }; sections.push(cur) }
+    cur.items.push(line)
+  }
+  return sections.filter(s => s.items.length > 0)
+})
+
 onMounted(async () => {
   const paths = await GetDefaultPaths()
   installDir.value = paths.installDir
@@ -214,52 +240,189 @@ async function doUninstall() {
   </div>
 
   <!-- Upgrade notice popup ("what's new") — only after a successful upgrade -->
-  <div
-    v-if="showNotice && notice"
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-    @click.self="showNotice = false"
-  >
-    <div class="w-[90%] max-w-md bg-white shadow-xl border border-gray-100 flex flex-col max-h-[80vh]">
-      <!-- Header -->
-      <div class="px-6 pt-5 pb-3 border-b border-gray-100 flex items-start justify-between gap-4">
-        <div>
-          <div class="flex items-center gap-2">
-            <span class="text-[10px] font-semibold uppercase tracking-wider bg-gray-900 text-white px-1.5 py-0.5">
-              v{{ notice.version }}
-            </span>
-            <span class="text-xs text-gray-400 font-light">新版本公告</span>
+  <Transition name="notice">
+    <div
+      v-if="showNotice && notice"
+      class="notice-overlay fixed inset-0 z-50 flex items-center justify-center p-6"
+      @click.self="showNotice = false"
+    >
+      <div class="notice-card w-[90%] max-w-md max-h-[80vh] flex flex-col">
+        <!-- Header -->
+        <div class="px-6 pt-6 pb-4 border-b border-gray-100 flex items-start justify-between gap-4">
+          <div class="flex flex-col gap-2.5">
+            <!-- Brand: corner-marks + FaceLogin name -->
+            <div class="flex items-center gap-2">
+              <span class="notice-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+              <span class="text-sm font-medium tracking-wide text-gray-900">FaceLogin</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="notice-ver-badge">v{{ notice.version }}</span>
+              <span class="text-xs text-gray-400 font-light">新版本公告</span>
+            </div>
+            <h2 class="text-lg font-medium text-gray-900 leading-snug">{{ notice.title }}</h2>
           </div>
-          <h2 class="mt-2 text-lg font-medium text-gray-900">{{ notice.title }}</h2>
+          <button
+            class="notice-close text-gray-400 hover:text-gray-600 text-xl leading-none mt-0.5"
+            @click="showNotice = false"
+            title="关闭"
+          >×</button>
         </div>
-        <button
-          class="text-gray-400 hover:text-gray-600 text-xl leading-none pt-0.5"
-          @click="showNotice = false"
-          title="关闭"
-        >×</button>
-      </div>
 
-      <!-- Body: one bullet per line -->
-      <div class="px-6 py-4 overflow-y-auto">
-        <ul class="space-y-2.5">
-          <li
-            v-for="(line, i) in noticeLines"
-            :key="i"
-            class="flex gap-2.5 text-sm text-gray-700 leading-relaxed"
-          >
-            <span class="text-gray-300 mt-0.5 flex-shrink-0">•</span>
-            <span>{{ line }}</span>
-          </li>
-        </ul>
-      </div>
+        <!-- Body: grouped sections -->
+        <div class="px-6 py-5 overflow-y-auto notice-scroll">
+          <template v-for="(sec, si) in noticeSections" :key="si">
+            <div v-if="sec.group" class="notice-group-title">{{ sec.group }}</div>
+            <ul class="notice-list" :class="sec.group ? 'mb-4' : ''">
+              <li
+                v-for="(line, i) in sec.items"
+                :key="i"
+                class="flex gap-2.5 text-sm text-gray-600 leading-relaxed"
+              >
+                <span class="notice-dot mt-[7px] flex-shrink-0" aria-hidden="true"></span>
+                <span>{{ line }}</span>
+              </li>
+            </ul>
+          </template>
+        </div>
 
-      <!-- Footer -->
-      <div class="px-6 py-4 border-t border-gray-100 flex justify-end">
-        <button
-          class="px-4 py-1.5 text-sm font-medium bg-gray-900 text-white
-                 hover:bg-gray-800 transition-colors"
-          @click="showNotice = false"
-        >知道了</button>
+        <!-- Footer -->
+        <div class="px-6 py-4 border-t border-gray-100 flex justify-end">
+          <button
+            class="notice-btn px-5 py-1.5 text-sm font-medium text-white"
+            @click="showNotice = false"
+          >知道了</button>
+        </div>
       </div>
     </div>
-  </div>
+  </Transition>
 </template>
+
+<style scoped>
+/* ============================================================
+   Upgrade notice — brand-green redesign (1.6.0)
+   Overlay: deep tint + brand glow + backdrop blur.
+   Card:    rounded, layered shadow, viewfinder brand-mark,
+            grouped sections, brand-green CTA.
+   Motion:  overlay fade + card scale/translate with overshoot.
+   ============================================================ */
+.notice-overlay {
+  background:
+    radial-gradient(ellipse at 50% 42%, rgba(14, 159, 110, 0.10), transparent 62%),
+    rgba(17, 24, 39, 0.46);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.notice-card {
+  background: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 24px 60px -14px rgba(0, 0, 0, 0.30),
+              0 4px 14px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  position: relative;
+}
+
+/* Brand mark — the FaceLogin "viewfinder" signature, identical to the
+   Console header's .brand-mark: a rounded frame with corner-markers inside.
+   Keeping both products on the same brand language. */
+.notice-mark {
+  width: 30px; height: 30px;
+  position: relative;
+  flex-shrink: 0;
+  border: 1px solid #E2E5EA;
+  border-radius: 3px;
+}
+.notice-mark i {
+  position: absolute;
+  width: 8px; height: 8px;
+  border: 2px solid #0E9F6E;
+  opacity: 0.85;
+}
+.notice-mark i:nth-child(1){top:0;left:0;border-right:0;border-bottom:0}
+.notice-mark i:nth-child(2){top:0;right:0;border-left:0;border-bottom:0}
+.notice-mark i:nth-child(3){bottom:0;left:0;border-right:0;border-top:0}
+.notice-mark i:nth-child(4){bottom:0;right:0;border-left:0;border-top:0}
+
+.notice-ver-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #ffffff;
+  background: #0E9F6E;
+  border-radius: 4px;
+}
+
+.notice-close {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.notice-close:hover {
+  background: #F3F4F6;
+  color: #374151;
+}
+
+/* Group headers (新功能 / 修复 / 说明 ...) */
+.notice-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #0E9F6E;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.notice-group-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #E5E7EB;
+}
+
+.notice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Green bullet dot */
+.notice-dot {
+  width: 6px; height: 6px;
+  border-radius: 9999px;
+  background: #0E9F6E;
+  opacity: 0.75;
+}
+
+/* Brand CTA */
+.notice-btn {
+  background: #0E9F6E;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+.notice-btn:hover { background: #0B8A5E; }
+.notice-btn:active { transform: translateY(1px); }
+
+/* Custom scrollbar for the body (subtle, brand-tinted) */
+.notice-scroll::-webkit-scrollbar { width: 6px; }
+.notice-scroll::-webkit-scrollbar-thumb {
+  background: #D1D5DB;
+  border-radius: 9999px;
+}
+.notice-scroll::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }
+
+/* Entry motion */
+.notice-enter-active { transition: opacity 0.22s ease; }
+.notice-enter-active .notice-card { transition: transform 0.38s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease; }
+.notice-leave-active { transition: opacity 0.15s ease; }
+.notice-leave-active .notice-card { transition: transform 0.18s ease, opacity 0.15s ease; }
+.notice-enter-from { opacity: 0; }
+.notice-enter-from .notice-card { transform: translateY(14px) scale(0.96); opacity: 0; }
+.notice-leave-to { opacity: 0; }
+.notice-leave-to .notice-card { transform: translateY(8px) scale(0.98); opacity: 0; }
+</style>

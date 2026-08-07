@@ -146,7 +146,9 @@ int WebviewHost::Run() {
     int clientH = static_cast<int>(clientHCss * dpiScale);
 
     RECT rc = {0, 0, clientW, clientH};
-    DWORD style = WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX;
+    // Fixed-size window: no thick resize border (WS_THICKFRAME removed), no
+    // maximize box (already stripped above) — only minimize and close remain.
+    DWORD style = (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX);
     AdjustWindowRect(&rc, style, FALSE);
     int actualWndW = rc.right - rc.left;
     int actualWndH = rc.bottom - rc.top;
@@ -208,6 +210,23 @@ LRESULT WebviewHost::HandleMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SIZE:
         ResizeWebView(hWnd);
         return 0;
+
+    // Fixed-size window: clamp min/max tracking size to the current size so
+    // neither dragging the edge (already disabled) nor the system menu can
+    // resize the window. This is the last line of defense.
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lp);
+        RECT rc;
+        if (GetWindowRect(hWnd, &rc)) {
+            LONG w = rc.right - rc.left;
+            LONG h = rc.bottom - rc.top;
+            mmi->ptMaxTrackSize.x = w;
+            mmi->ptMaxTrackSize.y = h;
+            mmi->ptMinTrackSize.x = w;
+            mmi->ptMinTrackSize.y = h;
+        }
+        return 0;
+    }
 
     case WM_WTSSESSION_CHANGE:
         if (m_wizard) {

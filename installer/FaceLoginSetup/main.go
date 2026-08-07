@@ -94,9 +94,10 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:            "FaceLogin 安装程序",
-		Width:            640,
-		Height:           520,
+		Title:        "FaceLogin 安装程序",
+		Width:        640,
+		Height:       520,
+		DisableResize: true, // fixed-size window — no edge resize, no maximize
 		WindowStartState: options.Normal,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
