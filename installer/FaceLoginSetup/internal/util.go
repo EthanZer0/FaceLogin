@@ -46,6 +46,54 @@ func DeleteRegValue(valueName string) error {
 	return k.DeleteValue(valueName)
 }
 
+// deleteRegKeyTree recursively deletes a registry key and everything beneath
+// it (all subkeys, recursively, and all values). The standard
+// registry.DeleteKey only deletes EMPTY keys (it wraps RegDeleteKeyW), so it
+// fails on HKLM\SOFTWARE\FaceLogin which holds values and subkeys. We enumerate
+// and delete depth-first instead.
+func deleteRegKeyTree(parent registry.Key, subpath string) error {
+	k, err := registry.OpenKey(parent, subpath, registry.ENUMERATE_SUB_KEYS|registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		if err == registry.ErrNotExist {
+			return nil // already gone — idempotent
+		}
+		return err
+	}
+	defer k.Close()
+
+	// Delete subkeys first (they can themselves hold deeper subkeys/values).
+	subs, _ := k.ReadSubKeyNames(-1)
+	for _, s := range subs {
+		if err := deleteRegKeyTree(k, s); err != nil {
+			return err
+		}
+	}
+
+	// Delete all values.
+	vals, _ := k.ReadValueNames(-1)
+	for _, v := range vals {
+		if err := k.DeleteValue(v); err != nil {
+			// A value that vanished concurrently is fine; anything else is real.
+			if err != registry.ErrNotExist {
+				return err
+			}
+		}
+	}
+
+	// Now the key itself is empty → remove it.
+	return registry.DeleteKey(parent, subpath)
+}
+
+// DeleteRegKey removes the ENTIRE HKLM\SOFTWARE\FaceLogin key tree — the
+// top-level values (InstallPath, DataPath) plus the runtime values
+// (UserLoggedIn, ServiceStartUptime, AboutSeenVersion) and any subkeys
+// (Credentials\*, Enrollments\*) written by the service and console.
+// Used by uninstall so no orphaned registry data survives a full purge.
+// Returns nil when the key does not exist (idempotent).
+func DeleteRegKey() error {
+	return deleteRegKeyTree(registry.LOCAL_MACHINE, `SOFTWARE\FaceLogin`)
+}
+
 // Path helpers
 
 // GetDefaultInstallDir returns the default install path.

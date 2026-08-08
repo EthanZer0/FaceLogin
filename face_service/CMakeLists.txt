@@ -1,13 +1,14 @@
 add_executable(FaceLoginService
     main.cpp
     FaceService.cpp
-    face_detector.cpp
+    landmark_detector.cpp
     liveness_detector.cpp
     onnx_models.cpp
     webcam_capture.cpp
     webcam_capture_dshow.cpp
     pipe_server.cpp
     credential_store.cpp
+    resource.rc
 )
 
 target_link_libraries(FaceLoginService PRIVATE

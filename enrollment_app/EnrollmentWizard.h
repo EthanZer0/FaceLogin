@@ -10,7 +10,7 @@
 #include <dlib/matrix.h>
 #include <dlib/pixel.h>
 
-#include "../face_service/face_detector.h"
+#include "../face_service/landmark_detector.h"
 #include "../face_service/liveness_detector.h"
 #include "../face_service/liveness_types.h"
 #include "../face_service/onnx_models.h"
@@ -38,6 +38,11 @@ public:
     std::string GetUserUpn() const;
     std::string GetAccountType() const { return m_accountType; }
     bool CaptureFaceSamples();          // blocking: captures 10 samples
+    // True while the capture thread is still running (liveness check or
+    // sample collection). The frontend polls this alongside GetSampleCount()
+    // so it can detect when the backend stops early (e.g. the 300-attempt
+    // no-face/no-embedding bail-out) instead of waiting forever at 90%.
+    bool IsCapturing() const { return m_capturing; }
     bool IsLivenessPassed() const { return m_livenessPassed; }
     bool IsLivenessChecking() const { return m_livenessChecking; }
     bool ValidatePassword(const std::wstring& password);
@@ -60,6 +65,9 @@ public:
     // faces; each save appends one face instead of replacing the old one.
     // Number of faces enrolled for the current account (0 = not enrolled).
     int GetFaceCount();
+    // True when users.dat holds embeddings from the pre-1.6.0 alignment (V4 or
+    // older) that cannot be matched — the user must re-enroll.
+    bool NeedsReenrollment();
     // JSON list of the current account's faces: [{"id":1,"label":"脸1"},...]
     std::string GetFacesJson();
     // Append a new face for the current account without re-entering a password
@@ -135,11 +143,16 @@ public:
     bool GetAboutSeen();
     void SetAboutSeen(bool seen);
 
+    // Console version string (single source of truth — FACELOGIN_CONSOLE_VERSION
+    // in EnrollmentWizard.cpp). The HTML footer/about-card version tags are
+    // populated from this via the host object instead of being hardcoded.
+    std::string GetConsoleVersion() const;
+
 private:
     std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
     std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces);
 
-    // Load the shape predictor + ONNX models if not already loaded (called from
+    // Load the 2d106det + ONNX models if not already loaded (called from
     // the background frame thread, so a cold start never blocks the UI thread).
     bool EnsureModelsLoaded();
 
@@ -149,7 +162,7 @@ private:
 
     // Camera & face processing
     std::unique_ptr<WebcamCapture>  m_webcam;
-    std::unique_ptr<FaceDetector>   m_detector;       // 68-point shape predictor
+    std::unique_ptr<OnnxLandmarkDetector> m_detector;   // 106-point landmarks (2d106det)
     std::unique_ptr<OnnxDetector>   m_onnxDetector;   // SCRFD detection
     std::unique_ptr<OnnxRecognizer> m_onnxRecognizer; // InsightFace recognition
     std::unique_ptr<OnnxAntiSpoof>  m_antiSpoof;
@@ -157,7 +170,7 @@ private:
 
     // Configuration
     AppConfig m_config;
-    LivenessMethod m_livenessMethod = LivenessMethod::Blink;
+    LivenessMethod m_livenessMethod = LivenessMethod::None;
     float m_antiSpoofThreshold = 0.30f;
 
     // Frame-grab thread (runs off UI thread — GrabFrame + JPEG encode + detection)

@@ -84,11 +84,12 @@ static DWORD ReadUserCountFromDatabase() {
     file.read(reinterpret_cast<char*>(&version), sizeof(version));
     file.read(reinterpret_cast<char*>(&count), sizeof(count));
 
-    // Accept v1..v4 databases. The header fields this function reads
+    // Accept v1..v5 databases. The header fields this function reads
     // (magic / version / count) are identical across all versions —
     // v2 added SID/UPN fields, v3 made the embedding length-prefixed,
-    // v4 added the per-account faces array, but none changes the header layout.
-    if (magic != 0x474F4C46 || (version < 1 || version > 4)) {  // "FLOG"
+    // v4 added the per-account faces array, v5 (1.6.0) is a version bump
+    // marking new-alignment embeddings — but none changes the header layout.
+    if (magic != 0x474F4C46 || (version < 1 || version > 5)) {  // "FLOG"
         return 0;  // Invalid database → treat as no users
     }
 

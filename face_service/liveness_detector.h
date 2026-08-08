@@ -55,6 +55,16 @@ namespace facelogin {
 // Default blink-detection parameters. Shared by the auth service and the
 // enrollment wizard so both use the same tuning.
 //
+// EAR threshold calibration (2d106det, 1.6.0): the 106-point model places its
+// eyelid points closer to the eyeball than dlib's 68-point predictor did, so
+// the SAME open eye yields a lower EAR. Measured on a frontal webcam face:
+//   open-eye EAR ≈ 0.11-0.13 (very stable, min 0.112 over 6 frames)
+//   closed-eye EAR ≈ 0.03-0.04
+// The dlib-era fixed 0.20 threshold sat ABOVE the 106-point open-eye EAR, so
+// every open eye read as "closed" and the close→open blink cycle never
+// registered. Recalibrated to 0.08: 30% margin below the open-eye low and a
+// 2×+ safety factor above the closed-eye high.
+//
 // Why consecutiveFramesRequired = 2 (not 3): the detection loop runs at
 // roughly 6 fps (grab + HOG detect + landmarks per frame), while a natural
 // blink lasts only ~150ms. Requiring 3 consecutive below-threshold frames
@@ -62,7 +72,7 @@ namespace facelogin {
 // close counter kept getting reset before reaching 3. With 2 frames, a
 // real blink reliably registers while still tolerating landmark jitter
 // (a single spurious below-threshold frame does not, by itself, count).
-constexpr float kDefaultEarThreshold = 0.20f;
+constexpr float kDefaultEarThreshold = 0.08f;
 constexpr int   kDefaultBlinkFrames  = 2;
 
 // Adaptive baseline: number of valid frames to sample before switching to the
@@ -118,9 +128,11 @@ public:
     void Reset();
 
 private:
-    // Compute EAR for a single eye given the 6 landmark indices.
+    // Compute EAR for a single eye from its 3 upper + 3 lower lid points
+    // and inner/outer corner indices (106-point layout).
     static float ComputeEyeEAR(const dlib::full_object_detection& landmarks,
-                                const int indices[6]);
+                               const int upper[3], const int lower[3],
+                               int innerIdx, int outerIdx);
     static float ComputeLeftEAR(const dlib::full_object_detection& landmarks);
     static float ComputeRightEAR(const dlib::full_object_detection& landmarks);
 

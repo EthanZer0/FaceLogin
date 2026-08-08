@@ -146,10 +146,16 @@ int WebviewHost::Run() {
     int clientH = static_cast<int>(clientHCss * dpiScale);
 
     RECT rc = {0, 0, clientW, clientH};
-    DWORD style = WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX;
+    // Fixed-size window: no thick resize border (WS_THICKFRAME removed), no
+    // maximize box (already stripped above) — only minimize and close remain.
+    DWORD style = (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX);
     AdjustWindowRect(&rc, style, FALSE);
     int actualWndW = rc.right - rc.left;
     int actualWndH = rc.bottom - rc.top;
+    // Capture the fixed size once; WM_GETMINMAXINFO always uses this, so a
+    // minimize/restore cycle can never read back an icon-sized rect.
+    m_fixedW = actualWndW;
+    m_fixedH = actualWndH;
 
     m_hWnd = CreateWindowExW(0, WND_CLASS, L"FaceLogin Console",
         style,
@@ -206,8 +212,30 @@ LRESULT WebviewHost::HandleMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_SIZE:
-        ResizeWebView(hWnd);
+        // Skip resizing the WebView while minimized (SIZE_MINIMIZED reports a
+        // tiny client area); the WM_SIZE(SIZE_RESTORED) on restore re-sizes it
+        // back. Resizing the WebView into an icon-sized rect is harmless but
+        // avoids a transient flash.
+        if (wp != SIZE_MINIMIZED) {
+            ResizeWebView(hWnd);
+        }
         return 0;
+
+    // Fixed-size window: clamp min/max tracking size to the fixed size captured
+    // at creation, so neither dragging the edge (already disabled) nor the
+    // system menu can resize the window. Using the stored m_fixedW/H — NOT
+    // GetWindowRect — avoids the minimize bug where a restore would read back
+    // an icon-sized rect and clamp the window to just the title bar.
+    case WM_GETMINMAXINFO: {
+        if (m_fixedW > 0 && m_fixedH > 0) {
+            MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lp);
+            mmi->ptMaxTrackSize.x = m_fixedW;
+            mmi->ptMaxTrackSize.y = m_fixedH;
+            mmi->ptMinTrackSize.x = m_fixedW;
+            mmi->ptMinTrackSize.y = m_fixedH;
+        }
+        return 0;
+    }
 
     case WM_WTSSESSION_CHANGE:
         if (m_wizard) {
@@ -311,6 +339,9 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"OpenExternal")        *ids = 34;
     else if (n == L"GetAboutSeen")        *ids = 35;
     else if (n == L"SetAboutSeen")        *ids = 36;
+    else if (n == L"GetConsoleVersion")   *ids = 37;
+    else if (n == L"NeedsReenrollment")   *ids = 38;
+    else if (n == L"IsCapturing")         *ids = 39;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -467,6 +498,9 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
             m_wizard->SetAboutSeen(p->rgvarg[0].boolVal == VARIANT_TRUE);
             break;
         }
+        case 37: if (res) *res = MakeStr(m_wizard->GetConsoleVersion()); break;
+        case 38: if (res) *res = MakeBool(m_wizard->NeedsReenrollment()); break;
+        case 39: if (res) *res = MakeBool(m_wizard->IsCapturing()); break;
         default: return DISP_E_MEMBERNOTFOUND;
         }
         return S_OK;

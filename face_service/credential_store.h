@@ -17,14 +17,16 @@ namespace facelogin {
 // bounded by sqrt(2) ≈ 1.414 regardless of dimension, so sqrt(dim/128) scaling
 // is invalid.
 //
-// For 512-D ONNX we return a fixed 0.80, calibrated from measured data:
-//   same-person matches on this system: 0.14–0.80
-//   other-person photo match:           0.94–0.99
-// (0.80 cleanly separates them; 1.0 admitted a photo.)
+// For 512-D ONNX the user's match_threshold (from the strictness slider) is
+// used directly — no fixed override. Calibrated on real data (1.6.0):
+//   same-person (12 live frames): 0.34–0.45
+//   other-person photos:          1.24–1.40
+// The slider maps strictness 20–90 → threshold 1.15–0.45, all comfortably
+// inside the 0.45→1.24 safety gap, so the setting is effective and safe.
 // Any other (legacy) dimension falls back to the base threshold.
 inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
-    if (dim >= 256) return 0.80f;             // ONNX 512-D: measured safe boundary
-    return baseThreshold;                     // dlib 128-D and unknown: caller base
+    if (dim >= 256) return baseThreshold;         // ONNX 512-D: user setting applies
+    return baseThreshold;                         // dlib 128-D and unknown: caller base
 }
 
 // Stores and retrieves encrypted user credentials and face embeddings.
@@ -32,7 +34,7 @@ inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
 // File format (PROGRAMDATA/FaceLogin/data/users.dat):
 //   Header:
 //     Magic:  4 bytes ("FLOG")
-//     Version: 4 bytes (uint32, currently 4)
+//     Version: 4 bytes (uint32, currently 5)
 //     Count:   4 bytes (uint32, number of records)
 //   Records (Count times):
 //     Username length: 4 bytes (uint32, in wchar_t units)
@@ -46,6 +48,7 @@ inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
 //     Face count:      4 bytes (uint32, >= 1)             ← V4
 //     Faces (Face count times):                            ← V4
 //       Face id:       4 bytes (uint32, >= 1, per-account unique)
+//       Legacy flag:   4 bytes (uint32, 0/1)              ← V5 (1.6.0)
 //       Label length:  4 bytes (uint32, in wchar_t units, may be 0)
 //       Label:         N*2 bytes (UTF-16LE, e.g. L"脸1" or a custom name)
 //       Embedding length: 4 bytes (uint32, in floats)
@@ -85,6 +88,10 @@ struct FaceRecord {
     uint32_t           id = 0;
     std::wstring       label;              // display name; "脸N" if user left blank
     std::vector<float> embedding;          // D-D embedding (128 for dlib, 512 for ONNX)
+    bool               legacy = false;     // V5: true = this face was enrolled with the
+                                           // pre-1.6.0 (V4 or older) alignment and can no
+                                           // longer be matched. Display-only (greyed out);
+                                           // kept so the user sees which faces are stale.
 };
 
 struct UserRecord {
@@ -216,11 +223,18 @@ public:
     // Get the full path to the database file
     std::wstring GetDataDir() const;
 
+    // True when the loaded database holds embeddings from a PRE-1.6.0
+    // alignment (V4 or older) that can no longer be matched by the current
+    // recognizer — the user must re-enroll. Cleared once a V5 (re-enrolled)
+    // database is loaded.
+    bool NeedsReenrollment() const { return m_needsReenrollment; }
+
 private:
     bool EnsureDataDir();
 
     std::wstring m_dataDir;  // If empty, uses default
     std::vector<UserRecord> m_users;
+    bool m_needsReenrollment = false;
 };
 
 } // namespace facelogin

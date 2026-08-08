@@ -107,10 +107,13 @@ private:
                                    float& outScaleX, float& outScaleY);
 };
 
-// Silent anti-spoofing detection (MiniFASNetV2).
-// Distinguishes real faces from printed photos, screen replays, and 3D masks.
-// Input: aligned face chip (80x80 RGB)
-// Output: scalar score (higher = more likely real face)
+// Silent anti-spoofing detection.
+// Rejects printed photos, screen replays, and 3D masks. Two supported models:
+//   - facenox MiniFAS (default, 1.6.0): input 128×128 RGB, output [1,2] logits
+//     (real, spoof). Score = real_logit - spoof_logit; >= 0 is real.
+//   - DeepPixBiS (OULU): input 224×224 RGB, dual-head output (pixel map +
+//     binary); score = pixel-map mean.
+// The model's output shape auto-selects the mode at Initialize().
 class OnnxAntiSpoof {
 public:
     OnnxAntiSpoof() = default;
@@ -119,11 +122,12 @@ public:
     bool Initialize(const std::wstring& modelPath);
 
     // Predict liveness score for an aligned face chip.
-    // Returns score in [0.0, 1.0]; higher = more likely real.
+    // facenox mode: real_logit - spoof_logit (positive = real).
+    // DeepPixBiS mode: pixel-map mean in [0,1] (higher = real).
     // Returns -1.0f on error.
     float Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip);
 
-    // Convenience: align from landmarks + full image, then predict.
+    // Convenience: crop from landmarks + full image, then predict.
     float Predict(const dlib::matrix<dlib::rgb_pixel>& image,
                   const dlib::full_object_detection& landmarks);
 
@@ -131,6 +135,8 @@ public:
     bool IsReal(const dlib::matrix<dlib::rgb_pixel>& faceChip, float threshold = 0.3f);
 
     bool IsInitialized() const { return m_initialized; }
+    // True when running the facenox MiniFAS model (logit-diff scoring).
+    bool IsFacenoxMode() const { return m_facenoxMode; }
 
     // Enable/disable low-light brightness normalization for dark face chips.
     void SetLowLightEnhance(bool enable) { m_lowLightEnhance = enable; }
@@ -141,6 +147,7 @@ private:
     std::unique_ptr<Ort::MemoryInfo> m_memoryInfo;
     bool m_initialized = false;
     bool m_lowLightEnhance = false;
+    bool m_facenoxMode = false;   // [1,2] logit output (MiniFAS) vs pixel-map (DeepPixBiS)
 
     std::string m_inputName;
     std::string m_outputName;

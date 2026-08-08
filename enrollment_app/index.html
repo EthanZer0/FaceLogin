@@ -371,6 +371,10 @@ button{font-family:inherit}
 .face-item .face-name{flex:1;font-size:13px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .face-item .face-id{font-size:10px;color:#8A919E;font-family:var(--font-data);flex-shrink:0}
 .face-item .btn{width:auto;padding:5px 12px;margin-top:0;font-size:11px}
+.face-item.legacy{opacity:.62;background:var(--face);border-style:dashed;border-color:#C6CBD4}
+.face-item.legacy:hover{background:var(--lite)}
+.face-item.legacy .face-name{color:#6B7280;text-decoration:line-through}
+.face-item .legacy-tag{font-size:10px;color:#9AA1AC;background:var(--lite);border:1px solid var(--hair);border-radius:999px;padding:1px 8px;flex-shrink:0}
 .faces-actions{display:flex;gap:8px;flex-shrink:0}
 .faces-actions .btn{margin-top:0;flex:1}
 .face-empty{text-align:center;color:var(--fog);font-size:13px;padding:40px 0;flex:1}
@@ -605,7 +609,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver"></span></div>
   </div>
 </div>
 
@@ -662,7 +666,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver"></span></div>
   </div>
 </div>
 
@@ -701,7 +705,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver"></span></div>
   </div>
 </div>
 
@@ -746,7 +750,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver"></span></div>
   </div>
 </div>
 
@@ -836,6 +840,15 @@ button{font-family:inherit}
       <p class="dim" style="font-size:11px">暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。</p>
     </div>
 
+    <div class="field">
+      <label class="check">
+        <input type="checkbox" id="cfg-unload-models">
+        <span class="cbx"></span>
+        <span>内存优化（识别后释放模型，降低后台内存占用）</span>
+      </label>
+      <p class="dim" style="font-size:11px">识别完成后释放人脸模型，服务后台内存占用从约 60MB 降至约 20MB。下次解锁时模型自动重新加载（约 0.2-0.5 秒）。对内存敏感的设备可开启。</p>
+    </div>
+
     <div class="field" id="field-antispoof-threshold" style="display:none">
       <label>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.30</span></label>
       <div class="range-wrap">
@@ -856,7 +869,7 @@ button{font-family:inherit}
       <label>匹配严格度 (Match Strictness): <span id="cfg-threshold-val">70</span></label>
       <div class="range-wrap">
         <div class="rng">
-          <input type="range" id="cfg-threshold" min="20" max="80" value="70" step="1"
+          <input type="range" id="cfg-threshold" min="20" max="90" value="70" step="1"
                  oninput="rngSync(this)">
           <div class="rng-rail">
             <div class="rng-track"></div>
@@ -874,7 +887,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver"></span></div>
   </div>
 </div>
 
@@ -917,7 +930,7 @@ button{font-family:inherit}
   </div>
   <div class="footer">
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
-    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver">1.5.0</span></div>
+    <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver"></span></div>
   </div>
 </div>
 
@@ -973,7 +986,7 @@ button{font-family:inherit}
         <div class="ab-brand">
           <span class="ab-name">FaceLogin</span><span class="ab-console">Console</span>
         </div>
-        <div class="ab-ver">VERSION 1.5.0</div>
+        <div class="ab-ver">VERSION <span id="ab-ver-num"></span></div>
       </div>
     </div>
     <div class="ab-contrib">
@@ -1316,10 +1329,11 @@ function loadSettings() {
   try {
     var json = H.GetConfig();
     var cfg = JSON.parse(json);
-    document.getElementById('cfg-liveness').value = cfg.liveness_method || 'blink';
+    document.getElementById('cfg-liveness').value = cfg.liveness_method || 'none';
     document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
     document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
+    document.getElementById('cfg-unload-models').checked = !!cfg.unload_models_after_auth;
 
     // Populate the camera dropdown from the enumerated devices.
     var camSel = document.getElementById('cfg-camera');
@@ -1359,9 +1373,13 @@ function loadSettings() {
     var livWrap = document.getElementById('cfg-liveness').closest('.cs-wrap');
     if (livWrap) csPopulate(livWrap, document.getElementById('cfg-liveness'));
 
-    // match_threshold is stored as distance (lower = stricter).
-    // Convert to UI strictness: strictness = 100 - threshold*100 (higher = stricter).
-    var thr = Math.round(100 - (cfg.match_threshold || 0.30) * 100);
+    // match_threshold is stored as Euclidean distance (lower = stricter).
+    // New slider mapping (1.6.0): threshold = 0.45 + (90 - strictness)/100,
+    // so strictness 90 → 0.45 (strictest, tolerates slight motion), 70 → 0.65
+    // (default), 20 → 1.15 (loosest, still rejects strangers). Invert:
+    // strictness = 90 - (threshold - 0.45) * 100.
+    var thr = Math.round(90 - ((cfg.match_threshold || 0.65) - 0.45) * 100);
+    thr = Math.max(20, Math.min(90, thr));  // clamp to slider range
     document.getElementById('cfg-threshold').value = thr;
     document.getElementById('cfg-threshold-val').textContent = thr;
     var asThr = Math.round((cfg.anti_spoof_threshold || 0.30) * 100);
@@ -1383,11 +1401,13 @@ function onSaveSettings() {
     // recognition_model/detector are fixed to onnx/scrfd (dlib was removed);
     // they're not sent here — the service and config defaults handle them.
     liveness_method: document.getElementById('cfg-liveness').value,
-    // Convert strictness back: threshold = (100 - strictness) / 100
-    match_threshold: (100 - strictness) / 100,
+    // Convert strictness back to distance threshold (1.6.0 mapping):
+    // threshold = 0.45 + (90 - strictness)/100
+    match_threshold: 0.45 + (90 - strictness) / 100,
     anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
     low_light_enhance: document.getElementById('cfg-low-light').checked,
+    unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
     camera_rotation: parseInt(document.getElementById('cfg-rotation').value) || 0,
     camera_device: document.getElementById('cfg-camera').value
   };
@@ -1419,10 +1439,10 @@ function onCapture() {
   prog.style.display = 'block';
 
   // Read config to determine liveness method for UI text
-  var liveMethod = 'blink';
+  var liveMethod = 'none';
   try {
     var cfg = JSON.parse(H.GetConfig());
-    liveMethod = cfg.liveness_method || 'blink';
+    liveMethod = cfg.liveness_method || 'none';
   } catch(e) {}
 
   if (liveMethod === 'antispoof') {
@@ -1538,6 +1558,20 @@ function onCapture() {
             }
           } catch(e) {}
           document.getElementById('fld-pass').focus();
+        } else if (H.IsCapturing && !H.IsCapturing()) {
+          // Backend stopped early without reaching 10 samples — the capture
+          // thread bailed out (e.g. 300 consecutive no-face/no-embedding
+          // attempts, or the user walked away). The progress bar would
+          // otherwise sit forever at 90% with the spinner spinning and no
+          // response. Reset the UI and tell the user what happened.
+          clearInterval(samplePoll);
+          prog.style.display = 'none';
+          btn.disabled = false;
+          spinner.style.display = 'none';
+          document.getElementById('samples-tag').textContent = '0 / 10';
+          document.getElementById('cap-fill').style.width = '0%';
+          document.getElementById('cap-pct').textContent = '0%';
+          showBanner('cam', '采集未完成：未能在限时内采集到足够的人脸样本。请确保面部在取景框内且光线充足后重试。', 'error', 8000);
         }
       }, 200);
     }
@@ -1564,8 +1598,9 @@ function loadFaces() {
     var html = '';
     for (var i = 0; i < faces.length; i++) {
       var f = faces[i];
-      html += '<div class="face-item">'
+      html += '<div class="face-item' + (f.legacy ? ' legacy' : '') + '">'
         + '<span class="face-name" title="' + escapeHtml(f.label) + '">' + escapeHtml(f.label) + '</span>'
+        + (f.legacy ? '<span class="legacy-tag">旧版数据</span>' : '')
         + '<span class="face-id">#' + f.id + '</span>'
         + '<button class="btn btn-secondary" onclick="onRenameFace(' + f.id + ')">重命名</button>'
         + '<button class="btn btn-secondary" onclick="onDeleteFace(' + f.id + ')">删除</button>'
@@ -1945,6 +1980,23 @@ function clearLogs() {
 // ==================================================================
 // About modal — opened by clicking the footer version tag
 // ==================================================================
+// Version tags (footer + About card) are populated from the C++ side's
+// FACELOGIN_CONSOLE_VERSION via the host object, so there is a single source
+// of truth for the version string (no hardcoded duplicates to bump per
+// release). In a browser preview there is no host, so fall back to a fixed
+// default so the layout still renders.
+var CONSOLE_VERSION = '1.6.0';
+function consoleVersion() {
+  try { if (H.GetConsoleVersion) { var v = H.GetConsoleVersion(); if (v) return v; } } catch (e) {}
+  return CONSOLE_VERSION;
+}
+function fillVersionTags() {
+  var ver = consoleVersion();
+  var tags = document.querySelectorAll('.ft-ver');
+  for (var i = 0; i < tags.length; i++) tags[i].textContent = ver;
+  var ab = document.getElementById('ab-ver-num');
+  if (ab) ab.textContent = ver;
+}
 // Star-seen flag. In the real Console the HTML is loaded via NavigateToString
 // (opaque origin), where localStorage throws — so persistence goes through the
 // host object (a marker file in the data dir). In a browser preview there is
@@ -1974,6 +2026,7 @@ function closeAbout() {
 // On load: if the user already opened the About card once, don't show the
 // star hint again.
 (function() {
+  fillVersionTags();
   if (aboutSeen()) hideStars();
 })();
 // Open a URL in the OS default browser via the host object (WebView2 popups
@@ -2195,6 +2248,17 @@ function onCamPickerSkip() {
   setTimeout(function() {
     try { if (H.StartPreview()) renderFrame(); } catch(e) {}
   }, 100);
+
+  // Detect pre-1.6.0 (V4) face data that can no longer be matched by the new
+  // alignment, and prompt for re-enrollment before the user discovers it via a
+  // failed unlock. Cleared automatically once the user re-enrolls (saves V5).
+  setTimeout(function() {
+    try { if (H.NeedsReenrollment && H.NeedsReenrollment()) {
+      showBanner('cam',
+        '检测到旧版本录入的人脸数据，升级后需重新录入才能解锁。请点击「开始采集」重新录入。',
+        'error', 12000);
+    } } catch(e) {}
+  }, 200);
 
   // If the account was converted from MSA→local with a stale record, surface
   // the refresh prompt at startup (before the camera preview takes over).

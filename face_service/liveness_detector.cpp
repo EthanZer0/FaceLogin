@@ -4,41 +4,58 @@
 
 namespace facelogin {
 
-static const int LEFT_EYE_IDX[6]  = {36, 37, 38, 39, 40, 41};
-static const int RIGHT_EYE_IDX[6] = {42, 43, 44, 45, 46, 47};
+// 106-point eye indices (insightface 2d106det; "left/right" = subject's
+// first-person, i.e. the RIGHT eye below is the eye on the image's LEFT side).
+//
+//   Right eye (first-person): outer corner 39, inner corner 35,
+//     upper lid 41-40-42, lower lid 36-33-37
+//   Left eye  (first-person): outer corner 93, inner corner 89,
+//     upper lid 96-94-95, lower lid 91-87-90
+//
+// EAR uses (sum of upper-lid distances to lower-lid) / (2 * eye width). With
+// three upper + three lower lid points we average the three vertical gaps.
+static const int RIGHT_EYE_UPPER[3] = {41, 40, 42};
+static const int RIGHT_EYE_LOWER[3] = {36, 33, 37};
+static const int RIGHT_EYE_INNER = 35;   // toward the nose
+static const int RIGHT_EYE_OUTER = 39;   // away from the nose
 
+static const int LEFT_EYE_UPPER[3]  = {96, 94, 95};
+static const int LEFT_EYE_LOWER[3]  = {91, 87, 90};
+static const int LEFT_EYE_INNER  = 89;  // toward the nose
+static const int LEFT_EYE_OUTER  = 93;  // away from the nose
+
+// Compute EAR for one eye from its 3 upper + 3 lower lid points.
 float LivenessDetector::ComputeEyeEAR(const dlib::full_object_detection& landmarks,
-                                       const int indices[6]) {
-    auto& p0 = landmarks.part(indices[0]);
-    auto& p1 = landmarks.part(indices[1]);
-    auto& p2 = landmarks.part(indices[2]);
-    auto& p3 = landmarks.part(indices[3]);
-    auto& p4 = landmarks.part(indices[4]);
-    auto& p5 = landmarks.part(indices[5]);
+                                      const int upper[3], const int lower[3],
+                                      int innerIdx, int outerIdx) {
+    // Eye width = distance between inner and outer corners.
+    auto& pi = landmarks.part(innerIdx);
+    auto& po = landmarks.part(outerIdx);
+    float eyeW = std::sqrt(std::pow(po.x() - pi.x(), 2.0f) +
+                           std::pow(po.y() - pi.y(), 2.0f));
+    if (eyeW < 1e-6f) return 0.0f;
 
-    float horizDist = std::sqrt(
-        std::pow(p3.x() - p0.x(), 2.0f) +
-        std::pow(p3.y() - p0.y(), 2.0f));
-
-    float vertDist1 = std::sqrt(
-        std::pow(p1.x() - p5.x(), 2.0f) +
-        std::pow(p1.y() - p5.y(), 2.0f));
-
-    float vertDist2 = std::sqrt(
-        std::pow(p2.x() - p4.x(), 2.0f) +
-        std::pow(p2.y() - p4.y(), 2.0f));
-
-    if (horizDist < 1e-6f) return 0.0f;
-
-    return (vertDist1 + vertDist2) / (2.0f * horizDist);
+    // Average the three upper→lower vertical distances.
+    float vertSum = 0.0f;
+    for (int i = 0; i < 3; i++) {
+        auto& u = landmarks.part(upper[i]);
+        auto& l = landmarks.part(lower[i]);
+        vertSum += std::sqrt(std::pow(u.x() - l.x(), 2.0f) +
+                             std::pow(u.y() - l.y(), 2.0f));
+    }
+    return (vertSum / 3.0f) / (2.0f * eyeW);
 }
 
 float LivenessDetector::ComputeLeftEAR(const dlib::full_object_detection& landmarks) {
-    return ComputeEyeEAR(landmarks, LEFT_EYE_IDX);
+    // First-person LEFT eye → the eye on the image's RIGHT side.
+    return ComputeEyeEAR(landmarks, LEFT_EYE_UPPER, LEFT_EYE_LOWER,
+                         LEFT_EYE_INNER, LEFT_EYE_OUTER);
 }
 
 float LivenessDetector::ComputeRightEAR(const dlib::full_object_detection& landmarks) {
-    return ComputeEyeEAR(landmarks, RIGHT_EYE_IDX);
+    // First-person RIGHT eye → the eye on the image's LEFT side.
+    return ComputeEyeEAR(landmarks, RIGHT_EYE_UPPER, RIGHT_EYE_LOWER,
+                         RIGHT_EYE_INNER, RIGHT_EYE_OUTER);
 }
 
 float LivenessDetector::Median(std::vector<float>& v) {
@@ -49,25 +66,27 @@ float LivenessDetector::Median(std::vector<float>& v) {
     return (v[n / 2 - 1] + v[n / 2]) * 0.5f;
 }
 
-// Head-pose proxy: vertical distance from the nose tip (point 33) to the
-// eye line (left outer 36 → right outer 45), normalized by the eye distance.
-//   pose = |cross((p45-p36), (p33-p36))| / |p45-p36|^2
+// Head-pose proxy: vertical distance from the nose bridge (point 80, the
+// nose-tip end of the 106-point nose bridge 72-73-74-86-80) to the eye line
+// (outer corners 39 and 93, first-person right/left = image left/right),
+// normalized by the eye distance.
+//   pose = |cross((p93-p39), (p80-p39))| / |p93-p39|^2
 // Scale-invariant. A blink moves the nose ~zero; tilting the head moves it
 // substantially, so it discriminates real blinks from head-motion EAR dips.
 float LivenessDetector::ComputePose(const dlib::full_object_detection& landmarks) {
-    if (landmarks.num_parts() < 46) return 0.0f;
+    if (landmarks.num_parts() < 106) return 0.0f;
 
-    auto& p36 = landmarks.part(36);  // left outer eye corner
-    auto& p45 = landmarks.part(45);  // right outer eye corner
-    auto& p33 = landmarks.part(33);  // nose tip
+    auto& pL = landmarks.part(39);  // right-eye outer corner (image left)
+    auto& pR = landmarks.part(93);  // left-eye outer corner (image right)
+    auto& pN = landmarks.part(80);  // nose bridge end (nose tip)
 
-    float ex = p45.x() - p36.x();
-    float ey = p45.y() - p36.y();
+    float ex = pR.x() - pL.x();
+    float ey = pR.y() - pL.y();
     float eyeDist2 = ex * ex + ey * ey;
     if (eyeDist2 < 1e-6f) return 0.0f;
 
-    float nx = p33.x() - p36.x();
-    float ny = p33.y() - p36.y();
+    float nx = pN.x() - pL.x();
+    float ny = pN.y() - pL.y();
     // Cross product magnitude / eyeDist2 = perpendicular distance from the
     // nose to the eye line, in units of eye distance.
     float cross = ex * ny - ey * nx;

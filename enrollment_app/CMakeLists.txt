@@ -4,7 +4,7 @@ add_executable(FaceLoginConsole
     EnrollmentWizard.cpp
     resource.rc
     ${CMAKE_SOURCE_DIR}/face_service/webcam_capture.cpp
-    ${CMAKE_SOURCE_DIR}/face_service/face_detector.cpp
+    ${CMAKE_SOURCE_DIR}/face_service/landmark_detector.cpp
     ${CMAKE_SOURCE_DIR}/face_service/liveness_detector.cpp
     ${CMAKE_SOURCE_DIR}/face_service/onnx_models.cpp
     ${CMAKE_SOURCE_DIR}/face_service/credential_store.cpp

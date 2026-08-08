@@ -188,7 +188,7 @@ EnrollmentWizard::EnrollmentWizard() {
     }
 
     m_webcam     = std::make_unique<WebcamCapture>();
-    m_detector   = std::make_unique<FaceDetector>();
+    m_detector   = std::make_unique<OnnxLandmarkDetector>();
     m_store.SetDataDir(m_dataDir);
 
     m_config = LoadConfig(m_dataDir);
@@ -211,8 +211,8 @@ bool EnrollmentWizard::StartPreview() {
     if (m_previewRunning) return true;
 
     // Only the camera is opened on the UI thread — it's fast and we need its
-    // success to gate the background work. Model loading (dlib shape predictor
-    // + ONNX sessions) is deferred to the frame thread so a cold start never
+    // success to gate the background work. Model loading (2d106det + ONNX
+    // sessions) is deferred to the frame thread so a cold start never
     // blocks the UI and the user can switch tabs while "starting camera".
     //
     // Retry briefly: right after unlock the credential-provider service may
@@ -288,7 +288,7 @@ bool EnrollmentWizard::StartPreview() {
                                                static_cast<long>(det->y1),
                                                static_cast<long>(det->x2),
                                                static_cast<long>(det->y2));
-                    fwl.landmarks = m_detector->GetLandmarks(frame, fwl.rect);
+                    m_detector->DetectLandmarks(frame, fwl.rect, fwl.landmarks);
                     faces.push_back(std::move(fwl));
                     faceJson = FacesToJson(faces);
                 }
@@ -306,16 +306,16 @@ bool EnrollmentWizard::StartPreview() {
     return true;
 }
 
-// Load the shape predictor + ONNX models if not already loaded. Called from
+// Load the 2d106det + ONNX models if not already loaded. Called from
 // the background frame thread so a cold start never blocks the UI thread.
 // Models survive StopPreview() (only the camera is torn down), so a restart
 // (e.g. cancel back to the camera screen from the append dialog) reuses them.
 bool EnrollmentWizard::EnsureModelsLoaded() {
     std::wstring modelsDir = m_dataDir + L"\\models";
-    std::wstring shapePath = modelsDir + L"\\shape_predictor_68_face_landmarks.dat";
+    std::wstring shapePath = modelsDir + L"\\2d106det.onnx";
 
     if (!m_detector->IsInitialized() && !m_detector->Initialize(shapePath)) {
-        FACELOGIN_ERROR(L"Failed to load shape predictor");
+        FACELOGIN_ERROR(L"Failed to load 2d106det landmark detector");
         return false;
     }
 
@@ -341,8 +341,8 @@ bool EnrollmentWizard::EnsureModelsLoaded() {
         }
     }
 
-    // Try loading anti-spoof model
-    std::wstring antiSpoofPath = modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
+    // Try loading anti-spoof model (facenox MiniFAS, 1.6.0).
+    std::wstring antiSpoofPath = modelsDir + L"\\minifas_quantized.onnx";
     if (!m_antiSpoof) {
         m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
         if (!m_antiSpoof->Initialize(antiSpoofPath)) {
@@ -593,7 +593,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                     if (m_latestFrame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                     frame = m_latestFrame;
                 }
-                // Detect with SCRFD, extract 68-point landmarks.
+                // Detect with SCRFD, extract 106-point landmarks.
                 dlib::full_object_detection asLandmarks;
                 auto asDet = m_onnxDetector->DetectLargestFace(frame);
                 if (asDet) {
@@ -601,15 +601,20 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                                            static_cast<long>(asDet->y1),
                                            static_cast<long>(asDet->x2),
                                            static_cast<long>(asDet->y2));
-                    asLandmarks = m_detector->GetLandmarks(frame, asRect);
+                    m_detector->DetectLandmarks(frame, asRect, asLandmarks);
                 }
                 if (asLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
 
                 float score = m_antiSpoof->Predict(frame, asLandmarks);
                 totalChecked++;
-                if (score >= m_antiSpoofThreshold) passCount++; // config-driven threshold
-                FACELOGIN_INFO(L"Enrollment anti-spoof frame %d: score=%.3f (pass=%d)",
-                              totalChecked, score, passCount);
+                // Map the config slider onto the current model's score scale
+                // (facenox logit-diff vs OULU pixel-mean) — see
+                // AntiSpoofEffectiveThreshold in liveness_types.h.
+                float effThr = AntiSpoofEffectiveThreshold(m_antiSpoofThreshold,
+                                                           m_antiSpoof->IsFacenoxMode());
+                if (score >= effThr) passCount++; // model-mapped threshold
+                FACELOGIN_INFO(L"Enrollment anti-spoof frame %d: score=%.3f thr=%.2f (pass=%d)",
+                              totalChecked, score, effThr, passCount);
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
             }
             livenessPassed = (totalChecked > 0 && passCount >= passRequired);
@@ -632,7 +637,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                     if (m_latestFrame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                     frame = m_latestFrame;
                 }
-                // Detect with SCRFD, extract 68-point landmarks for EAR.
+                // Detect with SCRFD, extract 106-point landmarks for EAR.
                 dlib::full_object_detection livenessLandmarks;
                 auto livenessDet = m_onnxDetector->DetectLargestFace(frame);
                 if (livenessDet) {
@@ -640,7 +645,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                                           static_cast<long>(livenessDet->y1),
                                           static_cast<long>(livenessDet->x2),
                                           static_cast<long>(livenessDet->y2));
-                    livenessLandmarks = m_detector->GetLandmarks(frame, lRect);
+                    m_detector->DetectLandmarks(frame, lRect, livenessLandmarks);
                 }
                 if (livenessLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                 if (liveness.ProcessFrame(livenessLandmarks)) {
@@ -676,7 +681,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 frame = m_latestFrame;
             }
 
-            // Detect with SCRFD (the only detector), extract 68-point landmarks.
+            // Detect with SCRFD (the only detector), extract 106-point landmarks.
             dlib::full_object_detection landmarks;
             auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
             if (onnxDet) {
@@ -684,7 +689,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                                      static_cast<long>(onnxDet->y1),
                                      static_cast<long>(onnxDet->x2),
                                      static_cast<long>(onnxDet->y2));
-                landmarks = m_detector->GetLandmarks(frame, rect);
+                m_detector->DetectLandmarks(frame, rect, landmarks);
             }
             if (landmarks.num_parts() == 0) {
                 if (++failCount > 300) { m_capturing = false; break; }
@@ -1031,6 +1036,11 @@ int EnrollmentWizard::GetFaceCount() {
     return static_cast<int>(m_store.GetFaceCount(m_sid));
 }
 
+bool EnrollmentWizard::NeedsReenrollment() {
+    m_store.LoadDatabase();
+    return m_store.NeedsReenrollment();
+}
+
 std::string EnrollmentWizard::GetFacesJson() {
     m_store.LoadDatabase();
     size_t idx = m_store.FindUserIndex(m_sid, m_upn, m_username);
@@ -1043,7 +1053,8 @@ std::string EnrollmentWizard::GetFacesJson() {
         if (i > 0) js << ",";
         const auto& f = faces[i];
         js << "{\"id\":" << f.id
-           << ",\"label\":\"" << WstrToUtf8Escaped(f.label) << "\"}";
+           << ",\"label\":\"" << WstrToUtf8Escaped(f.label) << "\""
+           << ",\"legacy\":" << (f.legacy ? "true" : "false") << "}";
     }
     js << "]";
     return js.str();
@@ -1305,7 +1316,7 @@ std::string EnrollmentWizard::GetCameraList() {
 
 // Console version — bump with each release. Used to decide whether to show the
 // About-card star hint again (it reappears on every new version).
-static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.5.0";
+static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.6.0";
 // Registry value holding the version the user last saw the About card at.
 static const wchar_t REGVAL_ABOUT_SEEN_VERSION[] = L"AboutSeenVersion";
 
@@ -1333,6 +1344,12 @@ void EnrollmentWizard::SetAboutSeen(bool seen) {
         }
         RegCloseKey(hKey);
     }
+}
+
+std::string EnrollmentWizard::GetConsoleVersion() const {
+    // Version string is ASCII ("1.6.0"); narrow conversion is lossless.
+    std::wstring wv = FACELOGIN_CONSOLE_VERSION;
+    return std::string(wv.begin(), wv.end());
 }
 
 std::string EnrollmentWizard::GetConfig() const {

@@ -11,8 +11,8 @@ struct AppConfig {
     // compatibility but ignored at runtime (only "onnx"/"scrfd" are valid).
     std::string    recognition_model      = "onnx";      // retained for compat
     std::string    detector               = "scrfd";     // retained for compat
-    LivenessMethod liveness_method        = LivenessMethod::Blink;
-    float          match_threshold        = 0.30f;
+    LivenessMethod liveness_method        = LivenessMethod::None;
+    float          match_threshold        = 0.65f;        // Euclidean distance; 0.45(strict)…1.15(loose)
     float          anti_spoof_threshold   = 0.30f;       // DeepPixBiS pixel map threshold
     // Blink-detection mode. false (default) = CLASSIC stable algorithm (averaged
     // EAR + fixed threshold). true = GLASSES mode (adaptive per-eye baseline +
@@ -22,6 +22,12 @@ struct AppConfig {
     // brightness normalization to dark face chips before recognition AND
     // anti-spoof, so matches/scores don't degrade in dark scenes.
     bool           low_light_enhance      = false;
+    // Release heavy model sessions after an auth completes (2d106det +
+    // recognizer + anti-spoof), dropping idle RSS from ~77MB to ~44MB. The
+    // next auth reloads them synchronously (~200-500ms). Off (default) keeps
+    // models resident for the fastest auth; on trades a small per-auth reload
+    // latency for a low idle footprint.
+    bool           unload_models_after_auth = false;
     std::string    camera_device          = "";          // device symbolic link; empty = first camera
     // Camera rotation in degrees clockwise. Valid: 0, 90, 180, 270.
     // Use when the camera is physically mounted in a non-standard

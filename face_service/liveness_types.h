@@ -25,4 +25,21 @@ inline int AntiSpoofPassRequired(int checkCount) {
     return (checkCount + 1) / 2;  // ceil(N/2)
 }
 
+// Per-frame anti-spoof score threshold for the CURRENT model.
+// OULU/DeepPixBiS score = pixel-map mean in [0,1], so the config slider
+// (0.25–0.75) is used as-is.
+// facenox MiniFAS score = real_logit − spoof_logit, a different scale: real
+// faces measure ≈ +1.3..+11 (commonly +4..+5), screen replays < 0. A bare
+// 0.25–0.75 config would be meaningless here, so map the slider onto the
+// facenox score range, ANCHORED so the default (0.30) keeps the historical
+// hardcoded threshold of 1.0:  eff = 1.0 + (config − 0.30)·4
+//   lenient 0.25 → 0.80   default 0.30 → 1.00   strict 0.75 → 2.80
+// Strict 2.80 still passes real faces (≥ +1.3) while tightening the near-zero
+// spoof boundary; the slider becomes genuinely effective in facenox mode.
+inline float AntiSpoofEffectiveThreshold(float configThreshold, bool facenoxMode) {
+    if (!facenoxMode) return configThreshold;
+    float t = configThreshold < 0.25f ? 0.25f : configThreshold > 0.75f ? 0.75f : configThreshold;
+    return 1.0f + (t - 0.30f) * 4.0f;
+}
+
 } // namespace facelogin

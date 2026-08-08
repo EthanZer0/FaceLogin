@@ -78,25 +78,17 @@ func main() {
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.5.0"
-	internal.NoticeTitle = "FaceLogin 1.5.0 更新说明"
-	internal.NoticeBody = "新功能：\n" +
-		"- 控制台界面全面重构：浅色新设计，新增实时读数条（活体/采样/分辨率）\n" +
-		"- 设置页下拉框、勾选框、调节条全部定制化，与界面统一\n" +
-		"- 日志页改进：来源下拉框定制化、空日志占位、级别显示更准、始终显示最新日志\n" +
-		"- 锁屏一次按键即触发人脸识别，不再需要按两次\n" +
-		"- 账号身份弹窗新增「仅清理账号邮箱」，一键清除残留邮箱、恢复锁屏登录\n" +
-		"- 冷启动人脸识别加速：锁屏出现即可识别，模型后台加载、曝光预热自适应\n" +
-		"- 控制台新增「关于」卡片：点击右下角版本号弹出，含贡献者名单与 GitHub 链接，带星屑飘落特效\n\n" +
-		"修复：\n" +
-		"- 修复 MSA 身份误判导致的\"账号身份已变更\"误报与锁屏登录失败\n" +
-		"- 修复锁屏后 Console 摄像头不恢复、画面卡死的问题\n" +
-		"- 修复控制台打开时模型加载阻塞、无法切换页面的问题\n" +
-		"- 修复服务日志频繁出现 WriteFile failed: 232 误报的问题\n" +
-		"- 修复录入过程中切换页面导致采集完成页重叠、标签栏不同步的问题\n" +
-		"- 修复提示横幅长文本溢出的问题\n\n" +
-		"说明：\n" +
-		"- 现有的人脸数据和配置完全兼容，无需重新录入"
+	internal.NoticeVersion = "1.6.0"
+	internal.NoticeTitle = "FaceLogin 1.6.0 更新说明"
+	internal.NoticeBody = "⚠️ 重要提醒：\n" +
+		"- 由于人脸对齐方式升级，旧版本录入的人脸数据无法用于新版识别，升级后请重新打开 FaceLoginConsole 录入人脸\n" +
+		"- 账户密码数据不受影响，无需重新设置\n\n" +
+		"核心变更：\n" +
+		"- 弃用 dlib 68点模型，全面迁移到 insightface 2d106det 106点关键点模型\n" +
+		"- 安装包大幅瘦身：移除 99.7MB 旧模型，新增 5MB 新模型（约节省 94MB）\n" +
+		"- 关键点定位更准，眼部/鼻部点位精确贴合眼眶\n" +
+		"- 眨眼活体检测重新标定，识别更可靠\n" +
+		"- 反欺诈模型升级为 facenox MiniFAS，更精准拦截屏幕翻拍"
 
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
@@ -104,9 +96,10 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:            "FaceLogin 安装程序",
-		Width:            640,
-		Height:           520,
+		Title:        "FaceLogin 安装程序",
+		Width:        640,
+		Height:       520,
+		DisableResize: true, // fixed-size window — no edge resize, no maximize
 		WindowStartState: options.Normal,
 		AssetServer: &assetserver.Options{
 			Assets: assets,

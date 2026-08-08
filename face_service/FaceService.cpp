@@ -229,7 +229,7 @@ bool FaceService::Initialize() {
     // 2.5MB). This is loaded SYNCHRONOUSLY in Initialize() because the pipe
     // listener must be up as soon as possible: SCRFD is needed for the very
     // first frame of auth, and it loads in a few hundred ms even on a cold
-    // mechanical disk. Everything heavier (the 99.7MB dlib shape predictor,
+    // mechanical disk. Everything heavier (2d106det landmark detector,
     // InsightFace recognizer, anti-spoof) is deferred to a background thread —
     // see StartBackgroundModelLoad(). The lock screen therefore connects to
     // the pipe the moment it appears instead of waiting out the model loads.
@@ -242,7 +242,7 @@ bool FaceService::Initialize() {
         return false;
     }
 
-    // Heavy models (shape predictor + recognizer + anti-spoof) load in a
+    // Heavy models (2d106det + recognizer + anti-spoof) load in a
     // background thread. See StartBackgroundModelLoad().
     StartBackgroundModelLoad();
 
@@ -297,18 +297,19 @@ bool FaceService::Initialize() {
 bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
     FACELOGIN_INFO(L"Loading heavy models in background...");
 
-    // 1. dlib 68-point shape predictor (99.7MB — the biggest single load).
+    // 1. 106-point landmark detector (2d106det.onnx, ~5MB — replaces the
+    // 99.7MB dlib shape predictor).
     {
-        auto detector = std::make_unique<FaceDetector>();
-        std::wstring path = m_modelsDir + L"\\shape_predictor_68_face_landmarks.dat";
+        auto detector = std::make_unique<OnnxLandmarkDetector>();
+        std::wstring path = m_modelsDir + L"\\2d106det.onnx";
         if (!detector->Initialize(path)) {
-            FACELOGIN_ERROR(L"Shape predictor failed to load — landmarks unavailable");
+            FACELOGIN_ERROR(L"2d106det failed to load — landmarks unavailable");
             return false;
         }
         std::lock_guard<std::mutex> lock(m_modelMutex);
         m_detector = std::move(detector);
     }
-    FACELOGIN_INFO(L"Shape predictor loaded");
+    FACELOGIN_INFO(L"2d106det landmark detector loaded");
 
     // 2. InsightFace recognizer (w600k_mbf.onnx).
     {
@@ -324,17 +325,27 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
     }
     FACELOGIN_INFO(L"ONNX recognizer loaded (InsightFace buffalo_s)");
 
-    // 3. Anti-spoof model (MiniFASNetV2) — optional.
+    // 3. Anti-spoof model (facenox MiniFAS, 1.6.0 — replaces DeepPixBiS/OULU).
     {
         auto antiSpoof = std::make_unique<OnnxAntiSpoof>();
-        std::wstring path = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
+        std::wstring path = m_modelsDir + L"\\minifas_quantized.onnx";
         if (antiSpoof->Initialize(path)) {
             antiSpoof->SetLowLightEnhance(lowLightEnhance);
             std::lock_guard<std::mutex> lock(m_modelMutex);
             m_antiSpoof = std::move(antiSpoof);
-            FACELOGIN_INFO(L"Anti-spoof model loaded (MiniFASNetV2)");
+            FACELOGIN_INFO(L"Anti-spoof model loaded (facenox MiniFAS)");
         } else {
-            FACELOGIN_WARN(L"Anti-spoof model not available");
+            // Fall back to the legacy OULU model if present.
+            std::wstring ouluPath = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
+            auto oulu = std::make_unique<OnnxAntiSpoof>();
+            if (oulu->Initialize(ouluPath)) {
+                oulu->SetLowLightEnhance(lowLightEnhance);
+                std::lock_guard<std::mutex> lock(m_modelMutex);
+                m_antiSpoof = std::move(oulu);
+                FACELOGIN_INFO(L"Anti-spoof fallback: DeepPixBiS/OULU loaded");
+            } else {
+                FACELOGIN_WARN(L"Anti-spoof model not available");
+            }
         }
     }
 
@@ -346,6 +357,24 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
 
     FACELOGIN_INFO(L"Heavy models loaded");
     return true;
+}
+
+// Release all heavy-model memory (2d106det + recognizer + anti-spoof sessions)
+// after an auth completes, so the idle service's RSS drops back to ~baseline.
+// The next auth's EnsureModelsLoaded() reloads them synchronously (~200-500ms
+// of startup latency, a deliberate trade for a low idle footprint — 1.6.0).
+// SCRFD (m_onnxDetector) stays resident: it is needed for the very first frame
+// and is the lightest model. Only called from the main pipe thread after the
+// auth pipeline has fully unwound, so no inference is in flight.
+void FaceService::UnloadHeavyModels() {
+    std::lock_guard<std::mutex> lock(m_modelMutex);
+    if (m_detector)         { m_detector.reset(); }
+    if (m_onnxRecognizer)   { m_onnxRecognizer.reset(); }
+    if (m_antiSpoof)        { m_antiSpoof.reset(); }
+    m_modelsLoading.store(false);
+    m_modelsReady.store(false);
+    m_modelsFailed.store(false);
+    FACELOGIN_INFO(L"Heavy models unloaded after auth");
 }
 
 void FaceService::StartBackgroundModelLoad() {
@@ -393,19 +422,38 @@ void FaceService::ValidateLivenessMethod() {
     }
 }
 
-// Called from the main auth path before the first inference. Blocks until the
-// heavy models are ready, or fails, or the service is stopping. Returns false
-// only if a REQUIRED model failed to load (auth cannot proceed) or the service
-// is stopping.
+// Called from the main auth path before the first inference. Returns true if
+// the heavy models are ready, loading them SYNCHRONOUSLY if they were unloaded
+// after the previous auth (1.6.0: UnloadHeavyModels frees model memory when the
+// service is idle). Blocks while the startup background loader is still running.
+// Returns false only if a REQUIRED model failed to load (auth cannot proceed)
+// or the service is stopping.
 bool FaceService::EnsureModelsLoaded() {
     if (m_modelsReady.load()) return true;
-    if (m_modelsFailed.load() && !m_modelsLoading.load()) return false;
+    if (m_modelsAbort.load()) return false;
 
-    std::unique_lock<std::mutex> lock(m_modelMutex);
-    m_modelCv.wait(lock, [this]() {
-        return m_modelsReady.load() || m_modelsFailed.load() || m_modelsAbort.load();
-    });
-    return m_modelsReady.load();
+    // Unloaded after a prior auth, or the startup background load is still in
+    // flight. Wait for any in-flight load; if none is running, load now on this
+    // thread (synchronous, ~200-500ms).
+    {
+        std::unique_lock<std::mutex> lock(m_modelMutex);
+        m_modelCv.wait(lock, [this]() {
+            return !m_modelsLoading.load() || m_modelsReady.load() ||
+                   m_modelsFailed.load() || m_modelsAbort.load();
+        });
+        if (m_modelsReady.load()) return true;
+        if (m_modelsFailed.load() && !m_modelsLoading.load()) return false;
+        if (m_modelsAbort.load()) return false;
+    }
+
+    // No load in flight and not ready — load synchronously on this thread.
+    const bool lowLightEnhance = m_config.low_light_enhance;
+    bool ok = LoadHeavyModels(lowLightEnhance);
+    m_modelsLoading.store(false);
+    m_modelsReady.store(ok);
+    m_modelsFailed.store(!ok);
+    m_modelCv.notify_all();
+    return ok;
 }
 
 // Release anyone blocked in EnsureModelsLoaded() during service shutdown so
@@ -470,7 +518,7 @@ void FaceService::Run() {
             // Retry loading anti-spoof model if configured and not yet loaded
             if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
                 m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
-                std::wstring antiSpoofPath = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
+                std::wstring antiSpoofPath = m_modelsDir + L"\\minifas_quantized.onnx";
                 if (m_antiSpoof->Initialize(antiSpoofPath)) {
                     FACELOGIN_INFO(L"CONFIG_RELOAD: anti-spoof model loaded successfully");
                 } else {
@@ -557,6 +605,15 @@ void FaceService::Run() {
                 m_webcamMF.reset();
                 FACELOGIN_INFO(L"MF camera released after auth");
             }
+            // Free the heavy model sessions now that the auth pipeline has fully
+            // unwound, dropping idle RSS back to baseline. Reload happens on the
+            // next auth (see EnsureModelsLoaded). Note: this intentionally does
+            // NOT unload SCRFD — it's the lightest model and needed for the very
+            // first frame of the next auth. Gated by config (default off — keep
+            // models resident for the fastest auth).
+            if (m_config.unload_models_after_auth) {
+                UnloadHeavyModels();
+            }
             m_pipeServer->Disconnect();
         }
         else if (request == ipc::MSG_PING) {
@@ -628,7 +685,7 @@ bool FaceService::ProcessAuthRequest() {
         m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u6b63\u5728\u52a0\u8f7d\u6a21\u578b...");
     }
 
-    // Heavy models (shape predictor + recognizer, optionally anti-spoof) load
+    // Heavy models (2d106det + recognizer, optionally anti-spoof) load
     // in the background during startup. Normally they're ready by the time the
     // user triggers auth; if the lock screen appeared unusually fast, block
     // here until they finish. The auth timeout is running from when the CP
@@ -778,21 +835,20 @@ bool FaceService::ProcessAuthRequest() {
             continue;
         }
 
-        // Face detection + landmarks: SCRFD detects, dlib shape predictor
-        // (GetLandmarks) extracts 68 points for alignment + blink.
+        // Face detection + landmarks: SCRFD detects, 2d106det extracts the
+        // 106 points for alignment + blink.
         std::optional<CredentialStore::MatchResult> match;
         dlib::full_object_detection landmarks;
         bool haveLandmarks = false;
 
         auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
         if (onnxDet) {
-            // SCRFD gives bbox — use dlib shape predictor for landmarks
+            // SCRFD gives bbox — 2d106det extracts 106 landmarks.
             dlib::rectangle dlibRect(static_cast<long>(onnxDet->x1),
                                      static_cast<long>(onnxDet->y1),
                                      static_cast<long>(onnxDet->x2),
                                      static_cast<long>(onnxDet->y2));
-            landmarks = m_detector->GetLandmarks(frame, dlibRect);
-            haveLandmarks = true;
+            haveLandmarks = m_detector->DetectLandmarks(frame, dlibRect, landmarks);
         }
 
         if (!haveLandmarks) {
@@ -900,22 +956,31 @@ bool FaceService::ProcessAuthRequest() {
                         dlib::matrix<dlib::rgb_pixel> asFrame;
                         if (!grabFrame(asFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
 
-                        // Detect with SCRFD, extract 68-point landmarks.
+                        // Detect with SCRFD, extract 106-point landmarks.
                         dlib::full_object_detection asLandmarks;
                         auto asDet = m_onnxDetector->DetectLargestFace(asFrame);
+                        asLandmarks = dlib::full_object_detection();  // reset for this frame
                         if (asDet) {
                             dlib::rectangle asRect(static_cast<long>(asDet->x1),
                                                    static_cast<long>(asDet->y1),
                                                    static_cast<long>(asDet->x2),
                                                    static_cast<long>(asDet->y2));
-                            asLandmarks = m_detector->GetLandmarks(asFrame, asRect);
+                            m_detector->DetectLandmarks(asFrame, asRect, asLandmarks);
                         }
                         if (asLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
 
                         float score = m_antiSpoof->Predict(asFrame, asLandmarks);
                         totalChecked++;
-                        if (score >= m_antiSpoofThreshold) passCount++; // config-driven threshold
-                        FACELOGIN_INFO(L"Anti-spoof frame %d: score=%.3f (pass=%d)", totalChecked, score, passCount);
+                        // facenox MiniFAS scores are real-spoof logit diffs (>=1
+                        // = clearly real, calibrated from real footage: real +1.3..+11,
+                        // most screen replays <0). DeepPixBiS/OULU scores are pixel-map
+                        // means (>=0.28 default). The config slider is mapped onto each
+                        // model's score scale via AntiSpoofEffectiveThreshold (the
+                        // facenox mapping anchors the 0.30 default at the historical 1.0).
+                        float effThr = AntiSpoofEffectiveThreshold(m_antiSpoofThreshold,
+                                                                  m_antiSpoof->IsFacenoxMode());
+                        if (score >= effThr) passCount++;
+                        FACELOGIN_INFO(L"Anti-spoof frame %d: score=%.3f thr=%.2f (pass=%d)", totalChecked, score, effThr, passCount);
 
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     }
@@ -946,7 +1011,7 @@ bool FaceService::ProcessAuthRequest() {
                         }
                         dlib::matrix<dlib::rgb_pixel> livenessFrame;
                         if (!grabFrame(livenessFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
-                        // Detect with SCRFD, extract 68-point landmarks for EAR.
+                        // Detect with SCRFD, extract 106-point landmarks for EAR.
                         dlib::full_object_detection livenessLandmarks;
                         auto livenessDet = m_onnxDetector->DetectLargestFace(livenessFrame);
                         if (livenessDet) {
@@ -954,7 +1019,7 @@ bool FaceService::ProcessAuthRequest() {
                                                   static_cast<long>(livenessDet->y1),
                                                   static_cast<long>(livenessDet->x2),
                                                   static_cast<long>(livenessDet->y2));
-                            livenessLandmarks = m_detector->GetLandmarks(livenessFrame, lRect);
+                            m_detector->DetectLandmarks(livenessFrame, lRect, livenessLandmarks);
                         }
                         if (livenessLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
                         if (liveness.ProcessFrame(livenessLandmarks)) {
@@ -1016,7 +1081,7 @@ bool FaceService::ProcessAuthRequest() {
                                               static_cast<long>(det->y1),
                                               static_cast<long>(det->x2),
                                               static_cast<long>(det->y2));
-                            verifyLandmarks = m_detector->GetLandmarks(verifyFrame, r);
+                            m_detector->DetectLandmarks(verifyFrame, r, verifyLandmarks);
                         }
                         if (verifyLandmarks.num_parts() == 0) {
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
