@@ -22,6 +22,12 @@ struct AppConfig {
     // brightness normalization to dark face chips before recognition AND
     // anti-spoof, so matches/scores don't degrade in dark scenes.
     bool           low_light_enhance      = false;
+    // Release heavy model sessions after an auth completes (2d106det +
+    // recognizer + anti-spoof), dropping idle RSS from ~77MB to ~44MB. The
+    // next auth reloads them synchronously (~200-500ms). Off (default) keeps
+    // models resident for the fastest auth; on trades a small per-auth reload
+    // latency for a low idle footprint.
+    bool           unload_models_after_auth = false;
     std::string    camera_device          = "";          // device symbolic link; empty = first camera
     // Camera rotation in degrees clockwise. Valid: 0, 90, 180, 270.
     // Use when the camera is physically mounted in a non-standard

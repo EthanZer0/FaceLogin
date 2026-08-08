@@ -599,8 +599,11 @@ void FaceService::Run() {
             // unwound, dropping idle RSS back to baseline. Reload happens on the
             // next auth (see EnsureModelsLoaded). Note: this intentionally does
             // NOT unload SCRFD — it's the lightest model and needed for the very
-            // first frame of the next auth.
-            UnloadHeavyModels();
+            // first frame of the next auth. Gated by config (default off — keep
+            // models resident for the fastest auth).
+            if (m_config.unload_models_after_auth) {
+                UnloadHeavyModels();
+            }
             m_pipeServer->Disconnect();
         }
         else if (request == ipc::MSG_PING) {

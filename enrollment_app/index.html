@@ -836,6 +836,15 @@ button{font-family:inherit}
       <p class="dim" style="font-size:11px">暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。</p>
     </div>
 
+    <div class="field">
+      <label class="check">
+        <input type="checkbox" id="cfg-unload-models">
+        <span class="cbx"></span>
+        <span>识别后释放模型（降低后台内存占用，下次识别需重新加载）</span>
+      </label>
+      <p class="dim" style="font-size:11px">识别完成后释放人脸模型，服务后台内存占用从约 77MB 降至约 44MB。下次解锁时模型自动重新加载（约 0.2-0.5 秒）。对内存敏感的设备可开启。</p>
+    </div>
+
     <div class="field" id="field-antispoof-threshold" style="display:none">
       <label>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.30</span></label>
       <div class="range-wrap">
@@ -1320,6 +1329,7 @@ function loadSettings() {
     document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
     document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
+    document.getElementById('cfg-unload-models').checked = !!cfg.unload_models_after_auth;
 
     // Populate the camera dropdown from the enumerated devices.
     var camSel = document.getElementById('cfg-camera');
@@ -1388,6 +1398,7 @@ function onSaveSettings() {
     anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
     low_light_enhance: document.getElementById('cfg-low-light').checked,
+    unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
     camera_rotation: parseInt(document.getElementById('cfg-rotation').value) || 0,
     camera_device: document.getElementById('cfg-camera').value
   };

@@ -125,6 +125,7 @@ std::string ConfigToJson(const AppConfig& cfg) {
     ss << "  "; jsonWriteString(ss, "anti_spoof_threshold"); ss << ": " << cfg.anti_spoof_threshold << ",\n";
     ss << "  "; jsonWriteString(ss, "blink_glasses_mode"); ss << ": " << (cfg.blink_glasses_mode ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "low_light_enhance"); ss << ": " << (cfg.low_light_enhance ? "true" : "false") << ",\n";
+    ss << "  "; jsonWriteString(ss, "unload_models_after_auth"); ss << ": " << (cfg.unload_models_after_auth ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "camera_rotation"); ss << ": " << cfg.camera_rotation << ",\n";
     ss << "  "; jsonWriteString(ss, "camera_device"); ss << ": "; jsonWriteString(ss, cfg.camera_device); ss << "\n";
     ss << "}\n";
@@ -143,6 +144,7 @@ AppConfig ConfigFromJson(const std::string& json) {
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
     cfg.blink_glasses_mode = (jsonGetString(json, "blink_glasses_mode") == "true");
     cfg.low_light_enhance = (jsonGetString(json, "low_light_enhance") == "true");
+    cfg.unload_models_after_auth = (jsonGetString(json, "unload_models_after_auth") == "true");
     int rotation = jsonGetInt(json, "camera_rotation", 0);
     // Only accept 0/90/180/270; anything else silently does nothing in
     // RotateFrame, so fall back to 0 and log it — a configured-but-ignored
