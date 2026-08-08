@@ -174,9 +174,12 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
     }
 
     // Similarity transform src→dst, warp to 112×112, then embed.
+    // dlib's transform_image maps each OUTPUT pixel through map_point to fetch
+    // from the INPUT image, i.e. map_point must be the OUT→IN transform. Our
+    // similarity transform is IN→OUT (src→dst), so pass its inverse.
     dlib::point_transform_affine tform = dlib::find_similarity_transform(src, dst);
     dlib::matrix<dlib::rgb_pixel> faceChip(112, 112);
-    dlib::transform_image(image, faceChip, dlib::interpolate_bilinear(), tform);
+    dlib::transform_image(image, faceChip, dlib::interpolate_bilinear(), dlib::inv(tform));
     return ComputeEmbedding(faceChip);
 }
 
@@ -509,12 +512,21 @@ bool OnnxAntiSpoof::Initialize(const std::wstring& modelPath) {
             m_outputNames[i] = m_session->GetOutputNameAllocated(i, alloc).get();
         }
 
-        // Determine input size from session
+        // Determine input size + output shape from the session to auto-select
+        // the scoring mode (facenox MiniFAS [1,2] logits vs DeepPixBiS pixel map).
         auto inputInfo = m_session->GetInputTypeInfo(0);
         auto tensorInfo = inputInfo.GetTensorTypeAndShapeInfo();
         auto shape = tensorInfo.GetShape();
         if (shape.size() >= 4) {
-            m_inputSize = static_cast<int>(shape[2]);
+            m_inputSize = static_cast<int>(shape[2]);  // 128 (MiniFAS) or 224 (OULU)
+        }
+        auto outInfo = m_session->GetOutputTypeInfo(0);
+        auto outTensor = outInfo.GetTensorTypeAndShapeInfo();
+        auto outShape = outTensor.GetShape();
+        // [1,2] = facenox MiniFAS logits (real, spoof).
+        m_facenoxMode = (outShape.size() == 2 && outShape[1] == 2);
+        if (m_facenoxMode) {
+            FACELOGIN_INFO(L"OnnxAntiSpoof: facenox MiniFAS mode (input=%d, logit output)", m_inputSize);
         }
 
         FACELOGIN_INFO(L"OnnxAntiSpoof initialized: %s (input=%d, outputs=%zu)",
@@ -530,7 +542,7 @@ bool OnnxAntiSpoof::Initialize(const std::wstring& modelPath) {
 float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
     if (!m_initialized) return -1.0f;
     try {
-        int isize = m_inputSize; // 224 for DeepPixBiS
+        int isize = m_inputSize; // 128 (MiniFAS) or 224 (DeepPixBiS)
         dlib::matrix<dlib::rgb_pixel> resized(isize, isize);
         dlib::resize_image(faceChip, resized);
 
@@ -538,16 +550,28 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
         // of dark chips so anti-spoof scores don't drop in dark scenes.
         if (m_lowLightEnhance) ApplyLowLightEnhance(resized);
 
-        // DeepPixBiS expects RGB NCHW, ImageNet normalization:
-        //   pixel = (pixel/255 - mean) / std
+        // facenox MiniFAS expects RGB NCHW normalized to [0,1].
+        // DeepPixBiS expects ImageNet normalization: (pixel/255 - mean) / std.
         std::vector<float> input(1 * 3 * isize * isize);
-        for (int y = 0; y < isize; y++) {
-            for (int x = 0; x < isize; x++) {
-                const auto& p = resized(y, x);
-                int base = y * isize + x;
-                input[0 * isize * isize + base] = (p.red   / 255.0f - DPB_MEAN[0]) / DPB_STD[0];
-                input[1 * isize * isize + base] = (p.green / 255.0f - DPB_MEAN[1]) / DPB_STD[1];
-                input[2 * isize * isize + base] = (p.blue  / 255.0f - DPB_MEAN[2]) / DPB_STD[2];
+        if (m_facenoxMode) {
+            for (int y = 0; y < isize; y++) {
+                for (int x = 0; x < isize; x++) {
+                    const auto& p = resized(y, x);
+                    int base = y * isize + x;
+                    input[0 * isize * isize + base] = p.red   / 255.0f;
+                    input[1 * isize * isize + base] = p.green / 255.0f;
+                    input[2 * isize * isize + base] = p.blue  / 255.0f;
+                }
+            }
+        } else {
+            for (int y = 0; y < isize; y++) {
+                for (int x = 0; x < isize; x++) {
+                    const auto& p = resized(y, x);
+                    int base = y * isize + x;
+                    input[0 * isize * isize + base] = (p.red   / 255.0f - DPB_MEAN[0]) / DPB_STD[0];
+                    input[1 * isize * isize + base] = (p.green / 255.0f - DPB_MEAN[1]) / DPB_STD[1];
+                    input[2 * isize * isize + base] = (p.blue  / 255.0f - DPB_MEAN[2]) / DPB_STD[2];
+                }
             }
         }
 
@@ -563,34 +587,26 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
                                        inputNames, &inputTensor, 1,
                                        outNamePtrs.data(), outNamePtrs.size());
 
+        if (m_facenoxMode) {
+            // [1,2] logits: (real, spoof). Score = real - spoof; >= 0 is real.
+            float* logits = outputs[0].GetTensorMutableData<float>();
+            float real = logits[0];
+            float spoof = logits[1];
+            float score = real - spoof;
+            FACELOGIN_INFO(L"Anti-spoof (MiniFAS): real=%.4f spoof=%.4f score=%.4f",
+                           real, spoof, score);
+            return score;
+        }
+
         if (outputs.size() >= 2) {
             // DeepPixBiS dual-head: output_pixel (per-pixel map) + output_binary (scalar).
-            // output_pixel is a 14×14 map where each pixel is classified as real (1) or spoof (0).
-            // Its mean value discriminates: real faces ~0.5-0.7, photos ~0.2-0.4.
-            // output_binary is the global classification but saturates at ~0.999 for all inputs,
-            // making it useless for discrimination. Use pixel output only.
-
             float* pixelData = outputs[0].GetTensorMutableData<float>();
             auto pixelInfo = outputs[0].GetTensorTypeAndShapeInfo();
             size_t pixelCount = pixelInfo.GetElementCount();
             double pixelSum = 0;
             for (size_t i = 0; i < pixelCount; i++) pixelSum += pixelData[i];
             float pixelMean = static_cast<float>(pixelSum / pixelCount);
-
-            float* binaryData = outputs[1].GetTensorMutableData<float>();
-            auto binaryInfo = outputs[1].GetTensorTypeAndShapeInfo();
-            size_t binaryCount = binaryInfo.GetElementCount();
-            double binarySum = 0;
-            for (size_t i = 0; i < binaryCount; i++) binarySum += binaryData[i];
-            float binaryMean = static_cast<float>(binarySum / binaryCount);
-
-            // Use pixel map mean as the liveness score.
-            // binaryMean saturates near 1.0 for everything; pixelMean is the discriminator.
-            // Threshold: >= 0.5 for real face, < 0.5 for photo/spoof.
-            float score = pixelMean;
-            FACELOGIN_INFO(L"Anti-spoof: pixel=%.4f binary=%.4f score=%.4f",
-                          pixelMean, binaryMean, score);
-            return score;
+            return pixelMean;
         }
 
         // Single output fallback
@@ -608,15 +624,14 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
 
 float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& image,
                               const dlib::full_object_detection& landmarks) {
-    // DeepPixBiS works with a simple bbox crop (no landmark alignment).
-    // Use a tight crop of the face bbox with a small 1.1x margin. Measured
-    // empirically: the previous 1.5x half-size (3x total) included too much
-    // background and drove real-face scores down to ~0.3-0.45, near the
-    // threshold. A tight crop raises real scores to ~0.5-0.6+.
+    // Crop the face bbox. facenox MiniFAS was trained on a square crop with a
+    // 1.5x expansion (measured to give it enough context without background
+    // bleeding); DeepPixBiS works with a tighter 1.1x crop.
     dlib::rectangle rect = landmarks.get_rect();
     long cx = rect.left() + rect.width() / 2;
     long cy = rect.top() + rect.height() / 2;
-    long halfSize = static_cast<long>(std::max(rect.width(), rect.height()) / 2 * 1.1f);
+    float margin = m_facenoxMode ? 1.5f : 1.1f;
+    long halfSize = static_cast<long>(std::max(rect.width(), rect.height()) / 2 * margin);
     dlib::rectangle cropRect(cx - halfSize, cy - halfSize, cx + halfSize, cy + halfSize);
     dlib::chip_details chip(cropRect, dlib::chip_dims(m_inputSize, m_inputSize));
     dlib::matrix<dlib::rgb_pixel> crop;
