@@ -8,6 +8,7 @@ add_executable(FaceLoginService
     webcam_capture_dshow.cpp
     pipe_server.cpp
     credential_store.cpp
+    resource.rc
 )
 
 target_link_libraries(FaceLoginService PRIVATE
