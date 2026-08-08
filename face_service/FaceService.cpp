@@ -325,17 +325,27 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
     }
     FACELOGIN_INFO(L"ONNX recognizer loaded (InsightFace buffalo_s)");
 
-    // 3. Anti-spoof model (MiniFASNetV2) — optional.
+    // 3. Anti-spoof model (facenox MiniFAS, 1.6.0 — replaces DeepPixBiS/OULU).
     {
         auto antiSpoof = std::make_unique<OnnxAntiSpoof>();
-        std::wstring path = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
+        std::wstring path = m_modelsDir + L"\\minifas_quantized.onnx";
         if (antiSpoof->Initialize(path)) {
             antiSpoof->SetLowLightEnhance(lowLightEnhance);
             std::lock_guard<std::mutex> lock(m_modelMutex);
             m_antiSpoof = std::move(antiSpoof);
-            FACELOGIN_INFO(L"Anti-spoof model loaded (MiniFASNetV2)");
+            FACELOGIN_INFO(L"Anti-spoof model loaded (facenox MiniFAS)");
         } else {
-            FACELOGIN_WARN(L"Anti-spoof model not available");
+            // Fall back to the legacy OULU model if present.
+            std::wstring ouluPath = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
+            auto oulu = std::make_unique<OnnxAntiSpoof>();
+            if (oulu->Initialize(ouluPath)) {
+                oulu->SetLowLightEnhance(lowLightEnhance);
+                std::lock_guard<std::mutex> lock(m_modelMutex);
+                m_antiSpoof = std::move(oulu);
+                FACELOGIN_INFO(L"Anti-spoof fallback: DeepPixBiS/OULU loaded");
+            } else {
+                FACELOGIN_WARN(L"Anti-spoof model not available");
+            }
         }
     }
 
@@ -508,7 +518,7 @@ void FaceService::Run() {
             // Retry loading anti-spoof model if configured and not yet loaded
             if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
                 m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
-                std::wstring antiSpoofPath = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
+                std::wstring antiSpoofPath = m_modelsDir + L"\\minifas_quantized.onnx";
                 if (m_antiSpoof->Initialize(antiSpoofPath)) {
                     FACELOGIN_INFO(L"CONFIG_RELOAD: anti-spoof model loaded successfully");
                 } else {
@@ -961,8 +971,13 @@ bool FaceService::ProcessAuthRequest() {
 
                         float score = m_antiSpoof->Predict(asFrame, asLandmarks);
                         totalChecked++;
-                        if (score >= m_antiSpoofThreshold) passCount++; // config-driven threshold
-                        FACELOGIN_INFO(L"Anti-spoof frame %d: score=%.3f (pass=%d)", totalChecked, score, passCount);
+                        // facenox MiniFAS scores are real-spoof logit diffs (>=1
+                        // = clearly real, calibrated from real footage: real +1.3..+11,
+                        // most screen replays <0). DeepPixBiS/OULU scores are pixel-map
+                        // means (>=0.28 default). Pick the threshold per model mode.
+                        float effThr = m_antiSpoof->IsFacenoxMode() ? 1.0f : m_antiSpoofThreshold;
+                        if (score >= effThr) passCount++;
+                        FACELOGIN_INFO(L"Anti-spoof frame %d: score=%.3f thr=%.2f (pass=%d)", totalChecked, score, effThr, passCount);
 
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     }

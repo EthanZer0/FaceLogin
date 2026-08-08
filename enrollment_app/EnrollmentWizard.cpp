@@ -341,8 +341,8 @@ bool EnrollmentWizard::EnsureModelsLoaded() {
         }
     }
 
-    // Try loading anti-spoof model
-    std::wstring antiSpoofPath = modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
+    // Try loading anti-spoof model (facenox MiniFAS, 1.6.0).
+    std::wstring antiSpoofPath = modelsDir + L"\\minifas_quantized.onnx";
     if (!m_antiSpoof) {
         m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
         if (!m_antiSpoof->Initialize(antiSpoofPath)) {
