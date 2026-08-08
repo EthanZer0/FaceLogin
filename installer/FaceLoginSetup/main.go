@@ -80,13 +80,15 @@ func main() {
 	internal.NoticeEnabled = true
 	internal.NoticeVersion = "1.6.0"
 	internal.NoticeTitle = "FaceLogin 1.6.0 更新说明"
-	internal.NoticeBody = "核心变更：\n" +
+	internal.NoticeBody = "⚠️ 重要提醒：\n" +
+		"- 由于人脸对齐方式升级，旧版本录入的人脸数据无法用于新版识别，升级后请重新打开 FaceLoginConsole 录入人脸\n" +
+		"- 账户密码数据不受影响，无需重新设置\n\n" +
+		"核心变更：\n" +
 		"- 弃用 dlib 68点模型，全面迁移到 insightface 2d106det 106点关键点模型\n" +
 		"- 安装包大幅瘦身：移除 99.7MB 旧模型，新增 5MB 新模型（约节省 94MB）\n" +
 		"- 关键点定位更准，眼部/鼻部点位精确贴合眼眶\n" +
-		"- 眨眼活体检测重新标定，识别更可靠\n\n" +
-		"说明：\n" +
-		"- 现有的人脸数据和配置完全兼容，无需重新录入"
+		"- 眨眼活体检测重新标定，识别更可靠\n" +
+		"- 反欺诈模型升级为 facenox MiniFAS，更精准拦截屏幕翻拍"
 
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
