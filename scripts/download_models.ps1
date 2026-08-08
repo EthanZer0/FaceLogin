@@ -2,7 +2,7 @@
 # Downloads the 2d106det landmark model (insightface buffalo_l pack).
 #
 # The detection/recognition/anti-spoof models are ONNX (SCRFD det_500m,
-# w600k_mbf, MiniFASNet OULU) bundled with the installer. This script only
+# w600k_mbf, facenox MiniFAS) bundled with the installer. This script only
 # fetches the 106-point landmark model 2d106det.onnx, which is part of
 # insightface's buffalo_l pack (also containing det_10g / w600k_r50 we do
 # not need).
@@ -89,7 +89,7 @@ Write-Host "Models location: $ModelsDir"
 Write-Host ""
 Write-Host "Required files:"
 Write-Host "  1. 2d106det.onnx (~5 MB)"
-Write-Host "  (ONNX models det_500m.onnx / w600k_mbf.onnx / OULU_Protocol_2_model_0_0.onnx are bundled with the installer)"
+Write-Host "  (ONNX models det_500m.onnx / w600k_mbf.onnx / minifas_quantized.onnx are bundled with the installer)"
 Write-Host ""
 Write-Host "Next step: Run the FaceLoginSetup.exe installer, or place the model in the install dir."
 Write-Host "============================================" -ForegroundColor Cyan

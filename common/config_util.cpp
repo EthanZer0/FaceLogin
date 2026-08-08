@@ -140,7 +140,7 @@ AppConfig ConfigFromJson(const std::string& json) {
     if (!det.empty()) cfg.detector = det;
     auto live = jsonGetString(json, "liveness_method");
     if (!live.empty()) cfg.liveness_method = LivenessMethodFromString(live);
-    cfg.match_threshold = jsonGetFloat(json, "match_threshold", 0.30f);
+    cfg.match_threshold = jsonGetFloat(json, "match_threshold", 0.65f);
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
     cfg.blink_glasses_mode = (jsonGetString(json, "blink_glasses_mode") == "true");
     cfg.low_light_enhance = (jsonGetString(json, "low_light_enhance") == "true");

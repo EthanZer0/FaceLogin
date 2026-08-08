@@ -500,7 +500,7 @@ EAR = (||P2-P6|| + ||P3-P5||) / (2 * ||P1-P4||)
 |---|---|---|---|---|
 | `OnnxDetector` | SCRFD (`det_500m.onnx`) | 图像 (letterbox) | 检测框+5点关键点 | 人脸检测 |
 | `OnnxRecognizer` | InsightFace buffalo_s (`w600k_mbf.onnx`) | 112×112 对齐人脸 | 128维嵌入 | 人脸识别 |
-| `OnnxAntiSpoof` | MiniFASNetV2 (`OULU_Protocol_2_model_0_0.onnx`) | 80×80 对齐人脸 | 活体分数 [0,1] | 静默反欺诈 |
+| `OnnxAntiSpoof` | facenox MiniFAS (`minifas_quantized.onnx`) | 128×128 人脸 crop | real-spoof logit 差 | 静默反欺诈 |
 
 所有 ONNX 模型放置在 `%PROGRAMDATA%\FaceLogin\models\` 下。
 
@@ -810,7 +810,7 @@ C:\Program Files\FaceLogin\               # 安装目录 (用户可选)
     ├── 2d106det.onnx                                  (~5 MB)
     ├── det_500m.onnx                                 (~2.5 MB)
     ├── w600k_mbf.onnx                                 (~13 MB)
-    └── OULU_Protocol_2_model_0_0.onnx                 (~13 MB)
+    └── minifas_quantized.onnx                        (~0.6 MB)
 
 C:\ProgramData\FaceLogin\                   # 数据目录
 ├── data/
@@ -831,7 +831,7 @@ C:\ProgramData\FaceLogin\                   # 数据目录
 | `2d106det.onnx` | ~5 MB | 106点面部地标提取 | InsightFace buffalo_l |
 | `det_500m.onnx` | ~2.5 MB | SCRFD 人脸检测 | InsightFace |
 | `w600k_mbf.onnx` | ~13 MB | buffalo_s MobileFaceNet 512维嵌入 | InsightFace |
-| `OULU_Protocol_2_model_0_0.onnx` | ~13 MB | MiniFASNetV2 静默反欺诈 | MiniFASNet |
+| `minifas_quantized.onnx` | ~0.6 MB | facenox MiniFAS 静默反欺诈 | facenox/face-antispoof-onnx |
 
 所有 ONNX 模型随安装包分发。
 

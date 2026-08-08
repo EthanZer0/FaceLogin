@@ -181,7 +181,7 @@ wails build -clean -platform windows/amd64
 | `2d106det.onnx` | 106点面部地标提取 | [InsightFace](https://github.com/deepinsight/insightface) |
 | `det_500m.onnx` | SCRFD 人脸检测 | [InsightFace](https://github.com/deepinsight/insightface) |
 | `w600k_mbf.onnx` | InsightFace 人脸识别 | [InsightFace](https://github.com/deepinsight/insightface) |
-| `OULU_Protocol_2_model_0_0.onnx` | 静默反欺诈 | [MiniFASNet](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing) |
+| `minifas_quantized.onnx` | 静默反欺诈 | [facenox/face-antispoof-onnx](https://github.com/facenox/face-antispoof-onnx) |
 
 ---
 

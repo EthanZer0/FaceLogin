@@ -865,7 +865,7 @@ button{font-family:inherit}
       <label>匹配严格度 (Match Strictness): <span id="cfg-threshold-val">70</span></label>
       <div class="range-wrap">
         <div class="rng">
-          <input type="range" id="cfg-threshold" min="20" max="80" value="70" step="1"
+          <input type="range" id="cfg-threshold" min="20" max="90" value="70" step="1"
                  oninput="rngSync(this)">
           <div class="rng-rail">
             <div class="rng-track"></div>
@@ -1369,9 +1369,13 @@ function loadSettings() {
     var livWrap = document.getElementById('cfg-liveness').closest('.cs-wrap');
     if (livWrap) csPopulate(livWrap, document.getElementById('cfg-liveness'));
 
-    // match_threshold is stored as distance (lower = stricter).
-    // Convert to UI strictness: strictness = 100 - threshold*100 (higher = stricter).
-    var thr = Math.round(100 - (cfg.match_threshold || 0.30) * 100);
+    // match_threshold is stored as Euclidean distance (lower = stricter).
+    // New slider mapping (1.6.0): threshold = 0.45 + (90 - strictness)/100,
+    // so strictness 90 → 0.45 (strictest, tolerates slight motion), 70 → 0.65
+    // (default), 20 → 1.15 (loosest, still rejects strangers). Invert:
+    // strictness = 90 - (threshold - 0.45) * 100.
+    var thr = Math.round(90 - ((cfg.match_threshold || 0.65) - 0.45) * 100);
+    thr = Math.max(20, Math.min(90, thr));  // clamp to slider range
     document.getElementById('cfg-threshold').value = thr;
     document.getElementById('cfg-threshold-val').textContent = thr;
     var asThr = Math.round((cfg.anti_spoof_threshold || 0.30) * 100);
@@ -1393,8 +1397,9 @@ function onSaveSettings() {
     // recognition_model/detector are fixed to onnx/scrfd (dlib was removed);
     // they're not sent here — the service and config defaults handle them.
     liveness_method: document.getElementById('cfg-liveness').value,
-    // Convert strictness back: threshold = (100 - strictness) / 100
-    match_threshold: (100 - strictness) / 100,
+    // Convert strictness back to distance threshold (1.6.0 mapping):
+    // threshold = 0.45 + (90 - strictness)/100
+    match_threshold: 0.45 + (90 - strictness) / 100,
     anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
     low_light_enhance: document.getElementById('cfg-low-light').checked,

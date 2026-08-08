@@ -17,14 +17,16 @@ namespace facelogin {
 // bounded by sqrt(2) ≈ 1.414 regardless of dimension, so sqrt(dim/128) scaling
 // is invalid.
 //
-// For 512-D ONNX we return a fixed 0.80, calibrated from measured data:
-//   same-person matches on this system: 0.14–0.80
-//   other-person photo match:           0.94–0.99
-// (0.80 cleanly separates them; 1.0 admitted a photo.)
+// For 512-D ONNX the user's match_threshold (from the strictness slider) is
+// used directly — no fixed override. Calibrated on real data (1.6.0):
+//   same-person (12 live frames): 0.34–0.45
+//   other-person photos:          1.24–1.40
+// The slider maps strictness 20–90 → threshold 1.15–0.45, all comfortably
+// inside the 0.45→1.24 safety gap, so the setting is effective and safe.
 // Any other (legacy) dimension falls back to the base threshold.
 inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
-    if (dim >= 256) return 0.80f;             // ONNX 512-D: measured safe boundary
-    return baseThreshold;                     // dlib 128-D and unknown: caller base
+    if (dim >= 256) return baseThreshold;         // ONNX 512-D: user setting applies
+    return baseThreshold;                         // dlib 128-D and unknown: caller base
 }
 
 // Stores and retrieves encrypted user credentials and face embeddings.

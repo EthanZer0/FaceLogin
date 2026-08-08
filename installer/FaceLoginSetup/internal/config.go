@@ -26,7 +26,7 @@ var ConfigUpgradeEnabled = false
 // verbatim on upgrade. Declared per-release; this release enforces the
 // threshold defaults that changed in v1.0.1.
 var ConfigUpgradeForcedDefaults = map[string]any{
-	"match_threshold":      0.30,
+	"match_threshold":      0.65,
 	"anti_spoof_threshold": 0.30,
 }
 
@@ -52,7 +52,7 @@ func EnsureConfigDefaults(configPath string) error {
 			"recognition_model":     "onnx",
 			"detector":              "scrfd",
 			"liveness_method":       "blink",
-			"match_threshold":       0.30,
+			"match_threshold":       0.65,
 			"anti_spoof_threshold":  0.30,
 			"blink_glasses_mode":    false,
 			"low_light_enhance":     false,
