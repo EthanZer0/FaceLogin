@@ -1031,6 +1031,11 @@ int EnrollmentWizard::GetFaceCount() {
     return static_cast<int>(m_store.GetFaceCount(m_sid));
 }
 
+bool EnrollmentWizard::NeedsReenrollment() {
+    m_store.LoadDatabase();
+    return m_store.NeedsReenrollment();
+}
+
 std::string EnrollmentWizard::GetFacesJson() {
     m_store.LoadDatabase();
     size_t idx = m_store.FindUserIndex(m_sid, m_upn, m_username);
@@ -1043,7 +1048,8 @@ std::string EnrollmentWizard::GetFacesJson() {
         if (i > 0) js << ",";
         const auto& f = faces[i];
         js << "{\"id\":" << f.id
-           << ",\"label\":\"" << WstrToUtf8Escaped(f.label) << "\"}";
+           << ",\"label\":\"" << WstrToUtf8Escaped(f.label) << "\""
+           << ",\"legacy\":" << (f.legacy ? "true" : "false") << "}";
     }
     js << "]";
     return js.str();

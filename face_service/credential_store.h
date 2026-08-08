@@ -34,7 +34,7 @@ inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
 // File format (PROGRAMDATA/FaceLogin/data/users.dat):
 //   Header:
 //     Magic:  4 bytes ("FLOG")
-//     Version: 4 bytes (uint32, currently 4)
+//     Version: 4 bytes (uint32, currently 5)
 //     Count:   4 bytes (uint32, number of records)
 //   Records (Count times):
 //     Username length: 4 bytes (uint32, in wchar_t units)
@@ -48,6 +48,7 @@ inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
 //     Face count:      4 bytes (uint32, >= 1)             ← V4
 //     Faces (Face count times):                            ← V4
 //       Face id:       4 bytes (uint32, >= 1, per-account unique)
+//       Legacy flag:   4 bytes (uint32, 0/1)              ← V5 (1.6.0)
 //       Label length:  4 bytes (uint32, in wchar_t units, may be 0)
 //       Label:         N*2 bytes (UTF-16LE, e.g. L"脸1" or a custom name)
 //       Embedding length: 4 bytes (uint32, in floats)
@@ -87,6 +88,10 @@ struct FaceRecord {
     uint32_t           id = 0;
     std::wstring       label;              // display name; "脸N" if user left blank
     std::vector<float> embedding;          // D-D embedding (128 for dlib, 512 for ONNX)
+    bool               legacy = false;     // V5: true = this face was enrolled with the
+                                           // pre-1.6.0 (V4 or older) alignment and can no
+                                           // longer be matched. Display-only (greyed out);
+                                           // kept so the user sees which faces are stale.
 };
 
 struct UserRecord {
@@ -218,11 +223,18 @@ public:
     // Get the full path to the database file
     std::wstring GetDataDir() const;
 
+    // True when the loaded database holds embeddings from a PRE-1.6.0
+    // alignment (V4 or older) that can no longer be matched by the current
+    // recognizer — the user must re-enroll. Cleared once a V5 (re-enrolled)
+    // database is loaded.
+    bool NeedsReenrollment() const { return m_needsReenrollment; }
+
 private:
     bool EnsureDataDir();
 
     std::wstring m_dataDir;  // If empty, uses default
     std::vector<UserRecord> m_users;
+    bool m_needsReenrollment = false;
 };
 
 } // namespace facelogin

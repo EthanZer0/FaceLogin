@@ -9,7 +9,18 @@
 namespace facelogin {
 
 static constexpr uint32_t FILE_MAGIC = 0x474F4C46; // "FLOG" in little-endian
-static constexpr uint32_t FILE_VERSION = 4;
+// V5 (1.6.0): V4 layout PLUS a per-face "legacy" flag (written right after the
+// face id) that marks faces enrolled with the OLD pre-1.6.0 alignment. V4
+// databases hold embeddings computed by the dlib 68-point chip-extraction
+// alignment, which are NOT compatible with 1.6.0's 106-point similarity-
+// transform alignment (verified: old data fails to match, recognition always
+// times out). V5 is written after re-enrollment. A V4 file read by 1.6.0
+// flags every face as legacy (greyed out in the Console) AND sets the
+// "needs re-enrollment" flag instead of silently failing at match time.
+static constexpr uint32_t FILE_VERSION = 5;
+// The last version whose embeddings are compatible with the current recognizer
+// alignment. Data with a lower version must be re-enrolled.
+static constexpr uint32_t ALIGN_COMPAT_VERSION = 5;
 
 // Helpers for V4 serialization
 namespace {
@@ -111,8 +122,10 @@ bool CredentialStore::LoadDatabase() {
         FACELOGIN_ERROR(L"Invalid database file (bad magic: 0x%08X)", magic);
         return false;
     }
-    if (version != FILE_VERSION && version != 3 && version != 2 && version != 1) {
-        FACELOGIN_ERROR(L"Unsupported database version: %u", version);
+    // Accept v1..v5. v4 and below are loaded but flagged for re-enrollment
+    // (their embeddings came from the old alignment).
+    if (version > FILE_VERSION) {
+        FACELOGIN_ERROR(L"Database version %u newer than supported (%u)", version, FILE_VERSION);
         return false;
     }
 
@@ -176,7 +189,7 @@ bool CredentialStore::LoadDatabase() {
         }
 
         if (version >= 4) {
-            // V4: one or more faces, each with id/label/embedding.
+            // V4/V5: one or more faces, each with id/label/embedding.
             uint32_t faceCount = 0;
             file.read(reinterpret_cast<char*>(&faceCount), sizeof(faceCount));
             // Writer is capped at kMaxFacesPerUser; read-side is lenient to
@@ -192,6 +205,16 @@ bool CredentialStore::LoadDatabase() {
                 if (face.id < 1) {
                     FACELOGIN_ERROR(L"Invalid face id: %u", face.id);
                     return false;
+                }
+                // V5 added a per-face legacy flag after the id. V4 files have no
+                // such field — their faces all came from the old alignment, so
+                // flag every one of them.
+                if (version >= 5) {
+                    uint32_t legacy = 0;
+                    file.read(reinterpret_cast<char*>(&legacy), sizeof(legacy));
+                    face.legacy = (legacy != 0);
+                } else {
+                    face.legacy = true;
                 }
                 uint32_t labelLen = 0;
                 file.read(reinterpret_cast<char*>(&labelLen), sizeof(labelLen));
@@ -232,6 +255,7 @@ bool CredentialStore::LoadDatabase() {
             FaceRecord face;
             face.id = 1;
             face.label = DefaultFaceLabel(1);
+            face.legacy = true;  // V1/V2/V3 predate 1.6.0 alignment
             face.embedding.resize(embLen);
             file.read(reinterpret_cast<char*>(face.embedding.data()),
                       embLen * sizeof(float));
@@ -255,6 +279,14 @@ bool CredentialStore::LoadDatabase() {
     if (version < FILE_VERSION) {
         FACELOGIN_INFO(L"Upgraded database v%u → v%u in-memory (will be written on next save)",
                        version, FILE_VERSION);
+    }
+
+    // V4 or older embeddings came from the pre-1.6.0 alignment and cannot be
+    // matched by the current recognizer. Flag for re-enrollment so the Console
+    // can prompt instead of the user discovering it via a failed unlock.
+    if (version < ALIGN_COMPAT_VERSION) {
+        m_needsReenrollment = true;
+        FACELOGIN_WARN(L"Database v%u: embeddings from old alignment — re-enrollment required", version);
     }
 
     FACELOGIN_INFO(L"Loaded %zu user(s) successfully", m_users.size());
@@ -326,6 +358,10 @@ bool CredentialStore::SaveDatabase() {
             uint32_t faceId = face.id;
             file.write(reinterpret_cast<const char*>(&faceId), sizeof(faceId));
 
+            // V5: per-face legacy flag (1 = pre-1.6.0 alignment, display-only).
+            uint32_t legacy = face.legacy ? 1 : 0;
+            file.write(reinterpret_cast<const char*>(&legacy), sizeof(legacy));
+
             uint32_t labelLen = static_cast<uint32_t>(face.label.size());
             file.write(reinterpret_cast<const char*>(&labelLen), sizeof(labelLen));
             if (labelLen > 0) {
@@ -343,7 +379,10 @@ bool CredentialStore::SaveDatabase() {
     }
 
     file.close();
-    FACELOGIN_INFO(L"Saved %zu user(s) to database (v4)", count);
+    // A successful save writes V5 (new alignment) data, so any prior
+    // "old alignment, needs re-enrollment" flag is now resolved.
+    m_needsReenrollment = false;
+    FACELOGIN_INFO(L"Saved %zu user(s) to database (v%u)", count, FILE_VERSION);
     return true;
 }
 

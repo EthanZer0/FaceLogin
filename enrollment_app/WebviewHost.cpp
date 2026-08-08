@@ -340,6 +340,7 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"GetAboutSeen")        *ids = 35;
     else if (n == L"SetAboutSeen")        *ids = 36;
     else if (n == L"GetConsoleVersion")   *ids = 37;
+    else if (n == L"NeedsReenrollment")   *ids = 38;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -497,6 +498,7 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
             break;
         }
         case 37: if (res) *res = MakeStr(m_wizard->GetConsoleVersion()); break;
+        case 38: if (res) *res = MakeBool(m_wizard->NeedsReenrollment()); break;
         default: return DISP_E_MEMBERNOTFOUND;
         }
         return S_OK;

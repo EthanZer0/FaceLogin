@@ -60,6 +60,9 @@ public:
     // faces; each save appends one face instead of replacing the old one.
     // Number of faces enrolled for the current account (0 = not enrolled).
     int GetFaceCount();
+    // True when users.dat holds embeddings from the pre-1.6.0 alignment (V4 or
+    // older) that cannot be matched — the user must re-enroll.
+    bool NeedsReenrollment();
     // JSON list of the current account's faces: [{"id":1,"label":"脸1"},...]
     std::string GetFacesJson();
     // Append a new face for the current account without re-entering a password

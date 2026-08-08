@@ -371,6 +371,10 @@ button{font-family:inherit}
 .face-item .face-name{flex:1;font-size:13px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .face-item .face-id{font-size:10px;color:#8A919E;font-family:var(--font-data);flex-shrink:0}
 .face-item .btn{width:auto;padding:5px 12px;margin-top:0;font-size:11px}
+.face-item.legacy{opacity:.62;background:var(--face);border-style:dashed;border-color:#C6CBD4}
+.face-item.legacy:hover{background:var(--lite)}
+.face-item.legacy .face-name{color:#6B7280;text-decoration:line-through}
+.face-item .legacy-tag{font-size:10px;color:#9AA1AC;background:var(--lite);border:1px solid var(--hair);border-radius:999px;padding:1px 8px;flex-shrink:0}
 .faces-actions{display:flex;gap:8px;flex-shrink:0}
 .faces-actions .btn{margin-top:0;flex:1}
 .face-empty{text-align:center;color:var(--fog);font-size:13px;padding:40px 0;flex:1}
@@ -1580,8 +1584,9 @@ function loadFaces() {
     var html = '';
     for (var i = 0; i < faces.length; i++) {
       var f = faces[i];
-      html += '<div class="face-item">'
+      html += '<div class="face-item' + (f.legacy ? ' legacy' : '') + '">'
         + '<span class="face-name" title="' + escapeHtml(f.label) + '">' + escapeHtml(f.label) + '</span>'
+        + (f.legacy ? '<span class="legacy-tag">旧版数据</span>' : '')
         + '<span class="face-id">#' + f.id + '</span>'
         + '<button class="btn btn-secondary" onclick="onRenameFace(' + f.id + ')">重命名</button>'
         + '<button class="btn btn-secondary" onclick="onDeleteFace(' + f.id + ')">删除</button>'
@@ -2229,6 +2234,17 @@ function onCamPickerSkip() {
   setTimeout(function() {
     try { if (H.StartPreview()) renderFrame(); } catch(e) {}
   }, 100);
+
+  // Detect pre-1.6.0 (V4) face data that can no longer be matched by the new
+  // alignment, and prompt for re-enrollment before the user discovers it via a
+  // failed unlock. Cleared automatically once the user re-enrolls (saves V5).
+  setTimeout(function() {
+    try { if (H.NeedsReenrollment && H.NeedsReenrollment()) {
+      showBanner('cam',
+        '检测到旧版本录入的人脸数据，升级后需重新录入才能解锁。请点击「开始采集」重新录入。',
+        'error', 12000);
+    } } catch(e) {}
+  }, 200);
 
   // If the account was converted from MSA→local with a stale record, surface
   // the refresh prompt at startup (before the camera preview takes over).
