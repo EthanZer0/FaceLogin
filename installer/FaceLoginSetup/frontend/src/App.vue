@@ -31,7 +31,7 @@ const noticeLines = computed(() =>
 // '-' bullets belong to it; lines before any such header go into a default
 // section. Falls back to a single unnamed section when the body has no
 // group headers, so the legacy flat format still renders.
-interface NoticeSection { group: string; items: string[] }
+interface NoticeSection { group: string; items: string[]; important?: boolean }
 const noticeSections = computed<NoticeSection[]>(() => {
   const lines = noticeLines.value
   const sections: NoticeSection[] = []
@@ -42,7 +42,10 @@ const noticeSections = computed<NoticeSection[]>(() => {
     // Group header: "前缀：" on its own line (e.g. "新功能：", "修复：")
     const m = line.match(/^(.+?)：$/)
     if (m) {
-      cur = { group: m[1], items: [] }
+      // Sections whose title contains 重要/⚠ are emphasized in red — used for
+      // upgrade-critical warnings (e.g. "⚠️ 重要提醒：升级后需重新录入人脸").
+      const important = /重要|⚠|警告/.test(m[1])
+      cur = { group: m[1], items: [], important }
       sections.push(cur)
       continue
     }
@@ -271,14 +274,23 @@ async function doUninstall() {
         <!-- Body: grouped sections -->
         <div class="px-6 py-5 overflow-y-auto notice-scroll">
           <template v-for="(sec, si) in noticeSections" :key="si">
-            <div v-if="sec.group" class="notice-group-title">{{ sec.group }}</div>
+            <div
+              v-if="sec.group"
+              class="notice-group-title"
+              :class="sec.important ? 'notice-group-title--important' : ''"
+            >{{ sec.group }}</div>
             <ul class="notice-list" :class="sec.group ? 'mb-4' : ''">
               <li
                 v-for="(line, i) in sec.items"
                 :key="i"
-                class="flex gap-2.5 text-sm text-gray-600 leading-relaxed"
+                class="flex gap-2.5 text-sm leading-relaxed"
+                :class="sec.important ? 'text-red-700 font-medium' : 'text-gray-600'"
               >
-                <span class="notice-dot mt-[7px] flex-shrink-0" aria-hidden="true"></span>
+                <span
+                  class="notice-dot mt-[7px] flex-shrink-0"
+                  :class="sec.important ? 'notice-dot--important' : ''"
+                  aria-hidden="true"
+                ></span>
                 <span>{{ line }}</span>
               </li>
             </ul>
@@ -385,6 +397,15 @@ async function doUninstall() {
   background: #E5E7EB;
 }
 
+/* Important (⚠️) group: red title + red rule — used for upgrade-critical
+   warnings like "升级后需重新录入人脸". */
+.notice-group-title--important {
+  color: #DC2626;
+}
+.notice-group-title--important::after {
+  background: #FECACA;
+}
+
 .notice-list {
   display: flex;
   flex-direction: column;
@@ -397,6 +418,10 @@ async function doUninstall() {
   border-radius: 9999px;
   background: #0E9F6E;
   opacity: 0.75;
+}
+.notice-dot--important {
+  background: #DC2626;
+  opacity: 1;
 }
 
 /* Brand CTA */
