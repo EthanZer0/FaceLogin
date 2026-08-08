@@ -14,6 +14,10 @@ bool OnnxLandmarkDetector::Initialize(const std::wstring& modelPath) {
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(1);
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        // See onnx_models.cpp — disable the arena so the one-shot auth doesn't
+        // pin intermediate-tensor memory in RSS after the first inference.
+        opts.DisableCpuMemArena();
+        opts.DisableMemPattern();
 
         std::wstring wpath(modelPath.begin(), modelPath.end());
         m_session = std::make_unique<Ort::Session>(*m_env, wpath.c_str(), opts);

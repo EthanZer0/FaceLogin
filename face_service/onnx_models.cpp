@@ -57,6 +57,13 @@ bool OnnxRecognizer::Initialize(const std::wstring& modelPath) {
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(2);
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        // Don't retain an internal memory arena after inference: the service
+        // runs one-shot auths, so the arena's "keep peak allocations for reuse"
+        // behaviour just pins ~tens of MB of RSS after the first run and never
+        // gives it back. Disabling the arena + mem-pattern returns intermediate
+        // tensors to the heap allocator each run (ms-level cost, fine here).
+        opts.DisableCpuMemArena();
+        opts.DisableMemPattern();
 
         std::wstring wpath(modelPath.begin(), modelPath.end());
         m_session = std::make_unique<Ort::Session>(*m_env, wpath.c_str(), opts);
@@ -205,6 +212,13 @@ bool OnnxDetector::Initialize(const std::wstring& modelPath) {
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(2);
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        // Don't retain an internal memory arena after inference: the service
+        // runs one-shot auths, so the arena's "keep peak allocations for reuse"
+        // behaviour just pins ~tens of MB of RSS after the first run and never
+        // gives it back. Disabling the arena + mem-pattern returns intermediate
+        // tensors to the heap allocator each run (ms-level cost, fine here).
+        opts.DisableCpuMemArena();
+        opts.DisableMemPattern();
 
         std::wstring wpath(modelPath.begin(), modelPath.end());
         m_session = std::make_unique<Ort::Session>(*m_env, wpath.c_str(), opts);
@@ -472,6 +486,13 @@ bool OnnxAntiSpoof::Initialize(const std::wstring& modelPath) {
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(2);
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        // Don't retain an internal memory arena after inference: the service
+        // runs one-shot auths, so the arena's "keep peak allocations for reuse"
+        // behaviour just pins ~tens of MB of RSS after the first run and never
+        // gives it back. Disabling the arena + mem-pattern returns intermediate
+        // tensors to the heap allocator each run (ms-level cost, fine here).
+        opts.DisableCpuMemArena();
+        opts.DisableMemPattern();
 
         std::wstring wpath(modelPath.begin(), modelPath.end());
         m_session = std::make_unique<Ort::Session>(*m_env, wpath.c_str(), opts);

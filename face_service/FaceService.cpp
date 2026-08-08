@@ -349,6 +349,24 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
     return true;
 }
 
+// Release all heavy-model memory (2d106det + recognizer + anti-spoof sessions)
+// after an auth completes, so the idle service's RSS drops back to ~baseline.
+// The next auth's EnsureModelsLoaded() reloads them synchronously (~200-500ms
+// of startup latency, a deliberate trade for a low idle footprint — 1.6.0).
+// SCRFD (m_onnxDetector) stays resident: it is needed for the very first frame
+// and is the lightest model. Only called from the main pipe thread after the
+// auth pipeline has fully unwound, so no inference is in flight.
+void FaceService::UnloadHeavyModels() {
+    std::lock_guard<std::mutex> lock(m_modelMutex);
+    if (m_detector)         { m_detector.reset(); }
+    if (m_onnxRecognizer)   { m_onnxRecognizer.reset(); }
+    if (m_antiSpoof)        { m_antiSpoof.reset(); }
+    m_modelsLoading.store(false);
+    m_modelsReady.store(false);
+    m_modelsFailed.store(false);
+    FACELOGIN_INFO(L"Heavy models unloaded after auth");
+}
+
 void FaceService::StartBackgroundModelLoad() {
     // Capture the config values the loader needs NOW. The main thread can
     // rewrite m_config via CONFIG_RELOAD while the loader is running; reading
@@ -394,19 +412,38 @@ void FaceService::ValidateLivenessMethod() {
     }
 }
 
-// Called from the main auth path before the first inference. Blocks until the
-// heavy models are ready, or fails, or the service is stopping. Returns false
-// only if a REQUIRED model failed to load (auth cannot proceed) or the service
-// is stopping.
+// Called from the main auth path before the first inference. Returns true if
+// the heavy models are ready, loading them SYNCHRONOUSLY if they were unloaded
+// after the previous auth (1.6.0: UnloadHeavyModels frees model memory when the
+// service is idle). Blocks while the startup background loader is still running.
+// Returns false only if a REQUIRED model failed to load (auth cannot proceed)
+// or the service is stopping.
 bool FaceService::EnsureModelsLoaded() {
     if (m_modelsReady.load()) return true;
-    if (m_modelsFailed.load() && !m_modelsLoading.load()) return false;
+    if (m_modelsAbort.load()) return false;
 
-    std::unique_lock<std::mutex> lock(m_modelMutex);
-    m_modelCv.wait(lock, [this]() {
-        return m_modelsReady.load() || m_modelsFailed.load() || m_modelsAbort.load();
-    });
-    return m_modelsReady.load();
+    // Unloaded after a prior auth, or the startup background load is still in
+    // flight. Wait for any in-flight load; if none is running, load now on this
+    // thread (synchronous, ~200-500ms).
+    {
+        std::unique_lock<std::mutex> lock(m_modelMutex);
+        m_modelCv.wait(lock, [this]() {
+            return !m_modelsLoading.load() || m_modelsReady.load() ||
+                   m_modelsFailed.load() || m_modelsAbort.load();
+        });
+        if (m_modelsReady.load()) return true;
+        if (m_modelsFailed.load() && !m_modelsLoading.load()) return false;
+        if (m_modelsAbort.load()) return false;
+    }
+
+    // No load in flight and not ready — load synchronously on this thread.
+    const bool lowLightEnhance = m_config.low_light_enhance;
+    bool ok = LoadHeavyModels(lowLightEnhance);
+    m_modelsLoading.store(false);
+    m_modelsReady.store(ok);
+    m_modelsFailed.store(!ok);
+    m_modelCv.notify_all();
+    return ok;
 }
 
 // Release anyone blocked in EnsureModelsLoaded() during service shutdown so
@@ -558,6 +595,12 @@ void FaceService::Run() {
                 m_webcamMF.reset();
                 FACELOGIN_INFO(L"MF camera released after auth");
             }
+            // Free the heavy model sessions now that the auth pipeline has fully
+            // unwound, dropping idle RSS back to baseline. Reload happens on the
+            // next auth (see EnsureModelsLoaded). Note: this intentionally does
+            // NOT unload SCRFD — it's the lightest model and needed for the very
+            // first frame of the next auth.
+            UnloadHeavyModels();
             m_pipeServer->Disconnect();
         }
         else if (request == ipc::MSG_PING) {
