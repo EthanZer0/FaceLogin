@@ -375,23 +375,50 @@ bool WebcamCapture::ConvertNV12toRGB(IMFSample* pSample,
 
     outFrame.set_size(height, width);
 
+    // YUV→RGB is a fixed linear combination of Y/U/V. Precompute the
+    // chroma-only contribution (NOT shifted — the >>8 must stay together
+    // with the luma term so the result is bit-identical to the original
+    // scalar formula) for every possible (U,V) pair. This removes the
+    // per-pixel chroma multiplications and max/min clamps from the hot loop
+    // — for 1280×720 that is ~920k pixels × 3 channels every frame.
+    //   R = (298·C + 409·E + 128)>>8
+    //   G = (298·C −100·D −208·E + 128)>>8
+    //   B = (298·C + 516·D + 128)>>8     with C=Y−16, D=U−128, E=V−128
+    static int rUV[256][256], gUV[256][256], bUV[256][256];
+    static const bool sUVBuilt = [] {
+        for (int u = 0; u < 256; u++) {
+            int D = u - 128;
+            for (int v = 0; v < 256; v++) {
+                int E = v - 128;
+                rUV[u][v] = 409 * E + 128;
+                gUV[u][v] = -100 * D - 208 * E + 128;
+                bUV[u][v] = 516 * D + 128;
+            }
+        }
+        return true;
+    }();
+
     for (UINT32 row = 0; row < height; row++) {
+        dlib::rgb_pixel* dstRow = &outFrame(row, 0);
+        const BYTE* yRow = yPlane + row * width;
+        const BYTE* uvRow = uvPlane + (row >> 1) * width;
+
         for (UINT32 col = 0; col < width; col++) {
-            BYTE Y = yPlane[row * width + col];
-            BYTE U = uvPlane[(row / 2) * width + (col & ~1)];
-            BYTE V = uvPlane[(row / 2) * width + (col & ~1) + 1];
+            BYTE Y = yRow[col];
+            int C = static_cast<int>(Y) - 16;
+            // NV12 chroma is subsampled 2x2: for luma (row,col) the chroma
+            // position is (row/2, col/2). Each (U,V) covers a 2x1 luma pair
+            // at the same row, so even col shares the sample with col+1.
+            BYTE U = uvRow[col & ~1];
+            BYTE V = uvRow[(col & ~1) + 1];
 
-            int C = Y - 16;
-            int D = U - 128;
-            int E = V - 128;
+            const int rv = (298 * C + rUV[U][V]) >> 8;
+            const int gv = (298 * C + gUV[U][V]) >> 8;
+            const int bv = (298 * C + bUV[U][V]) >> 8;
 
-            int R = (298 * C + 409 * E + 128) >> 8;
-            int G = (298 * C - 100 * D - 208 * E + 128) >> 8;
-            int B = (298 * C + 516 * D + 128) >> 8;
-
-            outFrame(row, col).red   = static_cast<unsigned char>(std::max(0, std::min(255, R)));
-            outFrame(row, col).green = static_cast<unsigned char>(std::max(0, std::min(255, G)));
-            outFrame(row, col).blue  = static_cast<unsigned char>(std::max(0, std::min(255, B)));
+            dstRow[col].red   = static_cast<unsigned char>(rv < 0 ? 0 : (rv > 255 ? 255 : rv));
+            dstRow[col].green = static_cast<unsigned char>(gv < 0 ? 0 : (gv > 255 ? 255 : gv));
+            dstRow[col].blue  = static_cast<unsigned char>(bv < 0 ? 0 : (bv > 255 ? 255 : bv));
         }
     }
 

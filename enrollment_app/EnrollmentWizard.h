@@ -184,6 +184,13 @@ private:
     // WIC factory (created once)
     IWICImagingFactory* m_wicFactory = nullptr;
 
+    // Reusable encode buffers (EncodeJPEGBase64). Avoids re-allocating the
+    // ~3.7MB BGRA staging buffer and the JPEG output buffer every frame —
+    // only reallocated when the camera resolution changes.
+    std::vector<BYTE> m_encodeBgra;
+    std::vector<BYTE> m_encodeJpeg;
+    int m_encodeWidth = 0, m_encodeHeight = 0;
+
     // Per-frame caches (produced by frame thread, consumed by JS on UI thread)
     std::mutex  m_frameCacheMutex;
     std::string m_latestFrameB64;

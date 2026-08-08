@@ -56,6 +56,12 @@ bool OnnxRecognizer::Initialize(const std::wstring& modelPath) {
         m_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "FaceLogin");
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(2);
+        // The CPU thread pool spins (busy-waits) by default, so even with no
+        // active inference the worker threads burn a full core each. Both the
+        // Console (per-frame inference) and the service (resident sessions)
+        // keep their ONNX sessions alive for long stretches, so disable
+        // spinning everywhere — idle worker threads park instead of spinning.
+        opts.AddConfigEntry("session.intra_op.allow_spinning", "0");
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         // Don't retain an internal memory arena after inference: the service
         // runs one-shot auths, so the arena's "keep peak allocations for reuse"
@@ -214,6 +220,12 @@ bool OnnxDetector::Initialize(const std::wstring& modelPath) {
         m_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "FaceLogin");
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(2);
+        // The CPU thread pool spins (busy-waits) by default, so even with no
+        // active inference the worker threads burn a full core each. Both the
+        // Console (per-frame inference) and the service (resident sessions)
+        // keep their ONNX sessions alive for long stretches, so disable
+        // spinning everywhere — idle worker threads park instead of spinning.
+        opts.AddConfigEntry("session.intra_op.allow_spinning", "0");
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         // Don't retain an internal memory arena after inference: the service
         // runs one-shot auths, so the arena's "keep peak allocations for reuse"
@@ -488,6 +500,12 @@ bool OnnxAntiSpoof::Initialize(const std::wstring& modelPath) {
         m_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "FaceLogin");
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(2);
+        // The CPU thread pool spins (busy-waits) by default, so even with no
+        // active inference the worker threads burn a full core each. Both the
+        // Console (per-frame inference) and the service (resident sessions)
+        // keep their ONNX sessions alive for long stretches, so disable
+        // spinning everywhere — idle worker threads park instead of spinning.
+        opts.AddConfigEntry("session.intra_op.allow_spinning", "0");
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         // Don't retain an internal memory arena after inference: the service
         // runs one-shot auths, so the arena's "keep peak allocations for reuse"

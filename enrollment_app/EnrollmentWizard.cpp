@@ -444,7 +444,17 @@ std::string EnrollmentWizard::EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixe
     int srcW = static_cast<int>(frame.nc());
     int srcH = static_cast<int>(frame.nr());
 
-    std::vector<BYTE> bgra(srcW * srcH * 4);
+    // Reuse the staging buffers across frames (only reallocated on resolution
+    // change) instead of allocating ~3.7MB + the JPEG output every frame.
+    if (srcW != m_encodeWidth || srcH != m_encodeHeight) {
+        m_encodeWidth = srcW;
+        m_encodeHeight = srcH;
+        m_encodeBgra.assign(static_cast<size_t>(srcW) * srcH * 4, 0);
+        m_encodeJpeg.clear();
+        m_encodeJpeg.shrink_to_fit();
+    }
+    std::vector<BYTE>& bgra = m_encodeBgra;
+
     for (int y = 0; y < srcH; y++) {
         BYTE* row = bgra.data() + y * srcW * 4;
         for (int x = 0; x < srcW; x++) {
@@ -493,7 +503,8 @@ std::string EnrollmentWizard::EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixe
     STATSTG stat;
     pStream->Stat(&stat, STATFLAG_NONAME);
     ULONG jpgSize = static_cast<ULONG>(stat.cbSize.QuadPart);
-    std::vector<BYTE> jpgData(jpgSize);
+    std::vector<BYTE>& jpgData = m_encodeJpeg;
+    if (jpgData.size() < jpgSize) jpgData.resize(jpgSize);
     LARGE_INTEGER li = {};
     pStream->Seek(li, STREAM_SEEK_SET, nullptr);
     ULONG read = 0;
