@@ -607,9 +607,14 @@ bool EnrollmentWizard::CaptureFaceSamples() {
 
                 float score = m_antiSpoof->Predict(frame, asLandmarks);
                 totalChecked++;
-                if (score >= m_antiSpoofThreshold) passCount++; // config-driven threshold
-                FACELOGIN_INFO(L"Enrollment anti-spoof frame %d: score=%.3f (pass=%d)",
-                              totalChecked, score, passCount);
+                // Map the config slider onto the current model's score scale
+                // (facenox logit-diff vs OULU pixel-mean) — see
+                // AntiSpoofEffectiveThreshold in liveness_types.h.
+                float effThr = AntiSpoofEffectiveThreshold(m_antiSpoofThreshold,
+                                                           m_antiSpoof->IsFacenoxMode());
+                if (score >= effThr) passCount++; // model-mapped threshold
+                FACELOGIN_INFO(L"Enrollment anti-spoof frame %d: score=%.3f thr=%.2f (pass=%d)",
+                              totalChecked, score, effThr, passCount);
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
             }
             livenessPassed = (totalChecked > 0 && passCount >= passRequired);

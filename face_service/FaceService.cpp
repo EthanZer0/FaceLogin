@@ -974,8 +974,11 @@ bool FaceService::ProcessAuthRequest() {
                         // facenox MiniFAS scores are real-spoof logit diffs (>=1
                         // = clearly real, calibrated from real footage: real +1.3..+11,
                         // most screen replays <0). DeepPixBiS/OULU scores are pixel-map
-                        // means (>=0.28 default). Pick the threshold per model mode.
-                        float effThr = m_antiSpoof->IsFacenoxMode() ? 1.0f : m_antiSpoofThreshold;
+                        // means (>=0.28 default). The config slider is mapped onto each
+                        // model's score scale via AntiSpoofEffectiveThreshold (the
+                        // facenox mapping anchors the 0.30 default at the historical 1.0).
+                        float effThr = AntiSpoofEffectiveThreshold(m_antiSpoofThreshold,
+                                                                  m_antiSpoof->IsFacenoxMode());
                         if (score >= effThr) passCount++;
                         FACELOGIN_INFO(L"Anti-spoof frame %d: score=%.3f thr=%.2f (pass=%d)", totalChecked, score, effThr, passCount);
 
