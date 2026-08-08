@@ -152,6 +152,10 @@ int WebviewHost::Run() {
     AdjustWindowRect(&rc, style, FALSE);
     int actualWndW = rc.right - rc.left;
     int actualWndH = rc.bottom - rc.top;
+    // Capture the fixed size once; WM_GETMINMAXINFO always uses this, so a
+    // minimize/restore cycle can never read back an icon-sized rect.
+    m_fixedW = actualWndW;
+    m_fixedH = actualWndH;
 
     m_hWnd = CreateWindowExW(0, WND_CLASS, L"FaceLogin Console",
         style,
@@ -208,22 +212,27 @@ LRESULT WebviewHost::HandleMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_SIZE:
-        ResizeWebView(hWnd);
+        // Skip resizing the WebView while minimized (SIZE_MINIMIZED reports a
+        // tiny client area); the WM_SIZE(SIZE_RESTORED) on restore re-sizes it
+        // back. Resizing the WebView into an icon-sized rect is harmless but
+        // avoids a transient flash.
+        if (wp != SIZE_MINIMIZED) {
+            ResizeWebView(hWnd);
+        }
         return 0;
 
-    // Fixed-size window: clamp min/max tracking size to the current size so
-    // neither dragging the edge (already disabled) nor the system menu can
-    // resize the window. This is the last line of defense.
+    // Fixed-size window: clamp min/max tracking size to the fixed size captured
+    // at creation, so neither dragging the edge (already disabled) nor the
+    // system menu can resize the window. Using the stored m_fixedW/H — NOT
+    // GetWindowRect — avoids the minimize bug where a restore would read back
+    // an icon-sized rect and clamp the window to just the title bar.
     case WM_GETMINMAXINFO: {
-        MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-        RECT rc;
-        if (GetWindowRect(hWnd, &rc)) {
-            LONG w = rc.right - rc.left;
-            LONG h = rc.bottom - rc.top;
-            mmi->ptMaxTrackSize.x = w;
-            mmi->ptMaxTrackSize.y = h;
-            mmi->ptMinTrackSize.x = w;
-            mmi->ptMinTrackSize.y = h;
+        if (m_fixedW > 0 && m_fixedH > 0) {
+            MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lp);
+            mmi->ptMaxTrackSize.x = m_fixedW;
+            mmi->ptMaxTrackSize.y = m_fixedH;
+            mmi->ptMinTrackSize.x = m_fixedW;
+            mmi->ptMinTrackSize.y = m_fixedH;
         }
         return 0;
     }

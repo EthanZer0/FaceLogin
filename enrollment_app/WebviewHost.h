@@ -71,6 +71,8 @@ public:
     HINSTANCE m_hInstance;
     HWND     m_hWnd = nullptr;
     facelogin::EnrollmentWizard* m_wizard;
+    LONG m_fixedW = 0;   // fixed window size (pixels), captured at creation
+    LONG m_fixedH = 0;
 
     ICoreWebView2Controller*  m_controller = nullptr;
     ICoreWebView2*            m_webview    = nullptr;
