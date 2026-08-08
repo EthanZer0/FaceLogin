@@ -170,7 +170,7 @@ private:
 
     // Configuration
     AppConfig m_config;
-    LivenessMethod m_livenessMethod = LivenessMethod::Blink;
+    LivenessMethod m_livenessMethod = LivenessMethod::None;
     float m_antiSpoofThreshold = 0.30f;
 
     // Frame-grab thread (runs off UI thread — GrabFrame + JPEG encode + detection)

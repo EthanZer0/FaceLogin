@@ -11,7 +11,7 @@ struct AppConfig {
     // compatibility but ignored at runtime (only "onnx"/"scrfd" are valid).
     std::string    recognition_model      = "onnx";      // retained for compat
     std::string    detector               = "scrfd";     // retained for compat
-    LivenessMethod liveness_method        = LivenessMethod::Blink;
+    LivenessMethod liveness_method        = LivenessMethod::None;
     float          match_threshold        = 0.65f;        // Euclidean distance; 0.45(strict)…1.15(loose)
     float          anti_spoof_threshold   = 0.30f;       // DeepPixBiS pixel map threshold
     // Blink-detection mode. false (default) = CLASSIC stable algorithm (averaged

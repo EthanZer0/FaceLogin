@@ -226,13 +226,13 @@ std::string LivenessMethodToString(LivenessMethod m) {
         case LivenessMethod::AntiSpoof: return "antispoof";
         case LivenessMethod::None:      return "none";
     }
-    return "blink";
+    return "none";
 }
 
 LivenessMethod LivenessMethodFromString(const std::string& s) {
+    if (s == "blink")     return LivenessMethod::Blink;
     if (s == "antispoof") return LivenessMethod::AntiSpoof;
-    if (s == "none")      return LivenessMethod::None;
-    return LivenessMethod::Blink; // default
+    return LivenessMethod::None; // default: no liveness check
 }
 
 } // namespace facelogin

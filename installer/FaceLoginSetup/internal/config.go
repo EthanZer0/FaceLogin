@@ -51,7 +51,7 @@ func EnsureConfigDefaults(configPath string) error {
 		cfg = map[string]any{
 			"recognition_model":     "onnx",
 			"detector":              "scrfd",
-			"liveness_method":       "blink",
+			"liveness_method":       "none",
 			"match_threshold":       0.65,
 			"anti_spoof_threshold":  0.30,
 			"blink_glasses_mode":    false,

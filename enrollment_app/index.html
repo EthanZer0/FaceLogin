@@ -1329,7 +1329,7 @@ function loadSettings() {
   try {
     var json = H.GetConfig();
     var cfg = JSON.parse(json);
-    document.getElementById('cfg-liveness').value = cfg.liveness_method || 'blink';
+    document.getElementById('cfg-liveness').value = cfg.liveness_method || 'none';
     document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
     document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
@@ -1439,10 +1439,10 @@ function onCapture() {
   prog.style.display = 'block';
 
   // Read config to determine liveness method for UI text
-  var liveMethod = 'blink';
+  var liveMethod = 'none';
   try {
     var cfg = JSON.parse(H.GetConfig());
-    liveMethod = cfg.liveness_method || 'blink';
+    liveMethod = cfg.liveness_method || 'none';
   } catch(e) {}
 
   if (liveMethod === 'antispoof') {
