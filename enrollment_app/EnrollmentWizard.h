@@ -38,6 +38,11 @@ public:
     std::string GetUserUpn() const;
     std::string GetAccountType() const { return m_accountType; }
     bool CaptureFaceSamples();          // blocking: captures 10 samples
+    // True while the capture thread is still running (liveness check or
+    // sample collection). The frontend polls this alongside GetSampleCount()
+    // so it can detect when the backend stops early (e.g. the 300-attempt
+    // no-face/no-embedding bail-out) instead of waiting forever at 90%.
+    bool IsCapturing() const { return m_capturing; }
     bool IsLivenessPassed() const { return m_livenessPassed; }
     bool IsLivenessChecking() const { return m_livenessChecking; }
     bool ValidatePassword(const std::wstring& password);

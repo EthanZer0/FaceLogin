@@ -1558,6 +1558,20 @@ function onCapture() {
             }
           } catch(e) {}
           document.getElementById('fld-pass').focus();
+        } else if (H.IsCapturing && !H.IsCapturing()) {
+          // Backend stopped early without reaching 10 samples — the capture
+          // thread bailed out (e.g. 300 consecutive no-face/no-embedding
+          // attempts, or the user walked away). The progress bar would
+          // otherwise sit forever at 90% with the spinner spinning and no
+          // response. Reset the UI and tell the user what happened.
+          clearInterval(samplePoll);
+          prog.style.display = 'none';
+          btn.disabled = false;
+          spinner.style.display = 'none';
+          document.getElementById('samples-tag').textContent = '0 / 10';
+          document.getElementById('cap-fill').style.width = '0%';
+          document.getElementById('cap-pct').textContent = '0%';
+          showBanner('cam', '采集未完成：未能在限时内采集到足够的人脸样本。请确保面部在取景框内且光线充足后重试。', 'error', 8000);
         }
       }, 200);
     }
