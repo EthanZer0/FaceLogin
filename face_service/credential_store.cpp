@@ -1,6 +1,7 @@
 #include "credential_store.h"
 #include "../common/logger.h"
 #include "../common/dpapi_util.h"
+#include "../common/account_identity.h"
 #include <shlobj.h>
 #include <fstream>
 #include <algorithm>
@@ -65,21 +66,11 @@ static void LookupUserIdentity(const std::wstring& username,
         }
     }
 
-    // Get UPN via GetUserNameExW (dynamic bind to avoid secext.h conflicts)
-    HMODULE hSecur32 = LoadLibraryW(L"secur32.dll");
-    if (hSecur32) {
-        typedef BOOLEAN (WINAPI *PFN_GetUserNameExW)(int, LPWSTR, PULONG);
-        auto pfn = reinterpret_cast<PFN_GetUserNameExW>(
-            GetProcAddress(hSecur32, "GetUserNameExW"));
-        if (pfn) {
-            ULONG upnSize = 256;
-            std::vector<wchar_t> upnBuf(upnSize);
-            if (pfn(8 /* NameUserPrincipal */, upnBuf.data(), &upnSize)) {
-                outUpn = upnBuf.data();
-            }
-        }
-        FreeLibrary(hSecur32);
-    }
+    // Get UPN via the shared authoritative helper (common/account_identity).
+    // Handles both a true MSA direct logon (GetUserNameExW NameUserPrincipal)
+    // and a local account linked to an MSA (MicrosoftAccount shadow SID
+    // S-1-11-96-... in the token group list).
+    GetLinkedAccountUpn(outUpn);
 }
 
 std::wstring CredentialStore::GetDataDir() const {

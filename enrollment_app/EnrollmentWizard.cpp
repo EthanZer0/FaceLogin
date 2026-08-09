@@ -5,6 +5,7 @@
 #include "../common/registry_util.h"
 #include "../common/config_util.h"
 #include "../common/image_utils.h"
+#include "../common/account_identity.h"
 #include <comdef.h>
 #include <shlobj.h>
 #include <wincodec.h>
@@ -38,48 +39,17 @@ static std::wstring Utf8ToWstr(const std::string& s) {
 // ---------------------------------------------------------------------------
 // Session identity helper
 //
-// GetUserNameExW(NameUserPrincipal) is the ONE authoritative source of the
-// current session's UPN: it returns the email for Microsoft accounts and
-// fails with ERROR_NONE_MAPPED (1332) for local accounts. Machine-wide
-// registry caches (IdentityStore\LogonCache\Name2Sid etc.) can hold MSA
-// identities that do NOT belong to the current user — a previous user
-// profile, or an MSA that was later converted to local. Adopting one of
-// those emails mislabels the account as MSA and poisons the stored record,
-// which produced bug1's perpetual false "账号身份已变更" prompt. All
-// MSA/local decisions must route through GetSessionUpn().
+// The authoritative MSA/local decision lives in the shared
+// common/account_identity.{h,cpp} (GetLinkedAccountUpn / IsMsaSession), which
+// is used by all three executables. It handles BOTH a true MSA direct logon
+// (GetUserNameExW(NameUserPrincipal)) and a local account LINKED to an MSA,
+// whose MicrosoftAccount shadow SID (S-1-11-96-...) sits in the token's group
+// list — the case GetUserNameExW alone misses (returns err 1332/203 and the
+// account is mislabeled "local"). All MSA/local decisions must route through
+// the shared function. Registry caches (IdentityStore\LogonCache\Name2Sid)
+// are deliberately NOT used as a source of truth: they can hold MSA identities
+// that do not belong to the current user (docs/todo.md bug1).
 // ---------------------------------------------------------------------------
-static std::wstring GetSessionUpn() {
-    std::wstring upn;
-    HMODULE hSecur32 = LoadLibraryW(L"secur32.dll");
-    if (!hSecur32) return upn;
-    typedef BOOLEAN (WINAPI *PFN_GetUserNameExW)(int, LPWSTR, PULONG);
-    auto pfn = reinterpret_cast<PFN_GetUserNameExW>(
-        GetProcAddress(hSecur32, "GetUserNameExW"));
-    if (pfn) {
-        // GetUserNameExW returns ERROR_INSUFFICIENT_BUFFER (122) and writes
-        // the REQUIRED size (in wchar, INCLUDING the terminator) back into
-        // *upnSize when the buffer is too small. A single 256-char probe
-        // would silently drop over-long UPNs (very long domains / AD UPNs),
-        // mislabeling the account as local — the same class of bug as
-        // docs/todo.md bug1, just the symmetric case. Retry once with the
-        // required size; ERROR_NONE_MAPPED (1332, local accounts) leaves
-        // upn empty as intended.
-        ULONG upnSize = 256;
-        std::vector<wchar_t> upnBuf(upnSize);
-        if (!pfn(8 /* NameUserPrincipal */, upnBuf.data(), &upnSize)) {
-            if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && upnSize > 0) {
-                upnBuf.resize(upnSize);
-                if (pfn(8 /* NameUserPrincipal */, upnBuf.data(), &upnSize)) {
-                    upn = upnBuf.data();
-                }
-            }
-        } else {
-            upn = upnBuf.data();
-        }
-    }
-    FreeLibrary(hSecur32);
-    return upn;
-}
 
 EnrollmentWizard::EnrollmentWizard() {
     std::wstring regData = ReadRegString(REGVAL_DATA_PATH, L"");
@@ -117,10 +87,11 @@ EnrollmentWizard::EnrollmentWizard() {
         m_username = username;
     }
 
-    // Get UPN (UserPrincipalName) — the ONLY trusted source of the current
-    // session's identity. GetUserNameExW(NameUserPrincipal) returns the email
-    // UPN for Microsoft accounts and fails with ERROR_NONE_MAPPED for local
-    // accounts, so m_upn stays empty for local users.
+    // Get the current session's Microsoft-account identity via the shared,
+    // authoritative helper (common/account_identity). It returns the MSA email
+    // for a direct MSA logon AND for a local account linked to an MSA (the
+    // token carries a MicrosoftAccount shadow SID S-1-11-96-...); m_upn stays
+    // empty only for a plain local account.
     //
     // NOTE: machine-wide registry fallbacks (IdentityCRL\StoredIdentities,
     // IdentityStore\LogonCache\Name2Sid) used to live here and adopted ANY
@@ -130,13 +101,10 @@ EnrollmentWizard::EnrollmentWizard() {
     // poisoned the stored record — producing a perpetual false
     // "账号身份已变更" prompt (docs/todo.md bug1). Never re-add an
     // unattributed cache lookup.
-    m_upn = GetSessionUpn();
+    GetLinkedAccountUpn(m_upn);
 
     // Determine account type: MSA accounts have a UPN containing '@'
-    m_accountType = "local";
-    if (!m_upn.empty() && m_upn.find(L'@') != std::wstring::npos) {
-        m_accountType = "msa";
-    }
+    m_accountType = IsMsaSession() ? "msa" : "local";
 
     // Get SID via LookupAccountNameW
     {
@@ -795,13 +763,13 @@ std::string EnrollmentWizard::GetUserUpn() const {
 }
 
 bool EnrollmentWizard::ValidatePassword(const std::wstring& password) {
-    // The MSA/local decision MUST come from the live session identity
-    // (GetSessionUpn), never from m_upn: m_upn used to be polluted with
-    // another account's email by a registry fallback (docs/todo.md bug1),
-    // which routed local users into the MSA path below and made the account
-    // refresh loop impossible to complete.
-    std::wstring sessionUpn = GetSessionUpn();
-    bool isMsa = !sessionUpn.empty() && sessionUpn.find(L'@') != std::wstring::npos;
+    // The MSA/local decision MUST come from the live session identity (the
+    // shared common/account_identity helper), never from m_upn: m_upn used to
+    // be polluted with another account's email by a registry fallback
+    // (docs/todo.md bug1), which routed local users into the MSA path below
+    // and made the account refresh loop impossible to complete.
+    std::wstring sessionUpn;
+    bool isMsa = GetLinkedAccountUpn(sessionUpn);
 
     if (isMsa) {
         // MSA: domain=NULL routes through CloudAP for an online validation of
@@ -1113,20 +1081,20 @@ bool EnrollmentWizard::RenameFace(int faceId, const std::wstring& label) {
 // Detect a stale account-type record (symmetric MSA ↔ local). We never trust
 // m_upn/m_accountType here — they are derived from the session at construction
 // and could be empty for local accounts; instead we re-query the CURRENT
-// session identity with the authoritative GetSessionUpn() (docs/todo.md bug1):
-//   UPN contains '@'  → current account is MSA
-//   empty (err 1332)  → current account is local
+// session identity with the shared authoritative helper (common/account_identity,
+// GetLinkedAccountUpn, docs/todo.md bug1):
+//   GetLinkedAccountUpn() true  → current account is MSA
+//   false                        → current account is local
 // Then compare against the stored record (matched by SID, which Windows keeps
 // across MSA↔local conversions):
 //   local + record UPN is an MSA email  → state 1 (MSA→local, clear UPN)
 //   MSA   + record UPN empty/different  → state 2 (local→MSA, write current UPN)
 //   everything else                     → state 0 (no refresh needed)
 int EnrollmentWizard::GetAccountTypeChanged() {
-    // Determine the CURRENT session's account type via the authoritative
-    // query used everywhere else (docs/todo.md bug1). Empty (err 1332) means
-    // no UPN → local account.
-    std::wstring curUpn = GetSessionUpn();
-    bool sessionIsMsa = !curUpn.empty() && curUpn.find(L'@') != std::wstring::npos;
+    // Determine the CURRENT session's account type via the shared, authoritative
+    // helper (common/account_identity) used everywhere else (docs/todo.md bug1).
+    std::wstring curUpn;
+    bool sessionIsMsa = GetLinkedAccountUpn(curUpn);
 
     // Match the current identity against stored records (same priority as
     // FindUserIndex: SID > UPN > username).
@@ -1170,7 +1138,8 @@ std::string EnrollmentWizard::CheckAccountTypeChanged() {
 
     if (state == 2) {
         // Re-derive the current MSA email (same authoritative query).
-        std::wstring curUpn = GetSessionUpn();
+        std::wstring curUpn;
+        GetLinkedAccountUpn(curUpn);
         return "{\"state\":2,\"faces\":" + std::to_string(faces) +
                ",\"upn\":\"" + WstrToUtf8Escaped(curUpn) + "\"}";
     }
@@ -1216,7 +1185,7 @@ bool EnrollmentWizard::RefreshAccountIdentity(const std::wstring& password) {
     //   state 2 (local→MSA): write the current MSA email (session UPN).
     std::wstring newUpn;
     if (state == 2) {
-        newUpn = GetSessionUpn();
+        GetLinkedAccountUpn(newUpn);
     }
     // state 1 → newUpn stays empty (local account).
 
