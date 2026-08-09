@@ -78,17 +78,12 @@ func main() {
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.6.0"
-	internal.NoticeTitle = "FaceLogin 1.6.0 更新说明"
-	internal.NoticeBody = "⚠️ 重要提醒：\n" +
-		"- 由于人脸对齐方式升级，旧版本录入的人脸数据无法用于新版识别，升级后请重新打开 FaceLoginConsole 录入人脸\n" +
-		"- 账户密码数据不受影响，无需重新设置\n\n" +
-		"核心变更：\n" +
-		"- 弃用 dlib 68点模型，全面迁移到 insightface 2d106det 106点关键点模型\n" +
-		"- 安装包大幅瘦身：移除 99.7MB 旧模型，新增 5MB 新模型（约节省 94MB）\n" +
-		"- 关键点定位更准，眼部/鼻部点位精确贴合眼眶\n" +
-		"- 眨眼活体检测重新标定，识别更可靠\n" +
-		"- 反欺诈模型升级为 facenox MiniFAS，更精准拦截屏幕翻拍"
+	internal.NoticeVersion = "1.6.1"
+	internal.NoticeTitle = "FaceLogin 1.6.1 更新说明"
+	internal.NoticeBody = "本次为修复更新：\n" +
+		"- 修复微软在线账户（MSA）被误识别为本地账户的问题。此前链接/使用微软账号的用户，录入时会要求输入 Windows 密码导致无法保存；现已在打开 Console 时正确识别微软账号\n" +
+		"- 已录入用户：打开 Console 若提示「账号身份已变更」，按提示输入微软账号密码刷新一次，即可继续正常使用人脸登录\n" +
+		"- 已录入的人脸数据不受影响，无需重新录入"
 
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
