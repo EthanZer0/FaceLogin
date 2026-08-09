@@ -11,21 +11,28 @@ namespace {
 // The MicrosoftAccount well-known authority. S-1-11-96-<sub-auth> is the
 // "shadow SID" Windows puts into the logon token's group list when a local
 // account is linked to (or otherwise associated with) a Microsoft account.
-// The identifier authority is {0,0,0,0,0,16} and the first sub-authority is
-// 96. (Not declared in the SDK headers this project builds against, so it is
-// matched structurally rather than via a named constant.)
-const BYTE kMicrosoftAccountAuthority[6] = {0, 0, 0, 0, 0, 16};  // SECURITY_MSA_AUTHORITY
+// The SID string form S-1-11-96 decodes to revision 1, identifier authority
+// 11 (SECURITY_PACKAGE_AUTHORITY), first sub-authority 96. (Not declared in
+// the SDK headers this project builds against, so it is matched structurally
+// rather than via a named constant.)
+const BYTE kMicrosoftAccountAuthority[6] = {0, 0, 0, 0, 0, 11};  // SECURITY_PACKAGE_AUTHORITY
 const DWORD kMicrosoftAccountRid = 96;
 
 // True when `pSid` is a MicrosoftAccount shadow SID (S-1-11-96-...).
 bool IsMicrosoftAccountSid(PSID pSid) {
     if (!IsValidSid(pSid)) return false;
+    // Identifier authority comparison. GetSidIdentifierAuthority returns a
+    // pointer into the SID; compare its 6 bytes against SECURITY_PACKAGE_AUTHORITY
+    // {0,0,0,0,0,11}. (memcmp of the full 6-byte value — the SID authority
+    // byte order is big-endian so {0,0,0,0,0,11} is correct as-is.)
     SID_IDENTIFIER_AUTHORITY* auth = GetSidIdentifierAuthority(pSid);
     if (!auth) return false;
     if (memcmp(auth->Value, kMicrosoftAccountAuthority, 6) != 0) return false;
-    return GetSidSubAuthorityCount(pSid) != nullptr &&
-           *GetSidSubAuthorityCount(pSid) >= 1 &&
-           *GetSidSubAuthority(pSid, 0) == kMicrosoftAccountRid;
+    // First sub-authority must be 96.
+    if (!GetSidSubAuthorityCount(pSid)) return false;
+    if (*GetSidSubAuthorityCount(pSid) < 1) return false;
+    if (*GetSidSubAuthority(pSid, 0) != kMicrosoftAccountRid) return false;
+    return true;
 }
 
 // Best-effort query of GetUserNameExW(NameUserPrincipal). Returns empty when
@@ -60,7 +67,10 @@ std::wstring QueryUserNamePrincipal() {
                 }
             } else {
                 // Local accounts / linked-MSA-under-local: no UPN.
-                FACELOGIN_DEBUG(L"QueryUserNamePrincipal: no UPN (err=%lu)", err);
+                // INFO (not DEBUG) — this is a real decision point in the
+                // MSA detection; the next step (token shadow SID scan) depends
+                // on it.
+                FACELOGIN_INFO(L"QueryUserNamePrincipal: no UPN (err=%lu)", err);
             }
         } else {
             upn = upnBuf.data();
@@ -121,6 +131,8 @@ std::wstring FindMsaShadowSidInToken() {
         std::vector<BYTE> buf(sz);
         if (GetTokenInformation(hToken, TokenGroups, buf.data(), sz, &sz)) {
             auto* groups = reinterpret_cast<TOKEN_GROUPS*>(buf.data());
+            FACELOGIN_INFO(L"FindMsaShadowSidInToken: token has %lu group SID(s)",
+                           groups->GroupCount);
             for (DWORD i = 0; i < groups->GroupCount && email.empty(); i++) {
                 if (IsMicrosoftAccountSid(groups->Groups[i].Sid)) {
                     email = TranslateMicrosoftAccountSid(groups->Groups[i].Sid);
@@ -157,6 +169,7 @@ bool GetLinkedAccountUpn(std::wstring& outUpn) {
 
     // 2) Linked MSA: the token's group list carries a MicrosoftAccount shadow
     //    SID (S-1-11-96-...). Translate it back to the email.
+    FACELOGIN_INFO(L"GetLinkedAccountUpn: direct UPN empty — scanning token group SIDs for MSA shadow");
     std::wstring shadowEmail = FindMsaShadowSidInToken();
     if (!shadowEmail.empty()) {
         outUpn = shadowEmail;
@@ -165,7 +178,7 @@ bool GetLinkedAccountUpn(std::wstring& outUpn) {
     }
 
     // 3) Plain local account.
-    FACELOGIN_DEBUG(L"GetLinkedAccountUpn: no MSA identity in session — local account");
+    FACELOGIN_INFO(L"GetLinkedAccountUpn: no MSA identity in session — local account");
     return false;
 }
 
