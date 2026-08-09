@@ -154,7 +154,11 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
         if (PeekNamedPipe(self->m_hPipe, nullptr, 0, nullptr, &bytesAvail, &totalBytes)) {
             if (bytesAvail == 0) {
                 // Connected but idle — wait briefly, keep polling.
-                Sleep(50);
+                // 10ms (was 50ms): the auth result arrives from the service via
+                // this loop, so a shorter poll cuts the perceived unlock delay
+                // by ~40ms while staying trivially cheap (a few wakeups/frame
+                // of CPU on a 60Hz display).
+                Sleep(10);
                 continue;
             }
         } else {

@@ -796,7 +796,13 @@ bool FaceService::ProcessAuthRequest() {
     auto startTime = std::chrono::steady_clock::now();
     bool authSent = false;
     int consecutiveMatches = 0;
-    static constexpr int CONSENSUS_FRAMES = 3;
+    // Consensus: how many consecutive matched frames release credentials.
+    // 2 frames (was 3): the liveness phase AND the post-liveness final-match
+    // verify (below) still re-check the face on fresh frames before the
+    // credential is released, so dropping one consensus frame does not shrink
+    // the attack surface — it only removes one redundant full
+    // detect+landmark+embed+match pass (~100ms) from the happy path.
+    static constexpr int CONSENSUS_FRAMES = 2;
 
     while (m_running) {
         // Abort early if the client (LogonUI) has gone away — e.g. the user
