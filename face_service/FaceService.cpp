@@ -720,8 +720,19 @@ bool FaceService::ProcessAuthRequest() {
         constexpr int kWarmupMinFrames = 2;    // never exit before this many
         constexpr int kWarmupMaxFrames = 10;   // hard cap \u2014 proceed regardless
         constexpr int kWarmupWindow     = 3;   // rolling window size
-        constexpr float kLumaTol        = 12.0f;  // mean-luma delta that counts as "stable"
-        constexpr int kStableFrames     = 3;   // consecutive stable frames to exit
+        // Stability tolerance (mean-luma delta counted as "stable"). Raised
+        // 12 \u2192 20: a camera's auto-exposure converges gradually, so "continuous
+        // 3 frames within \u00b112" rarely fires and the warmup burns the full 10
+        // frames (~400ms) waiting for near-perfect stillness. \u00b120 still
+        // separates a genuinely dark scene (mean < 40) from a lit one (100+),
+        // so the adaptive behavior (wait in the dark, proceed fast in light) is
+        // preserved \u2014 it just stops waiting for a flat line that AGC never gives.
+        constexpr float kLumaTol        = 20.0f;
+        // Consecutive stable frames to exit. 3 \u2192 2: with a wider tolerance, two
+        // consistent windows are enough to trust the exposure has settled;
+        // recognition itself still runs several frames, so a marginal third
+        // window adds latency without meaningful protection.
+        constexpr int kStableFrames     = 2;   // consecutive stable frames to exit
 
         dlib::matrix<dlib::rgb_pixel> warmFrame;
         int dropped = 0;
