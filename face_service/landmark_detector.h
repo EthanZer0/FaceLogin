@@ -4,6 +4,8 @@
 #include <dlib/image_processing.h>
 #include <string>
 #include <memory>
+#include <vector>
+#include <mutex>
 
 namespace facelogin {
 
@@ -63,6 +65,17 @@ private:
 
     // 192×192 model input.
     static constexpr int kInputSize = 192;
+
+    // ONNX Runtime sessions are not thread-safe for concurrent Run(), and the
+    // reusable buffers below are shared mutable state. m_runMutex serializes
+    // the whole inference path (warp → Run → decode).
+    std::mutex m_runMutex;
+
+    // Reusable buffers (perf: avoid re-allocating the ~110KB input tensor and
+    // the 106-point vector on every DetectLandmarks). Allocated in Initialize(),
+    // guarded by m_runMutex.
+    std::vector<float> m_tensor;   // [1,3,192,192] NCHW
+    std::vector<dlib::dpoint> m_parts;  // 106 output points
 };
 
 } // namespace facelogin

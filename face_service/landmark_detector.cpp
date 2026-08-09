@@ -29,6 +29,11 @@ bool OnnxLandmarkDetector::Initialize(const std::wstring& modelPath) {
         m_inputName = m_session->GetInputNameAllocated(0, alloc).get();
         m_outputName = m_session->GetOutputNameAllocated(0, alloc).get();
 
+        // Allocate reusable buffers for the hot inference path.
+        m_tensor.assign(1 * 3 * kInputSize * kInputSize, 0.0f);
+        m_parts.clear();
+        m_parts.reserve(kLandmarkCount);
+
         FACELOGIN_INFO(L"OnnxLandmarkDetector initialized: %s", modelPath.c_str());
         m_initialized = true;
         return true;
@@ -107,6 +112,11 @@ bool OnnxLandmarkDetector::DetectLandmarks(
     dlib::full_object_detection& outLandmarks) {
     if (!m_initialized) return false;
 
+    // Serialize inference: ONNX sessions are not thread-safe for concurrent
+    // Run(), and the reusable buffers below are shared mutable state. The
+    // Console's frame thread and capture thread share this session.
+    std::lock_guard<std::mutex> lock(m_runMutex);
+
     try {
         // --- Warp the face box into a 192×192 crop (insightface transform) ---
         const int S = kInputSize;
@@ -123,7 +133,7 @@ bool OnnxLandmarkDetector::DetectLandmarks(
         // centering that SCRFD uses. Feeding (-1,1) here skews the eye
         // landmarks (right eye ~10px off in the crop); matching (0,1) makes
         // the 106 points land exactly on the SCRFD eyes.
-        std::vector<float> tensor(1 * 3 * S * S, 0.0f);
+        float* tensor = m_tensor.data();
         for (int y = 0; y < S; y++) {
             for (int x = 0; x < S; x++) {
                 // Inverse of warp: source (sx, sy) for this crop pixel.
@@ -141,7 +151,7 @@ bool OnnxLandmarkDetector::DetectLandmarks(
 
         std::array<int64_t, 4> shape = {1, 3, S, S};
         Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-            *m_memoryInfo, tensor.data(), tensor.size(), shape.data(), shape.size());
+            *m_memoryInfo, tensor, m_tensor.size(), shape.data(), shape.size());
 
         const char* inputNames[] = {m_inputName.c_str()};
         const char* outName = m_outputName.c_str();
@@ -151,9 +161,8 @@ bool OnnxLandmarkDetector::DetectLandmarks(
                                        outputNames, 1);
 
         float* data = outputs[0].GetTensorMutableData<float>();
-        // Output is [1, 212] = 106 points × (x,y).
-        std::vector<dlib::dpoint> parts;
-        parts.reserve(kLandmarkCount);
+        // Output is [1, 212] = 106 points × (x,y). Fill the reusable parts buffer.
+        m_parts.clear();
         for (int i = 0; i < kLandmarkCount; i++) {
             float nx = data[i * 2 + 0];   // normalized in [-1, 1]
             float ny = data[i * 2 + 1];
@@ -163,12 +172,12 @@ bool OnnxLandmarkDetector::DetectLandmarks(
             // Map back to image coordinates via inverse warp.
             float ix = static_cast<float>((cx - tx) / scale);
             float iy = static_cast<float>((cy - ty) / scale);
-            parts.emplace_back(static_cast<long>(std::lround(ix)),
-                               static_cast<long>(std::lround(iy)));
+            m_parts.emplace_back(static_cast<long>(std::lround(ix)),
+                                 static_cast<long>(std::lround(iy)));
         }
-        if (static_cast<int>(parts.size()) != kLandmarkCount) return false;
+        if (static_cast<int>(m_parts.size()) != kLandmarkCount) return false;
 
-        outLandmarks = dlib::full_object_detection(faceBox, parts);
+        outLandmarks = dlib::full_object_detection(faceBox, m_parts);
         return true;
     } catch (const std::exception& e) {
         FACELOGIN_WARN(L"OnnxLandmarkDetector::DetectLandmarks error: %hs", e.what());
