@@ -211,10 +211,36 @@ func InstallService(exePath string) error {
 		defer s.Close()
 	}
 
+	// Configure crash-recovery: if the service process dies without reporting
+	// SERVICE_STOPPED (a crash), SCM restarts it automatically — up to 3 times,
+	// 5s apart. Without this, a one-time service crash leaves face login dead
+	// until the next reboot or manual restart (issue #10). The failure counter
+	// resets after 1 day without a failure, so a permanent fault still stops
+	// looping. We set this AFTER create/update so an upgrade overwrites the
+	// prior recovery config with the current one.
+	if err := configureServiceRecovery(s); err != nil {
+		// Non-fatal: the service still starts without recovery configured.
+		// Log and continue rather than failing the whole install.
+		fmt.Printf("warning: failed to set service recovery actions: %v\n", err)
+	}
+
 	// Start the service
 	err = s.Start()
 	if err != nil && err != windows.ERROR_SERVICE_ALREADY_RUNNING {
 		return fmt.Errorf("start service: %w", err)
 	}
 	return nil
+}
+
+// configureServiceRecovery sets the SCM failure actions for the FaceLogin
+// service: on a crash (process exit without SERVICE_STOPPED), restart the
+// service up to 3 times with a 5s delay each; reset the failure counter after
+// 1 day (86400s) of no failures.
+func configureServiceRecovery(s *mgr.Service) error {
+	actions := []mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+	}
+	return s.SetRecoveryActions(actions, /*resetPeriod=*/86400)
 }
