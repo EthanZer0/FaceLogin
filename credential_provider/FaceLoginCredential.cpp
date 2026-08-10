@@ -235,6 +235,20 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         FACELOGIN_INFO(L"Advise: cold boot — starting auth immediately");
         StartAuth();
     } else {
+        // Unlock / switch user. Probe the service up-front so a down service
+        // surfaces immediately ("service not running") instead of showing
+        // "press any key" and only revealing the failure after the user presses
+        // (and the connect retry times out ~5s later).
+        if (!facelogin::PipeClient::ProbeServiceAvailable()) {
+            FACELOGIN_WARN(L"Advise: service pipe missing at lock time — showing service-not-running notice");
+            m_statusText = L"人脸识别服务未运行，请检查 FaceLoginService";
+            m_state = State::Error;
+            if (m_pCredentialEvents) {
+                m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
+            }
+            return S_OK;
+        }
+
         FACELOGIN_INFO(L"Advise: unlock scenario — starting input detection thread");
         m_state = State::Waiting;
         m_waitingStartTick = GetTickCount();

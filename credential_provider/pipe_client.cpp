@@ -44,7 +44,6 @@ void PipeClient::CleanupReadThread() {
 
 bool PipeClient::Connect(DWORD timeoutMs) {
     Disconnect();
-
     auto startTime = std::chrono::steady_clock::now();
 
     while (true) {
@@ -95,6 +94,33 @@ bool PipeClient::Connect(DWORD timeoutMs) {
         FACELOGIN_ERROR(L"CreateFile on pipe failed: %lu", err);
         return false;
     }
+}
+
+bool PipeClient::ProbeServiceAvailable() {
+    // One-shot CreateFileW with no retry and no wait. If the pipe exists we
+    // can open it (even if busy, ERROR_PIPE_BUSY means the service is up); if
+    // it's ERROR_FILE_NOT_FOUND the service is not running.
+    HANDLE h = CreateFileW(
+        ipc::PIPE_NAME,
+        GENERIC_READ | GENERIC_WRITE,
+        0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        CloseHandle(h);
+        return true;
+    }
+    DWORD err = GetLastError();
+    if (err == ERROR_PIPE_BUSY) {
+        // Pipe exists but a client is already connected — service is up.
+        return true;
+    }
+    if (err == ERROR_FILE_NOT_FOUND) {
+        FACELOGIN_INFO(L"ProbeServiceAvailable: service pipe not found — service down");
+        return false;
+    }
+    // Other errors (e.g. access denied) — treat as available so we don't
+    // mislabel a permission issue as "service down".
+    FACELOGIN_WARN(L"ProbeServiceAvailable: CreateFile err=%lu (treating as available)", err);
+    return true;
 }
 
 bool PipeClient::SendMessage(const std::wstring& message) {
