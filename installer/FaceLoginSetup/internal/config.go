@@ -57,6 +57,7 @@ func EnsureConfigDefaults(configPath string) error {
 			"blink_glasses_mode":    false,
 			"low_light_enhance":     false,
 			"unload_models_after_auth": false,
+			"require_key_to_unlock": true,
 			"camera_rotation":       0,
 		}
 	}

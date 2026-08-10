@@ -28,6 +28,14 @@ struct AppConfig {
     // models resident for the fastest auth; on trades a small per-auth reload
     // latency for a low idle footprint.
     bool           unload_models_after_auth = false;
+    // Lock-screen unlock trigger. true (default) = the user presses any key on
+    // the lock screen to start face recognition (current behavior). false =
+    // face recognition starts automatically on the lock screen (no keypress
+    // needed), like the cold-boot flow. This is consumed by the credential
+    // provider (LogonUI), which reads the mirrored registry value
+    // RequireKeyToUnlock rather than this config.json (SYSTEM context can't
+    // reliably read the per-user config file).
+    bool           require_key_to_unlock = true;
     std::string    camera_device          = "";          // device symbolic link; empty = first camera
     // Camera rotation in degrees clockwise. Valid: 0, 90, 180, 270.
     // Use when the camera is physically mounted in a non-standard

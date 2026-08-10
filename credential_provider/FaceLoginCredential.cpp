@@ -3,6 +3,7 @@
 #include "resource.h"
 #include "../common/logger.h"
 #include "../common/ipc_protocol.h"
+#include "../common/registry_util.h"
 #include <wincred.h>
 #include <ntstatus.h>
 #include <ntsecapi.h>
@@ -235,11 +236,23 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         FACELOGIN_INFO(L"Advise: cold boot — starting auth immediately");
         StartAuth();
     } else {
-        FACELOGIN_INFO(L"Advise: unlock scenario — starting input detection thread");
-        m_state = State::Waiting;
-        m_waitingStartTick = GetTickCount();
-        FACELOGIN_INFO(L"Advise: baseline tick = %lu", m_waitingStartTick);
-        StartInputDetectionThread();
+        // Unlock / switch user: normally wait for a keypress (input-detection
+        // thread), but if the user disabled "require key to unlock" in the
+        // Console, start recognition immediately on the lock screen (like the
+        // cold-boot flow). The flag is read from the registry (mirrored by the
+        // Console on SetConfig) because LogonUI runs in SYSTEM context and
+        // can't reliably read config.json.
+        bool requireKey = ReadRegDword(REGVAL_REQUIRE_KEY_TO_UNLOCK, 1) != 0;
+        if (!requireKey) {
+            FACELOGIN_INFO(L"Advise: unlock — keypress trigger disabled, starting auth immediately");
+            StartAuth();
+        } else {
+            FACELOGIN_INFO(L"Advise: unlock scenario — starting input detection thread");
+            m_state = State::Waiting;
+            m_waitingStartTick = GetTickCount();
+            FACELOGIN_INFO(L"Advise: baseline tick = %lu", m_waitingStartTick);
+            StartInputDetectionThread();
+        }
     }
 
     FACELOGIN_INFO(L"=== Advise EXIT (state=%d) ===", static_cast<int>(m_state));

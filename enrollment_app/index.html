@@ -849,6 +849,15 @@ button{font-family:inherit}
       <p class="dim" style="font-size:11px">识别完成后释放人脸模型，服务后台内存占用从约 60MB 降至约 20MB。下次解锁时模型自动重新加载（约 0.2-0.5 秒）。对内存敏感的设备可开启。</p>
     </div>
 
+    <div class="field">
+      <label class="check">
+        <input type="checkbox" id="cfg-req-key">
+        <span class="cbx"></span>
+        <span>锁屏解锁需按键触发（关闭后锁屏自动识别人脸）</span>
+      </label>
+      <p class="dim" style="font-size:11px">开启：锁屏后按任意键开始识别（默认）；关闭：锁屏后自动开始识别，无需按键。</p>
+    </div>
+
     <div class="field" id="field-antispoof-threshold" style="display:none">
       <label>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.30</span></label>
       <div class="range-wrap">
@@ -1334,6 +1343,7 @@ function loadSettings() {
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
     document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
     document.getElementById('cfg-unload-models').checked = !!cfg.unload_models_after_auth;
+    document.getElementById('cfg-req-key').checked = !!cfg.require_key_to_unlock;
 
     // Populate the camera dropdown from the enumerated devices.
     var camSel = document.getElementById('cfg-camera');
@@ -1408,6 +1418,7 @@ function onSaveSettings() {
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
     low_light_enhance: document.getElementById('cfg-low-light').checked,
     unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
+    require_key_to_unlock: document.getElementById('cfg-req-key').checked,
     camera_rotation: parseInt(document.getElementById('cfg-rotation').value) || 0,
     camera_device: document.getElementById('cfg-camera').value
   };
