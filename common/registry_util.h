@@ -11,10 +11,6 @@ const wchar_t REGVAL_DATA_PATH[]   = L"DataPath";
 const wchar_t REGVAL_INSTALL_PATH[] = L"InstallPath";
 const wchar_t REGVAL_USER_LOGGED_IN[] = L"UserLoggedIn";
 const wchar_t REGVAL_SERVICE_START_UPTIME[] = L"ServiceStartUptime";
-// Mirror of config.json's require_key_to_unlock. The credential provider
-// (LogonUI, SYSTEM context) reads this registry value because it cannot
-// reliably read the per-user config file; the Console writes it on SetConfig.
-const wchar_t REGVAL_REQUIRE_KEY_TO_UNLOCK[] = L"RequireKeyToUnlock";
 
 // Read a REG_SZ value from HKLM\SOFTWARE\FaceLogin.
 // Returns defaultValue if the key/value is missing or not a string.

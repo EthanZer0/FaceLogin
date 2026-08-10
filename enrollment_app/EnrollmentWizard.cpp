@@ -686,9 +686,6 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             {
                 std::lock_guard<std::mutex> lock(m_frameCacheMutex);
                 if (m_latestFrame.size() == 0) {
-                    // Diagnostics (卡90% 排查): log when we are waiting for the
-                    // first frame / when the frame cache is empty.
-                    FACELOGIN_INFO(L"Enrollment sample %d: m_latestFrame empty, waiting...", i + 1);
                     std::this_thread::sleep_for(std::chrono::milliseconds(33));
                     continue;
                 }
@@ -706,10 +703,6 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 m_detector->DetectLandmarks(frame, rect, landmarks);
             }
             if (landmarks.num_parts() == 0) {
-                // Diagnostics: no face landmarks this iteration.
-                if ((failCount % 50) == 0 || failCount == 0) {
-                    FACELOGIN_INFO(L"Enrollment sample %d: no landmarks (failCount=%d)", i + 1, failCount);
-                }
                 if (++failCount > 300) { m_capturing = false; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
@@ -719,10 +712,6 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             // Store the FULL 512-D embedding (no truncation).
             auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
             if (onnxEmb.empty()) {
-                // Diagnostics: embedding returned empty.
-                if ((failCount % 50) == 0 || failCount == 0) {
-                    FACELOGIN_INFO(L"Enrollment sample %d: embedding empty (failCount=%d)", i + 1, failCount);
-                }
                 if (++failCount > 300) { m_capturing = false; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
@@ -735,11 +724,8 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             failCount = 0;
             m_embeddings.push_back(std::move(emb));
             m_samplesCollected = ++i;
-            FACELOGIN_INFO(L"Enrollment sample collected: %d/%d", i, TARGET_SAMPLES);
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
         }
-        FACELOGIN_INFO(L"Enrollment sampling loop ended: captured=%d/%d, failCount=%d, m_capturing=%d",
-                       m_samplesCollected, TARGET_SAMPLES, failCount, static_cast<int>(m_capturing));
         m_capturing = false;
     });
 
@@ -1399,11 +1385,6 @@ bool EnrollmentWizard::SetConfig(const std::string& json) {
     m_config = newConfig;
     m_livenessMethod = newConfig.liveness_method;
     m_antiSpoofThreshold = newConfig.anti_spoof_threshold;
-
-    // Mirror the lock-screen trigger flag to the registry for the credential
-    // provider. LogonUI (SYSTEM context) reads RequireKeyToUnlock because it
-    // can't reliably read config.json; this is the CP↔Console config channel.
-    WriteRegDword(REGVAL_REQUIRE_KEY_TO_UNLOCK, newConfig.require_key_to_unlock ? 1 : 0);
     // Runtime fallback: if anti-spoof is chosen but model is missing, degrade now
     if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
         FACELOGIN_WARN(L"SetConfig: runtime fallback to blink (anti-spoof model unavailable)");
