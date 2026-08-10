@@ -25,6 +25,17 @@ namespace facelogin {
 // boundary are untouched.
 void ApplyLowLightEnhance(dlib::matrix<dlib::rgb_pixel>& chip);
 
+// Alignment anchor selection for the 5-point arcface similarity transform.
+// OuterEye (default): uses the eye OUTER corners (landmarks 39/93) as the eye
+//   anchors — the historical behavior. Robust for most faces.
+// EyeCenter:         uses the model-predicted eye CENTERS (landmarks 38/88).
+//   The outer corners sit right under a glasses frame's hinge/rim, so when the
+//   subject wears glasses those two points can be nudged by the frame edge;
+//   the eye centers are inside the lens and steadier. Selecting this changes
+//   the alignment and therefore the embedding space — any enrollment matched
+//   with EyeCenter must be re-enrolled under the same mode.
+enum class AlignMode { OuterEye, EyeCenter };
+
 // ONNX-based face recognition using InsightFace buffalo_s (w600k_mbf).
 // Replaces dlib ResNet-34 with the more accurate MobileFaceNet @ WebFace600K.
 // Embedding dimension: 128 (compatible with existing users.dat storage).
@@ -44,6 +55,14 @@ public:
     std::vector<float> ComputeEmbedding(
         const dlib::matrix<dlib::rgb_pixel>& image,
         const dlib::full_object_detection& landmarks);
+
+    // Alignment-mode overload: selects the eye anchors for the 5-point arcface
+    // transform (OuterEye = historical, EyeCenter = glasses-robust). Defaults
+    // to OuterEye so existing callers are unchanged.
+    std::vector<float> ComputeEmbedding(
+        const dlib::matrix<dlib::rgb_pixel>& image,
+        const dlib::full_object_detection& landmarks,
+        AlignMode mode);
 
     // Euclidean distance between two embeddings.
     static float Distance(const std::vector<float>& a, const std::vector<float>& b);

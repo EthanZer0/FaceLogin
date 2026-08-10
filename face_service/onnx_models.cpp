@@ -165,15 +165,31 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
 std::vector<float> OnnxRecognizer::ComputeEmbedding(
     const dlib::matrix<dlib::rgb_pixel>& image,
     const dlib::full_object_detection& landmarks) {
+    return ComputeEmbedding(image, landmarks, AlignMode::OuterEye);
+}
+
+std::vector<float> OnnxRecognizer::ComputeEmbedding(
+    const dlib::matrix<dlib::rgb_pixel>& image,
+    const dlib::full_object_detection& landmarks,
+    AlignMode mode) {
     // Align face using a 5-point similarity transform (arcface template) and
     // the 106-point landmark indices, then ONNX infer. The 106-point model's
     // "subject-first-person" eye layout:
     //   right eye outer corner = 39, left eye outer corner = 93
+    //   right eye center      = 38, left eye center      = 88
     //   nose bridge end (nose tip) = 80
     //   mouth corners = 52 (left, image-left) / 69 (right, image-right)
     // Matches insightface's arcface_dst template:
     //   [right eye, left eye, nose, left mouth, right mouth]
-    const int kArc[5] = {39, 93, 80, 52, 69};
+    //
+    // Eye anchor choice:
+    //   OuterEye (default): outer corners 39/93 — historical behavior.
+    //   EyeCenter:          eye centers 38/88 — steadier under a glasses frame,
+    //                       whose rim/hinge sits on the outer corners.
+    const int kArcOuterEye[5] = {39, 93, 80, 52, 69};
+    const int kArcEyeCenter[5] = {38, 88, 80, 52, 69};
+    const int* kArc = (mode == AlignMode::EyeCenter) ? kArcEyeCenter : kArcOuterEye;
+
     std::vector<dlib::vector<double, 2>> src, dst;
     src.reserve(5); dst.reserve(5);
     const double arcface_dst[5][2] = {
