@@ -236,11 +236,21 @@ func InstallService(exePath string) error {
 // service: on a crash (process exit without SERVICE_STOPPED), restart the
 // service up to 3 times with a 5s delay each; reset the failure counter after
 // 1 day (86400s) of no failures.
+//
+// FailureActionsOnNonCrashFailures must be TRUE too: by default SCM only runs
+// the recovery actions when the process dies WITHOUT reporting SERVICE_STOPPED.
+// Terminating the process via Task Manager is treated by SCM as a "non-crash"
+// failure (exit code 0), so without this flag the restart never fires.
+// NOTE: this flag (and the actions) only take effect after the next system
+// restart — documented ChangeServiceConfig2 behavior.
 func configureServiceRecovery(s *mgr.Service) error {
 	actions := []mgr.RecoveryAction{
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 	}
-	return s.SetRecoveryActions(actions, /*resetPeriod=*/86400)
+	if err := s.SetRecoveryActions(actions, /*resetPeriod=*/86400); err != nil {
+		return err
+	}
+	return s.SetRecoveryActionsOnNonCrashFailures(true)
 }
