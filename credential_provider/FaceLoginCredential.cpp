@@ -72,13 +72,16 @@ static unsigned __stdcall InputDetectionThreadProc(void* pParam) {
         LASTINPUTINFO lii = {};
         lii.cbSize = sizeof(lii);
         if (GetLastInputInfo(&lii)) {
-            // 500ms threshold: the first keypress to dismiss the lock-screen
+            // 300ms threshold: the first keypress to dismiss the lock-screen
             // wallpaper generates both KEYDOWN and KEYUP events, but the
             // KEYDOWN itself is the user's intent to unlock — trigger on the
             // first keystroke instead of requiring a second one. The small
-            // 500ms guard only skips stray input recorded right around the
-            // baseline (Advise) so we don't fire on noise.
-            DWORD threshold = pCred->m_waitingStartTick + 500;
+            // guard only skips stray input recorded right around the
+            // baseline (Advise) so we don't fire on noise. 500→300ms shrinks
+            // the "dead zone" where a first keypress is silently swallowed
+            // after the lock screen appears, so the user's first press more
+            // often starts recognition immediately.
+            DWORD threshold = pCred->m_waitingStartTick + 300;
             if (lii.dwTime > threshold) {
                 FACELOGIN_INFO(L"[InputThread] NEW input detected! (last=%lu > threshold=%lu, diff=%ld)",
                               lii.dwTime, threshold,
