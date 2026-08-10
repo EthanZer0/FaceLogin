@@ -653,8 +653,18 @@ void FaceLoginCredential::StartAuth() {
             });
         FACELOGIN_INFO(L"Pipe connected, auth request sent");
     } else {
+        // Pipe connect failed (most likely the FaceLoginService isn't running,
+        // e.g. it crashed or was stopped — the named pipe doesn't exist).
+        // Set a concrete message and push it to the tile so the user sees WHY
+        // nothing is happening, instead of a silent hang or a generic label.
+        // (PipeClient::Connect already logged the precise error to
+        // credential_provider.log.)
         FACELOGIN_WARN(L"Failed to connect to face service pipe");
+        m_statusText = L"人脸识别服务未运行，请检查 FaceLoginService";
         m_state = State::Error;
+        if (m_pCredentialEvents) {
+            m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
+        }
     }
 }
 
