@@ -246,6 +246,10 @@ bool EnrollmentWizard::StartPreview() {
             FACELOGIN_ERROR(L"Model loading failed — no frames will be produced");
             return;
         }
+        // Diagnostics (卡90% 排查): count frames written to m_latestFrame and
+        // log every ~30 so we can tell whether the frame thread is producing
+        // frames while the capture thread waits (m_latestFrame.size()==0).
+        long frameCount = 0;
         while (m_frameRunning) {
             dlib::matrix<dlib::rgb_pixel> frame;
             if (!m_webcam->GrabFrame(frame)) {
@@ -299,6 +303,9 @@ bool EnrollmentWizard::StartPreview() {
                 m_latestFrameB64  = std::move(b64);
                 m_latestFacesJson = std::move(faceJson);
                 m_latestFrame     = frame;
+                if ((++frameCount % 30) == 0) {
+                    FACELOGIN_INFO(L"Preview frame thread: %ld frames written to cache", frameCount);
+                }
             }
         }
     });
@@ -680,12 +687,19 @@ bool EnrollmentWizard::CaptureFaceSamples() {
 
         // Phase 2: Collect face samples
         int failCount = 0;
+        // Diagnostics (卡90% 排查): log when we wait for the first frame, so we
+        // can distinguish "frame thread dead (m_latestFrame empty forever)" from
+        // "frames exist but detection/embedding keeps failing".
+        long frameWaitCount = 0;
         for (int i = 0; i < TARGET_SAMPLES && m_capturing;) {
             // Read the latest frame from the frame-grab thread (no camera contention)
             dlib::matrix<dlib::rgb_pixel> frame;
             {
                 std::lock_guard<std::mutex> lock(m_frameCacheMutex);
                 if (m_latestFrame.size() == 0) {
+                    if ((frameWaitCount++ % 30) == 0) {
+                        FACELOGIN_INFO(L"Enrollment sample %d: waiting for frame (count=%ld)", i + 1, frameWaitCount);
+                    }
                     std::this_thread::sleep_for(std::chrono::milliseconds(33));
                     continue;
                 }
@@ -703,6 +717,10 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 m_detector->DetectLandmarks(frame, rect, landmarks);
             }
             if (landmarks.num_parts() == 0) {
+                // Diagnostics: no face landmarks this iteration (sparse log).
+                if ((failCount % 50) == 0) {
+                    FACELOGIN_INFO(L"Enrollment sample %d: no landmarks (failCount=%d)", i + 1, failCount);
+                }
                 if (++failCount > 300) { m_capturing = false; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
@@ -712,6 +730,10 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             // Store the FULL 512-D embedding (no truncation).
             auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
             if (onnxEmb.empty()) {
+                // Diagnostics: embedding returned empty (sparse log).
+                if ((failCount % 50) == 0) {
+                    FACELOGIN_INFO(L"Enrollment sample %d: embedding empty (failCount=%d)", i + 1, failCount);
+                }
                 if (++failCount > 300) { m_capturing = false; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
@@ -724,8 +746,11 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             failCount = 0;
             m_embeddings.push_back(std::move(emb));
             m_samplesCollected = ++i;
+            FACELOGIN_INFO(L"Enrollment sample collected: %d/%d", i, TARGET_SAMPLES);
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
         }
+        FACELOGIN_INFO(L"Enrollment sampling loop ended: captured=%d/%d, failCount=%d, m_capturing=%d",
+                       m_samplesCollected, TARGET_SAMPLES, failCount, static_cast<int>(m_capturing));
         m_capturing = false;
     });
 
