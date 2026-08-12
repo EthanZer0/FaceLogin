@@ -695,7 +695,22 @@ bool EnrollmentWizard::CaptureFaceSamples() {
         // can distinguish "frame thread dead (m_latestFrame empty forever)" from
         // "frames exist but detection/embedding keeps failing".
         long frameWaitCount = 0;
+        // Hard cap on Phase 2 wall time. A normal capture of 10 samples takes
+        // ~2.5s (150ms sleep + ~100ms inference each); 8s gives >3x headroom
+        // while guaranteeing the loop ALWAYS terminates — so even if the frame
+        // thread dies or detection never succeeds, the backend stops and the
+        // frontend can show "采集超时" instead of hanging at 90% forever.
+        constexpr int kPhase2TimeoutMs = 8000;
+        auto phase2Start = std::chrono::steady_clock::now();
         for (int i = 0; i < TARGET_SAMPLES && m_capturing;) {
+            // Total-phase timeout: bail no matter what the cause.
+            auto phase2Elapsed = std::chrono::steady_clock::now() - phase2Start;
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(phase2Elapsed).count() >= kPhase2TimeoutMs) {
+                FACELOGIN_WARN(L"Enrollment Phase 2 timed out after %d ms (captured=%d/10) — aborting",
+                               kPhase2TimeoutMs, i);
+                m_capturing = false;
+                break;
+            }
             // Read the latest frame from the frame-grab thread (no camera contention).
             //
             // IMPORTANT: never sleep while holding m_frameCacheMutex. The UI thread
@@ -736,7 +751,10 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 if ((failCount % 50) == 0) {
                     FACELOGIN_INFO(L"Enrollment sample %d: no landmarks (failCount=%d)", i + 1, failCount);
                 }
-                if (++failCount > 300) { m_capturing = false; break; }
+                // 80 × 100ms ≈ 8s of consecutive detection failures — the
+                // Phase-2 total timeout already bounds the whole loop, so this
+                // is a belt-and-suspenders early exit.
+                if (++failCount > 80) { m_capturing = false; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
@@ -749,7 +767,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 if ((failCount % 50) == 0) {
                     FACELOGIN_INFO(L"Enrollment sample %d: embedding empty (failCount=%d)", i + 1, failCount);
                 }
-                if (++failCount > 300) { m_capturing = false; break; }
+                if (++failCount > 80) { m_capturing = false; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
