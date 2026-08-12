@@ -81,6 +81,126 @@ static std::wstring GetSessionUpn() {
     return upn;
 }
 
+// ---------------------------------------------------------------------------
+// System hardware info dump (卡90% 排查)
+//
+// "卡90%进程未响应"是否复现与硬件强相关——弱 CPU、低内存、软件渲染的 GPU
+// 会直接拖慢 WebView2 渲染 + ONNX 推理 + JPEG 编码。Console 启动时把这些
+// 信息打一行 enrollment.log，方便按机器对照"这台为什么慢"。全部读取不涉及
+// 外部服务，一次完成，失败静默跳过。
+// ---------------------------------------------------------------------------
+static void LogSystemInfo() {
+    // --- OS version (RtlGetVersion — GetVersionEx is shimmed on Win8.1+) ---
+    std::wstring osDesc = L"unknown";
+    RTL_OSVERSIONINFOW osInfo = {};
+    osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+    using PFN_RtlGetVersion = LONG(WINAPI*)(RTL_OSVERSIONINFOW*);
+    auto pfnRtlGetVersion = reinterpret_cast<PFN_RtlGetVersion>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
+    if (pfnRtlGetVersion && pfnRtlGetVersion(&osInfo) == 0) {
+        wchar_t buf[128];
+        swprintf(buf, 128, L"%lu.%lu.%lu (build %lu)",
+                 osInfo.dwMajorVersion, osInfo.dwMinorVersion,
+                 osInfo.dwBuildNumber, osInfo.dwBuildNumber);
+        osDesc = buf;
+        // Product name ("Windows 11 Pro" etc.) — only readable on the
+        // interactive session, which the console runs in.
+        HKEY hK = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                          L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                          0, KEY_READ, &hK) == ERROR_SUCCESS) {
+            wchar_t prod[128] = {};
+            DWORD sz = sizeof(prod), type = 0;
+            if (RegQueryValueExW(hK, L"ProductName", nullptr, &type,
+                                 reinterpret_cast<LPBYTE>(prod), &sz) == ERROR_SUCCESS && type == REG_SZ) {
+                osDesc += L" | " + std::wstring(prod);
+            }
+            RegCloseKey(hK);
+        }
+    }
+
+    // --- CPU: friendly name + logical cores ---
+    std::wstring cpu = L"unknown";
+    HKEY hCpu = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                      0, KEY_READ, &hCpu) == ERROR_SUCCESS) {
+        wchar_t name[256] = {};
+        DWORD sz = sizeof(name), type = 0;
+        if (RegQueryValueExW(hCpu, L"ProcessorNameString", nullptr, &type,
+                             reinterpret_cast<LPBYTE>(name), &sz) == ERROR_SUCCESS && type == REG_SZ) {
+            cpu = name;
+        }
+        RegCloseKey(hCpu);
+    }
+    SYSTEM_INFO si = {};
+    GetSystemInfo(&si);
+    wchar_t cpuBuf[320];
+    swprintf(cpuBuf, 320, L"%ls (%u logical cores)",
+             cpu.c_str(), static_cast<unsigned>(si.dwNumberOfProcessors));
+
+    // --- RAM: total + currently available (usable by this process) ---
+    MEMORYSTATUSEX ms = {};
+    ms.dwLength = sizeof(ms);
+    GlobalMemoryStatusEx(&ms);
+    wchar_t memBuf[192];
+    swprintf(memBuf, 192, L"%llu MB total, %llu MB available",
+             ms.ullTotalPhys / (1024 * 1024), ms.ullAvailPhys / (1024 * 1024));
+
+    // --- GPU list: video adapters via registry (fast, offline) ---
+    // Walks HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-...}
+    // subkeys; each Description is one adapter.
+    std::wstring gpus;
+    HKEY hGpu = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      L"SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}",
+                      0, KEY_READ, &hGpu) == ERROR_SUCCESS) {
+        for (DWORD i = 0; ; i++) {
+            wchar_t sub[64] = {};
+            DWORD subSz = sizeof(sub);
+            if (RegEnumKeyExW(hGpu, i, sub, &subSz, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                break;
+            if (wcsncmp(sub, L"0", 1) != 0)   // only numbered (0000, 0001...) adapters
+                continue;
+            HKEY hSub = nullptr;
+            if (RegOpenKeyExW(hGpu, sub, 0, KEY_READ, &hSub) == ERROR_SUCCESS) {
+                wchar_t desc[256] = {};
+                DWORD sz = sizeof(desc), type = 0;
+                if (RegQueryValueExW(hSub, L"DriverDesc", nullptr, &type,
+                                     reinterpret_cast<LPBYTE>(desc), &sz) == ERROR_SUCCESS && type == REG_SZ && desc[0]) {
+                    if (!gpus.empty()) gpus += L", ";
+                    gpus += desc;
+                }
+                RegCloseKey(hSub);
+            }
+        }
+        RegCloseKey(hGpu);
+    }
+    if (gpus.empty()) gpus = L"(none enumerated)";
+
+    // --- this process's working set (how much RAM the console itself holds) ---
+    // Declared manually to avoid pulling psapi headers just for one field.
+    typedef BOOL(WINAPI* PFN_GetProcessMemoryInfo)(HANDLE, void*, DWORD);
+    ULONGLONG wsBytes = 0;
+    auto pfnGetProcessMemoryInfo = reinterpret_cast<PFN_GetProcessMemoryInfo>(
+        GetProcAddress(GetModuleHandleW(L"psapi.dll"), "GetProcessMemoryInfo"));
+    if (pfnGetProcessMemoryInfo) {
+        struct PROC_MEM_COUNTERS { DWORD cb; DWORD reserved[2]; SIZE_T WorkingSetSize; };
+        PROC_MEM_COUNTERS pmc = {};
+        pmc.cb = sizeof(pmc);
+        if (pfnGetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+            wsBytes = static_cast<ULONGLONG>(pmc.WorkingSetSize);
+    }
+
+    FACELOGIN_INFO(L"[SYSINFO] OS=%ls", osDesc.c_str());
+    FACELOGIN_INFO(L"[SYSINFO] CPU=%ls", cpuBuf);
+    FACELOGIN_INFO(L"[SYSINFO] RAM=%ls", memBuf);
+    if (!gpus.empty())
+        FACELOGIN_INFO(L"[SYSINFO] GPU=%ls", gpus.c_str());
+    if (wsBytes > 0)
+        FACELOGIN_INFO(L"[SYSINFO] console working set=%llu KB",
+                       wsBytes / 1024);
+}
+
 EnrollmentWizard::EnrollmentWizard() {
     // Diagnostics (卡90% 排查): total constructor wall-time. If model/config/
     // SID lookups on the UI thread take long on a cold start, that's visible
@@ -105,6 +225,10 @@ EnrollmentWizard::EnrollmentWizard() {
     Logger::Instance().SetEnableDebugOutput(true);
 
     FACELOGIN_INFO(L"=== Enrollment Wizard started ===");
+
+    // Hardware dump: helps attribute "卡90%未响应" reproducibility to the
+    // machine (weak CPU / low RAM / software GPU all slow the UI + ONNX).
+    LogSystemInfo();
 
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                      IID_PPV_ARGS(&m_wicFactory));

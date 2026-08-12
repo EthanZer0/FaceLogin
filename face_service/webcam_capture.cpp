@@ -183,6 +183,25 @@ bool WebcamCapture::FindCamera(const std::wstring& devicePath,
 
     hr = ppDevices[selected]->ActivateObject(IID_PPV_ARGS(ppSource));
 
+    // Diagnostics: log which camera was actually selected (friendly name +
+    // symbolic link). Helps identify a mis-picked / virtual camera when
+    // enrollment or the lock-screen behaves oddly (卡90% 排查).
+    {
+        LPWSTR selPath = nullptr, selName = nullptr;
+        if (SUCCEEDED(ppDevices[selected]->GetAllocatedString(
+                MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, &selPath, nullptr))) {
+            if (SUCCEEDED(ppDevices[selected]->GetAllocatedString(
+                    MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &selName, nullptr))) {
+                FACELOGIN_INFO(L"Selected camera: %s (%s)",
+                               selName, selPath);
+            } else {
+                FACELOGIN_INFO(L"Selected camera: %s", selPath);
+            }
+            CoTaskMemFree(selPath);
+            if (selName) CoTaskMemFree(selName);
+        }
+    }
+
     for (UINT32 i = 0; i < count; i++) {
         ppDevices[i]->Release();
     }
