@@ -150,13 +150,18 @@ void Logger::WriteToFile(const std::wstring& line) {
 }
 
 // Rotate the log file with a day-based retention window. The log file keeps
-// its original name — when the existing file's creation date is older than
-// kMaxLogDays days (i.e. it was started before today minus the window), it is
-// deleted and a fresh file is created at the same path, capping total disk
-// usage to roughly the last kMaxLogDays days of logs. Works on m_logPath
-// directly, so it is safe to call before m_hFile is opened (e.g. from
-// SetLogFile). On rotation the handle is closed and left INVALID; the caller
-// reopens it. Callers must hold m_cs.
+// its original name — when the file's LAST WRITE time is older than
+// kMaxLogDays days, it is deleted and a fresh file is created at the same
+// path, capping total disk usage to roughly the last kMaxLogDays days of logs.
+// Works on m_logPath directly, so it is safe to call before m_hFile is opened
+// (e.g. from SetLogFile). On rotation the handle is closed and left INVALID;
+// the caller reopens it. Callers must hold m_cs.
+//
+// The window is measured from LAST WRITE, not creation: creation time is a
+// permanent anchor, so a file created >kMaxLogDays ago (but still actively
+// written) would be deleted on every startup, leaving the log permanently
+// truncated to a single line. Last-write correctly keeps any file that was
+// touched within the window.
 void Logger::CheckRotation() {
     if (m_logPath.empty())
         return;
@@ -166,12 +171,12 @@ void Logger::CheckRotation() {
     if (!GetFileAttributesExW(m_logPath.c_str(), GetFileExInfoStandard, &attrs))
         return;  // file doesn't exist yet — nothing to rotate
 
-    // Use the file's creation time to mark the day its log content starts.
-    FILETIME created = attrs.ftCreationTime;
+    // Use the file's last-write time to mark the last day it was touched.
+    FILETIME written = attrs.ftLastWriteTime;
     FILETIME localFt;
-    FileTimeToLocalFileTime(&created, &localFt);
-    SYSTEMTIME createdSt;
-    FileTimeToSystemTime(&localFt, &createdSt);
+    FileTimeToLocalFileTime(&written, &localFt);
+    SYSTEMTIME writtenSt;
+    FileTimeToSystemTime(&localFt, &writtenSt);
 
     // Today's date.
     SYSTEMTIME nowSt;
@@ -187,7 +192,7 @@ void Logger::CheckRotation() {
         return day + (153 * m + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32045;
     };
     int days = serial(nowSt.wYear, nowSt.wMonth, nowSt.wDay)
-             - serial(createdSt.wYear, createdSt.wMonth, createdSt.wDay);
+             - serial(writtenSt.wYear, writtenSt.wMonth, writtenSt.wDay);
     if (days < kMaxLogDays)
         return;  // still within the retention window
 
