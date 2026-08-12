@@ -607,10 +607,12 @@ bool EnrollmentWizard::CaptureFaceSamples() {
 
                 dlib::matrix<dlib::rgb_pixel> frame;
                 {
+                    // Never sleep while holding the lock (UI GetLatestFrameAndFaces
+                    // needs it every rAF). Grab/copy under the lock, release, sleep.
                     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
-                    if (m_latestFrame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
-                    frame = m_latestFrame;
+                    if (m_latestFrame.size() != 0) frame = m_latestFrame;
                 }
+                if (frame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                 // Detect with SCRFD, extract 106-point landmarks.
                 dlib::full_object_detection asLandmarks;
                 auto asDet = m_onnxDetector->DetectLargestFace(frame);
@@ -651,10 +653,12 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 }
                 dlib::matrix<dlib::rgb_pixel> frame;
                 {
+                    // Never sleep while holding the lock (UI GetLatestFrameAndFaces
+                    // needs it every rAF). Grab/copy under the lock, release, sleep.
                     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
-                    if (m_latestFrame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
-                    frame = m_latestFrame;
+                    if (m_latestFrame.size() != 0) frame = m_latestFrame;
                 }
+                if (frame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                 // Detect with SCRFD, extract 106-point landmarks for EAR.
                 dlib::full_object_detection livenessLandmarks;
                 auto livenessDet = m_onnxDetector->DetectLargestFace(frame);
@@ -692,18 +696,29 @@ bool EnrollmentWizard::CaptureFaceSamples() {
         // "frames exist but detection/embedding keeps failing".
         long frameWaitCount = 0;
         for (int i = 0; i < TARGET_SAMPLES && m_capturing;) {
-            // Read the latest frame from the frame-grab thread (no camera contention)
+            // Read the latest frame from the frame-grab thread (no camera contention).
+            //
+            // IMPORTANT: never sleep while holding m_frameCacheMutex. The UI thread
+            // calls GetLatestFrameAndFaces() on the same lock every rAF (33ms); if
+            // this capture thread holds the lock during a 33ms sleep while waiting
+            // for an empty m_latestFrame, the UI thread blocks on the lock → the
+            // whole console freezes ("卡90%无响应" even though the backend did
+            // collect 10/10). Grab+copy under the lock, release, THEN sleep.
             dlib::matrix<dlib::rgb_pixel> frame;
+            bool haveFrame = false;
             {
                 std::lock_guard<std::mutex> lock(m_frameCacheMutex);
-                if (m_latestFrame.size() == 0) {
-                    if ((frameWaitCount++ % 30) == 0) {
-                        FACELOGIN_INFO(L"Enrollment sample %d: waiting for frame (count=%ld)", i + 1, frameWaitCount);
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(33));
-                    continue;
+                if (m_latestFrame.size() != 0) {
+                    haveFrame = true;
+                    frame = m_latestFrame;
                 }
-                frame = m_latestFrame;
+            }
+            if (!haveFrame) {
+                if ((frameWaitCount++ % 30) == 0) {
+                    FACELOGIN_INFO(L"Enrollment sample %d: waiting for frame (count=%ld)", i + 1, frameWaitCount);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(33));
+                continue;
             }
 
             // Detect with SCRFD (the only detector), extract 106-point landmarks.
