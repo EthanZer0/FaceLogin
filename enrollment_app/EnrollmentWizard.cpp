@@ -82,6 +82,10 @@ static std::wstring GetSessionUpn() {
 }
 
 EnrollmentWizard::EnrollmentWizard() {
+    // Diagnostics (卡90% 排查): total constructor wall-time. If model/config/
+    // SID lookups on the UI thread take long on a cold start, that's visible
+    // as "console not responding" BEFORE the window even appears.
+    auto ctorT0 = std::chrono::steady_clock::now();
     std::wstring regData = ReadRegString(REGVAL_DATA_PATH, L"");
     if (!regData.empty()) {
         m_dataDir = regData;
@@ -194,6 +198,15 @@ EnrollmentWizard::EnrollmentWizard() {
     m_config = LoadConfig(m_dataDir);
     m_livenessMethod = m_config.liveness_method;
     m_antiSpoofThreshold = m_config.anti_spoof_threshold;
+
+    auto ctorUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - ctorT0).count();
+    FACELOGIN_INFO(L"EnrollmentWizard ctor done in %lldus (account=%hs)", ctorUs,
+                   m_accountType.c_str());
+    if (ctorUs > 200000) {
+        FACELOGIN_WARN(L"EnrollmentWizard ctor SLOW: %lldus (>200ms) — console shows unresponsive on cold start",
+                       ctorUs);
+    }
 }
 
 EnrollmentWizard::~EnrollmentWizard() {
@@ -220,8 +233,15 @@ bool EnrollmentWizard::StartPreview() {
     // with the device busy. A couple of short retries absorb that window.
     constexpr int kInitRetries = 5;
     bool webcamOk = false;
+    auto spT0 = std::chrono::steady_clock::now();
     for (int attempt = 0; attempt < kInitRetries && !webcamOk; attempt++) {
+        auto attemptT0 = std::chrono::steady_clock::now();
         webcamOk = m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device));
+        auto attemptUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - attemptT0).count();
+        if (attemptUs > 50000) {
+            FACELOGIN_WARN(L"Webcam Initialize attempt %d SLOW: %lldus", attempt + 1, attemptUs);
+        }
         if (!webcamOk && attempt + 1 < kInitRetries) {
             FACELOGIN_WARN(L"Webcam init attempt %d failed — camera may still be releasing, retrying", attempt + 1);
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -232,6 +252,9 @@ bool EnrollmentWizard::StartPreview() {
                         m_config.camera_device.empty() ? L"" : L" (configured device)");
         return false;
     }
+    auto spInitUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - spT0).count();
+    FACELOGIN_INFO(L"Webcam initialized in %lldus", spInitUs);
 
     m_previewRunning = true;
     m_frameRunning = true;
@@ -251,6 +274,7 @@ bool EnrollmentWizard::StartPreview() {
         // frames while the capture thread waits (m_latestFrame.size()==0).
         long frameCount = 0;
         while (m_frameRunning) {
+            auto itT0 = std::chrono::steady_clock::now();
             dlib::matrix<dlib::rgb_pixel> frame;
             if (!m_webcam->GrabFrame(frame)) {
                 // GrabFrame self-shuts-down after repeated failures (e.g. the
@@ -279,12 +303,15 @@ bool EnrollmentWizard::StartPreview() {
             }
 
             RotateFrame(frame, m_config.camera_rotation);
+            auto tGrab = std::chrono::steady_clock::now();
 
             std::string b64 = EncodeJPEGBase64(frame);
+            auto tJpeg = std::chrono::steady_clock::now();
             // Preview overlay: detect the face with SCRFD and show its box.
             std::string faceJson = "[]";
             if (m_onnxDetector) {
                 auto det = m_onnxDetector->DetectLargestFace(frame);
+                auto tDet = std::chrono::steady_clock::now();
                 if (det) {
                     std::vector<facelogin::FaceWithLandmarks> faces;
                     FaceWithLandmarks fwl;
@@ -293,25 +320,52 @@ bool EnrollmentWizard::StartPreview() {
                                                static_cast<long>(det->x2),
                                                static_cast<long>(det->y2));
                     m_detector->DetectLandmarks(frame, fwl.rect, fwl.landmarks);
+                    auto tLand = std::chrono::steady_clock::now();
                     faces.push_back(std::move(fwl));
                     faceJson = FacesToJson(faces);
+                    // Diagnostics (卡90% 排查): frame-thread pipeline stage
+                    // timing. Each stage runs on the frame thread, so a slow
+                    // stage here does NOT directly freeze the UI — but if the
+                    // FRAME thread lags, capture waits for fresh frames and the
+                    // lock gets held longer (frame write contends with the UI
+                    // reader). Log only when slow.
+                    long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tJpeg).count();
+                    long long landUs = std::chrono::duration_cast<std::chrono::microseconds>(tLand - tDet).count();
+                    long long grabUs = std::chrono::duration_cast<std::chrono::microseconds>(tGrab - itT0).count();
+                    long long jpegUs = std::chrono::duration_cast<std::chrono::microseconds>(tJpeg - tGrab).count();
+                    if (grabUs > 50000 || jpegUs > 50000 || detUs > 50000 || landUs > 50000) {
+                        FACELOGIN_WARN(L"Frame thread SLOW: grab=%lldus jpeg=%lldus detect=%lldus landmarks=%lldus",
+                                       grabUs, jpegUs, detUs, landUs);
+                    }
+                } else {
+                    long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tJpeg).count();
+                    long long grabUs = std::chrono::duration_cast<std::chrono::microseconds>(tGrab - itT0).count();
+                    long long jpegUs = std::chrono::duration_cast<std::chrono::microseconds>(tJpeg - tGrab).count();
+                    if (grabUs > 50000 || jpegUs > 50000 || detUs > 50000) {
+                        FACELOGIN_WARN(L"Frame thread SLOW (no face): grab=%lldus jpeg=%lldus detect=%lldus",
+                                       grabUs, jpegUs, detUs);
+                    }
                 }
             }
 
             {
                 auto wt0 = std::chrono::steady_clock::now();
                 std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+                auto wtLocked = std::chrono::steady_clock::now();
                 m_latestFrameB64  = std::move(b64);
                 m_latestFacesJson = std::move(faceJson);
                 m_latestFrame     = frame;
+                m_lockOwner       = "frame";
                 // Diagnostics: the 2.7MB frame copy happens under the lock; if
                 // it's slow it blocks BOTH the capture thread and the UI thread's
-                // GetLatestFrameAndFaces. Log only when it exceeds 50ms.
-                auto wus = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - wt0).count();
-                if (wus > 50000) {
-                    FACELOGIN_WARN(L"Frame cache write SLOW: %lld us (frame %ldx%ld)",
-                                   static_cast<long long>(wus), frame.nr(), frame.nc());
+                // GetLatestFrameAndFaces. Split wait (someone else held it) from
+                // the in-lock copy, and log EITHER over its budget.
+                auto wt1 = std::chrono::steady_clock::now();
+                long long wWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(wtLocked - wt0).count();
+                long long wCopyUs = std::chrono::duration_cast<std::chrono::microseconds>(wt1 - wtLocked).count();
+                if (wWaitUs > 20000 || wCopyUs > 50000) {
+                    FACELOGIN_WARN(L"Frame cache write SLOW: wait=%lldus copy=%lldus total=%lldus (frame %ldx%ld)",
+                                   wWaitUs, wCopyUs, wWaitUs + wCopyUs, frame.nr(), frame.nc());
                 }
                 if ((++frameCount % 30) == 0) {
                     FACELOGIN_INFO(L"Preview frame thread: %ld frames written to cache", frameCount);
@@ -431,17 +485,31 @@ std::string EnrollmentWizard::GetLatestFrameAndFaces() {
     // Diagnostics (卡90% 排查): this runs on the UI thread every 33ms via
     // JS renderFrame(). If it stalls (>50ms) it blocks the JS main thread,
     // which starves samplePoll → progress sticks at 80/90 while the backend
-    // actually finished. Log only SLOW calls (sparse, not every frame).
+    // actually finished. A slow call has two independent causes, so split the
+    // timing:
+    //   - WAIT = time spent blocked on m_frameCacheMutex before acquiring it
+    //     (the capture thread or the frame thread holds it too long — usually
+    //     the 2.7MB full-frame copy). A long wait here means WE are the victim
+    //     and cannot see our own lock-holder from inside; the holder's own
+    //     >50ms write-WARN fires in parallel with ours.
+    //   - COPY = time under the lock (string copy of ~300KB base64 + json).
+    //     This one is pure UI-thread work — if it's slow, something unrelated
+    //     (WebView2/COM/deadlock) wedged this thread, and even a free lock
+    //     wouldn't have helped.
     auto t0 = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+    auto tLocked = std::chrono::steady_clock::now();
     std::string result = m_latestFrameB64;
     result += "\x1E";  // record separator
     result += m_latestFacesJson;
-    auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - t0).count();
-    if (us > 50000) {
-        FACELOGIN_WARN(L"GetLatestFrameAndFaces SLOW: %lld us (b64=%zuB, json=%zuB)",
-                       static_cast<long long>(us), m_latestFrameB64.size(), m_latestFacesJson.size());
+    auto t1 = std::chrono::steady_clock::now();
+    long long waitUs = std::chrono::duration_cast<std::chrono::microseconds>(tLocked - t0).count();
+    long long copyUs = std::chrono::duration_cast<std::chrono::microseconds>(t1 - tLocked).count();
+    if (waitUs > 20000 || copyUs > 50000) {
+        FACELOGIN_WARN(L"GetLatestFrameAndFaces SLOW: wait=%lldus copy=%lldus total=%lldus (b64=%zuB json=%zuB owner=%hs)",
+                       waitUs, copyUs, waitUs + copyUs,
+                       m_latestFrameB64.size(), m_latestFacesJson.size(),
+                       m_lockOwner.empty() ? "none" : m_lockOwner.c_str());
     }
     return result;
 }
@@ -630,8 +698,17 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 {
                     // Never sleep while holding the lock (UI GetLatestFrameAndFaces
                     // needs it every rAF). Grab/copy under the lock, release, sleep.
+                    // Tag the lock owner so the UI/frame threads' wait-WARNs can
+                    // attribute their stall to the capture thread (卡90% 排查).
+                    auto lt0 = std::chrono::steady_clock::now();
                     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+                    m_lockOwner = "capture-antispoof";
                     if (m_latestFrame.size() != 0) frame = m_latestFrame;
+                    auto lt1 = std::chrono::steady_clock::now();
+                    long long lWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(lt1 - lt0).count();
+                    if (lWaitUs > 20000) {
+                        FACELOGIN_WARN(L"Antispoof liveness read: waited %lldus on frame cache lock", lWaitUs);
+                    }
                 }
                 if (frame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                 // Detect with SCRFD, extract 106-point landmarks.
@@ -676,8 +753,17 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 {
                     // Never sleep while holding the lock (UI GetLatestFrameAndFaces
                     // needs it every rAF). Grab/copy under the lock, release, sleep.
+                    // Tag the lock owner so the UI/frame threads' wait-WARNs can
+                    // attribute their stall to the capture thread (卡90% 排查).
+                    auto lt0 = std::chrono::steady_clock::now();
                     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+                    m_lockOwner = "capture-blink";
                     if (m_latestFrame.size() != 0) frame = m_latestFrame;
+                    auto lt1 = std::chrono::steady_clock::now();
+                    long long lWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(lt1 - lt0).count();
+                    if (lWaitUs > 20000) {
+                        FACELOGIN_WARN(L"Blink liveness read: waited %lldus on frame cache lock", lWaitUs);
+                    }
                 }
                 if (frame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                 // Detect with SCRFD, extract 106-point landmarks for EAR.
@@ -743,21 +829,36 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             dlib::matrix<dlib::rgb_pixel> frame;
             bool haveFrame = false;
             {
+                auto lt0 = std::chrono::steady_clock::now();
                 std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+                m_lockOwner = "capture-sample";
                 if (m_latestFrame.size() != 0) {
                     haveFrame = true;
                     frame = m_latestFrame;
                 }
+                auto lt1 = std::chrono::steady_clock::now();
+                long long lWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(lt1 - lt0).count();
+                if (lWaitUs > 20000) {
+                    FACELOGIN_WARN(L"Sample %d read: waited %lldus on frame cache lock",
+                                   i + 1, lWaitUs);
+                }
             }
             if (!haveFrame) {
                 if ((frameWaitCount++ % 30) == 0) {
-                    FACELOGIN_INFO(L"Enrollment sample %d: waiting for frame (count=%ld)", i + 1, frameWaitCount);
+                    // Diagnostics: report the current lock owner too — if the
+                    // frame thread died, owner stays "frame" while this loop
+                    // spins forever; if it was reset, owner is empty.
+                    std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+                    FACELOGIN_INFO(L"Enrollment sample %d: waiting for frame (count=%ld, owner=%hs)",
+                                   i + 1, frameWaitCount,
+                                   m_lockOwner.empty() ? "none" : m_lockOwner.c_str());
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(33));
                 continue;
             }
 
             // Detect with SCRFD (the only detector), extract 106-point landmarks.
+            auto tSample = std::chrono::steady_clock::now();
             dlib::full_object_detection landmarks;
             auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
             if (onnxDet) {
@@ -767,6 +868,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                                      static_cast<long>(onnxDet->y2));
                 m_detector->DetectLandmarks(frame, rect, landmarks);
             }
+            auto tDet = std::chrono::steady_clock::now();
             if (landmarks.num_parts() == 0) {
                 // Diagnostics: no face landmarks this iteration (sparse log).
                 if ((failCount % 50) == 0) {
@@ -783,6 +885,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             // Compute the embedding with InsightFace ONNX (the only recognizer).
             // Store the FULL 512-D embedding (no truncation).
             auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
+            auto tEmb = std::chrono::steady_clock::now();
             if (onnxEmb.empty()) {
                 // Diagnostics: embedding returned empty (sparse log).
                 if ((failCount % 50) == 0) {
@@ -800,6 +903,20 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             failCount = 0;
             m_embeddings.push_back(std::move(emb));
             m_samplesCollected = ++i;
+            // Diagnostics (卡90% 排查): per-sample phase timing. A single slow
+            // ONNX run is ~20-40ms; if ANY phase blows past 150ms on the user's
+            // machine, that's the sample loop stalling (and with it the UI
+            // starving on lock-wait + render). Sparse (only when slow), so no
+            // log spam on healthy runs.
+            {
+                long long detUs  = std::chrono::duration_cast<std::chrono::microseconds>(tDet  - tSample).count();
+                long long embUs  = std::chrono::duration_cast<std::chrono::microseconds>(tEmb  - tDet).count();
+                long long totalUs = std::chrono::duration_cast<std::chrono::microseconds>(tEmb - tSample).count();
+                if (detUs > 150000 || embUs > 150000 || totalUs > 150000) {
+                    FACELOGIN_WARN(L"Enrollment sample %d SLOW: detect=%lldus embed=%lldus total=%lldus",
+                                   i, detUs, embUs, totalUs);
+                }
+            }
             FACELOGIN_INFO(L"Enrollment sample collected: %d/%d", i, TARGET_SAMPLES);
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
         }

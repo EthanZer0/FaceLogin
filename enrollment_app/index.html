@@ -1066,6 +1066,13 @@ var camReady = false, currentTab = 'cam';
 // True while a capture is running (set in onCapture, cleared when it ends).
 // Gates renderFrame so the 30fps preview polling doesn't starve samplePoll.
 var captureActive = false;
+// Diagnostics (卡90% 排查): renderFrame cadence + per-call cost. A healthy
+// frame render is ~1-10ms; if the WebView2 COM round-trip wedges, each call
+// balloons and the gap between calls (the period) blows past 100ms. Rendered
+// into enrollment.log via H.LogDiagnostic.
+var renderInFlight = false;          // set while a renderFrame call is running
+var renderDiagOnce = false;          // only log the first healthy interval
+var lastRenderStartedAt = 0;         // Date.now() when the previous render call began
 // The account-type-change state (0/1/2) is stashed on #refresh-overlay's
 // dataset rather than a module-level var so the dismiss handler always reads
 // the state captured AT OPEN TIME of THIS prompt — a later showRefreshPrompt()
@@ -1127,6 +1134,18 @@ function renderFrame() {
   // user is facing the camera to be captured, not watching the preview. The
   // flag is set in onCapture() and cleared when capture finishes.
   if (captureActive) return;
+  // Diagnostics + safety: a renderFrame call that takes longer than the 33ms
+  // cadence (slow WebView2 COM / locked GetLatestFrameAndFaces) MUST NOT pile
+  // up more setTimeout callbacks while it's still running. setInterval-style
+  // accumulation on a slow frame thread would starve samplePoll even harder
+  // and look exactly like "卡90% 未响应". Skip every tick while one render is
+  // still in flight, then reschedule a single next tick when it finishes.
+  if (renderInFlight) return;
+  renderInFlight = true;
+
+  var startedAt = Date.now();
+  var periodMs = (lastRenderStartedAt > 0) ? (startedAt - lastRenderStartedAt) : -1;
+  lastRenderStartedAt = startedAt;
   try {
     // Get the frame AND its face overlay atomically (same frame, no desync).
     var combined = H.GetLatestFrameAndFaces();
@@ -1141,6 +1160,18 @@ function renderFrame() {
       drawBackgroundAndOverlay();
     }
   } catch(e) {}
+  // Diagnostics: only log the first healthy cadence (period ≈ 33ms, call cost
+  // low) so the log has ONE baseline reference, then only SLOW calls (>100ms
+  // total). A run of slow calls is the smoking gun for "preview polling is
+  // starving the UI thread" — or a COM lock being held by the capture thread.
+  var costMs = Date.now() - startedAt;
+  if (!renderDiagOnce) {
+    renderDiagOnce = true;
+    try { H.LogDiagnostic('render baseline period=' + periodMs + 'ms cost=' + costMs + 'ms t=' + startedAt); } catch(e) {}
+  } else if (costMs > 100 || periodMs > 120) {
+    try { H.LogDiagnostic('render SLOW period=' + periodMs + 'ms cost=' + costMs + 'ms t=' + startedAt); } catch(e) {}
+  }
+  renderInFlight = false;
   timer = setTimeout(renderFrame, 33);
 }
 
@@ -1508,10 +1539,19 @@ function onCapture() {
   document.getElementById('cap-pct').textContent = '';
   document.getElementById('cap-fill').style.width = '0%';
 
+  var tCapture = Date.now();
   H.CaptureFaceSamples();
-  try { H.LogDiagnostic('capture_start method=' + liveMethod + ' t=' + Date.now()); } catch(e) {}
+  try {
+    H.LogDiagnostic('capture_start method=' + liveMethod + ' t=' + tCapture
+      + ' com_ret=' + (Date.now() - tCapture) + 'ms');
+  } catch(e) {}
+  // Diagnostics (卡90% 排查): the JS call above BLOCKS the UI thread until the
+  // C++ side returns. CaptureFaceSamples only spawns a thread and returns
+  // fast, so a big com_ret here means the C++ method itself hung — not the
+  // capture loop.
 
   var livenessPoll = setInterval(function() {
+    var tickAt = Date.now();
     var checking = false;
     var passed = false;
     try { checking = H.IsLivenessChecking(); } catch(e) {}
@@ -1519,6 +1559,14 @@ function onCapture() {
 
     if (!checking) {
       clearInterval(livenessPoll);
+      // Diagnostics (卡90% 排查): the transition from liveness→sampling.
+      // liveness_dur = wall time from capture_start to here; com_ret = time
+      // the IsLivenessChecking() COM call itself blocked (a healthy read is
+      // microseconds, so a large value means the UI thread was wedged).
+      try {
+        H.LogDiagnostic('liveness_done passed=' + !!passed
+          + ' dur=' + (Date.now() - tCapture) + 'ms com_ret=' + (Date.now() - tickAt) + 'ms t=' + Date.now());
+      } catch(e) {}
       if (!passed) {
         captureActive = false;
         prog.style.display = 'none';
@@ -1556,6 +1604,13 @@ function onCapture() {
           // Hard timeout regardless of backend state — guaranteed exit.
           clearInterval(samplePoll);
           captureActive = false;
+          // Diagnostics (卡90% 排查): distinguish a true 8s backend timeout
+          // from a UI thread stall. If this fires, it means the backend did
+          // NOT reach 10 samples (or the poll was starved — cross-check the
+          // C++ "sampling loop ended captured=N/10" line).
+          try {
+            H.LogDiagnostic('capture_timeout n=' + H.GetSampleCount() + ' t=' + Date.now());
+          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
@@ -1567,6 +1622,14 @@ function onCapture() {
         }
         if (n >= 10) {          clearInterval(samplePoll);
           captureActive = false;
+          // Diagnostics (卡90% 排查): capture succeeded end-to-end, with total
+          // wall time from sampling start to 10/10. Healthy is ~2-3s (10 ×
+          // ~200ms poll ticks); a large dur means the UI thread was starved
+          // between ticks.
+          try {
+            H.LogDiagnostic('capture_done n=' + n + ' dur=' + (Date.now() - pollStart)
+              + 'ms t=' + Date.now());
+          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
@@ -1650,6 +1713,12 @@ function onCapture() {
           // response. Reset the UI and tell the user what happened.
           clearInterval(samplePoll);
           captureActive = false;
+          // Diagnostics (卡90% 排查): backend bailed early — cross-check the
+          // C++ "Enrollment sampling loop ended: captured=N/10" line to see
+          // whether it was a liveness failure or a sample-loop bail.
+          try {
+            H.LogDiagnostic('capture_early_end n=' + H.GetSampleCount() + ' t=' + Date.now());
+          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
