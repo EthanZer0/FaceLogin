@@ -1063,6 +1063,9 @@ var H = (function() {
 })();
 var viewing = true, lastB64 = '', lastFacesJson = '', timer = 0, faceImg = new Image();
 var camReady = false, currentTab = 'cam';
+// True while a capture is running (set in onCapture, cleared when it ends).
+// Gates renderFrame so the 30fps preview polling doesn't starve samplePoll.
+var captureActive = false;
 // The account-type-change state (0/1/2) is stashed on #refresh-overlay's
 // dataset rather than a module-level var so the dismiss handler always reads
 // the state captured AT OPEN TIME of THIS prompt — a later showRefreshPrompt()
@@ -1118,6 +1121,12 @@ function drawBackgroundAndOverlay() {
 
 function renderFrame() {
   if (!viewing) return;
+  // During capture, skip the 30fps preview polling entirely — it pulls ~300KB
+  // base64 + sets faceImg.src every 33ms, which on a slow machine starves the
+  // JS main thread and delays samplePoll (the progress bar) by seconds. The
+  // user is facing the camera to be captured, not watching the preview. The
+  // flag is set in onCapture() and cleared when capture finishes.
+  if (captureActive) return;
   try {
     // Get the frame AND its face overlay atomically (same frame, no desync).
     var combined = H.GetLatestFrameAndFaces();
@@ -1474,6 +1483,10 @@ function onCapture() {
   var btn = document.getElementById('btn-capture');
   var spinner = document.getElementById('cap-spinner');
   var prog = document.getElementById('cap-progress');
+  // Pause the 30fps preview polling so it can't starve samplePoll on slow
+  // machines (the root cause of "进度卡80/90" even though the backend
+  // collected 10/10). Restored in the capture completion/timeout paths.
+  captureActive = true;
   btn.disabled = true;
   spinner.style.display = 'inline-block';
   prog.style.display = 'block';
@@ -1506,6 +1519,7 @@ function onCapture() {
     if (!checking) {
       clearInterval(livenessPoll);
       if (!passed) {
+        captureActive = false;
         prog.style.display = 'none';
         btn.disabled = false;
         spinner.style.display = 'none';
@@ -1530,6 +1544,7 @@ function onCapture() {
         if (Date.now() - pollStart > CAPTURE_TIMEOUT_MS) {
           // Hard timeout regardless of backend state — guaranteed exit.
           clearInterval(samplePoll);
+          captureActive = false;
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
@@ -1540,6 +1555,7 @@ function onCapture() {
           return;
         }
         if (n >= 10) {          clearInterval(samplePoll);
+          captureActive = false;
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
@@ -1622,6 +1638,7 @@ function onCapture() {
           // otherwise sit forever at 90% with the spinner spinning and no
           // response. Reset the UI and tell the user what happened.
           clearInterval(samplePoll);
+          captureActive = false;
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
