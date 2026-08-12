@@ -1518,6 +1518,10 @@ function onCapture() {
   // machines (the root cause of "进度卡80/90" even though the backend
   // collected 10/10). Restored in the capture completion/timeout paths.
   captureActive = true;
+  // Reset the render-period anchor. During capture renderFrame is gated off,
+  // so without this the first render after capture would report the whole
+  // capture duration as one giant false-positive "render SLOW period".
+  lastRenderStartedAt = 0;
   btn.disabled = true;
   spinner.style.display = 'inline-block';
   prog.style.display = 'block';
