@@ -299,10 +299,20 @@ bool EnrollmentWizard::StartPreview() {
             }
 
             {
+                auto wt0 = std::chrono::steady_clock::now();
                 std::lock_guard<std::mutex> lock(m_frameCacheMutex);
                 m_latestFrameB64  = std::move(b64);
                 m_latestFacesJson = std::move(faceJson);
                 m_latestFrame     = frame;
+                // Diagnostics: the 2.7MB frame copy happens under the lock; if
+                // it's slow it blocks BOTH the capture thread and the UI thread's
+                // GetLatestFrameAndFaces. Log only when it exceeds 50ms.
+                auto wus = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - wt0).count();
+                if (wus > 50000) {
+                    FACELOGIN_WARN(L"Frame cache write SLOW: %lld us (frame %ldx%ld)",
+                                   static_cast<long long>(wus), frame.nr(), frame.nc());
+                }
                 if ((++frameCount % 30) == 0) {
                     FACELOGIN_INFO(L"Preview frame thread: %ld frames written to cache", frameCount);
                 }
@@ -418,10 +428,21 @@ std::string EnrollmentWizard::GetLatestFacesJson() {
 // overlay could come from a newer frame than the displayed image, causing the
 // face box/landmarks to drift from the visible face.
 std::string EnrollmentWizard::GetLatestFrameAndFaces() {
+    // Diagnostics (卡90% 排查): this runs on the UI thread every 33ms via
+    // JS renderFrame(). If it stalls (>50ms) it blocks the JS main thread,
+    // which starves samplePoll → progress sticks at 80/90 while the backend
+    // actually finished. Log only SLOW calls (sparse, not every frame).
+    auto t0 = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
     std::string result = m_latestFrameB64;
     result += "\x1E";  // record separator
     result += m_latestFacesJson;
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    if (us > 50000) {
+        FACELOGIN_WARN(L"GetLatestFrameAndFaces SLOW: %lld us (b64=%zuB, json=%zuB)",
+                       static_cast<long long>(us), m_latestFrameB64.size(), m_latestFacesJson.size());
+    }
     return result;
 }
 
@@ -1510,6 +1531,13 @@ std::string EnrollmentWizard::GetLogLines() {
     }
     ss << "]";
     return ss.str();
+}
+
+void EnrollmentWizard::LogDiagnostic(const std::string& message) {
+    // Frontend→log bridge: write the JS-provided message into enrollment.log.
+    // Used to record frontend-side timing/stall events (卡90% 排查) that the
+    // C++ logger otherwise can't see.
+    FACELOGIN_INFO(L"[JS-DIAG] %hs", message.c_str());
 }
 
 std::string EnrollmentWizard::GetServiceLogLines() {

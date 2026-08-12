@@ -1509,6 +1509,7 @@ function onCapture() {
   document.getElementById('cap-fill').style.width = '0%';
 
   H.CaptureFaceSamples();
+  try { H.LogDiagnostic('capture_start method=' + liveMethod + ' t=' + Date.now()); } catch(e) {}
 
   var livenessPoll = setInterval(function() {
     var checking = false;
@@ -1535,13 +1536,23 @@ function onCapture() {
       // never hang at 90% forever.
       var pollStart = Date.now();
       var CAPTURE_TIMEOUT_MS = 8000;
+      // Diagnostics (卡90% 排查): track poll intervals. If the UI thread is
+      // starved (slow GetLatestFrameAndFaces / COM), intervals blow past the
+      // intended 200ms — log the gap so we can see the stall in enrollment.log.
+      var lastPollAt = Date.now();
       var samplePoll = setInterval(function() {
+        var now = Date.now();
+        var gap = now - lastPollAt;
+        lastPollAt = now;
+        if (gap > 500) {
+          try { H.LogDiagnostic('poll_stall gap=' + gap + 'ms n_before t=' + now); } catch(e) {}
+        }
         var n = H.GetSampleCount();
         var pct = Math.round(n / 10 * 100);
         document.getElementById('samples-tag').textContent = n + ' / 10';
         document.getElementById('cap-fill').style.width = pct + '%';
         document.getElementById('cap-pct').textContent = pct + '%';
-        if (Date.now() - pollStart > CAPTURE_TIMEOUT_MS) {
+        if (now - pollStart > CAPTURE_TIMEOUT_MS) {
           // Hard timeout regardless of backend state — guaranteed exit.
           clearInterval(samplePoll);
           captureActive = false;

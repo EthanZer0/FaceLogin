@@ -128,6 +128,11 @@ public:
     std::string GetServiceLogLines();
     void ClearLog();
 
+    // Frontend diagnostic hook: the JS layer calls this to write a line into
+    // enrollment.log (the C++ log file). Used to record frontend-side timing /
+    // stall events that plain console.log would not capture (卡90% 排查).
+    void LogDiagnostic(const std::string& message);
+
     // Per-frame data for JS canvas rendering (pull model — JS calls these from rAF)
     std::string GetLatestFrameBase64(); // JPEG base64, ~200KB
     std::string GetLatestFacesJson();   // [{x,y,w,h,landmarks:[{x,y},...]},...]
