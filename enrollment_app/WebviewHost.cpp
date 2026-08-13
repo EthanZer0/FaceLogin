@@ -33,6 +33,7 @@ STDMETHODIMP EnvCallback::Invoke(HRESULT hr, ICoreWebView2Environment* env) {
 // ==========================================================================
 
 STDMETHODIMP ProcessFailedCallback::Invoke(ICoreWebView2* sender, ICoreWebView2ProcessFailedEventArgs* args) {
+    (void)sender;
     COREWEBVIEW2_PROCESS_FAILED_KIND kind = COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED;
     if (args) args->get_ProcessFailedKind(&kind);
     FACELOGIN_WARN(L"WebView2 process failed: kind=%d (0=BrowserExited 1=RenderExited "

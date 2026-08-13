@@ -1127,11 +1127,11 @@ function drawBackgroundAndOverlay() {
 
 function renderFrame() {
   if (!viewing) return;
-  // During capture, skip the 30fps preview polling entirely — it pulls ~300KB
-  // base64 + sets faceImg.src every 33ms, which on a slow machine starves the
-  // JS main thread and delays samplePoll (the progress bar) by seconds. The
-  // user is facing the camera to be captured, not watching the preview. The
-  // flag is set in onCapture() and cleared when capture finishes.
+  // During capture, skip the 30fps preview polling entirely — it pulls the
+  // half-res JPEG + sets faceImg.src every 33ms, which on a slow machine
+  // starves the JS main thread and delays samplePoll (the progress bar) by
+  // seconds. The user is facing the camera to be captured, not watching the
+  // preview. The flag is set in onCapture() and cleared when capture finishes.
   if (captureActive) return;
   // Skip every tick while one render is still in flight (see var decl above).
   if (renderInFlight) return;
@@ -1370,6 +1370,23 @@ function switchTab(name) {
     var on = allTabs[i].getAttribute('data-tab') === name;
     allTabs[i].classList.toggle('active', on);
     allTabs[i].setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  // Preview lifecycle: only the capture screen needs the camera + frame
+  // pipeline. Leaving it tears the preview down (camera released, no CPU
+  // burn on the other tabs); returning restarts it. An in-flight capture is
+  // never disturbed here — it completes on its own and the completion path
+  // manages the screens.
+  if (name === 'cam') {
+    if (!viewing && !captureActive) {
+      viewing = true;
+      try { if (H.StartPreview()) renderFrame(); } catch(e) {}
+    }
+  } else {
+    if (!captureActive) {
+      viewing = false;
+      clearTimeout(timer);
+      try { H.StopPreview(); } catch(e) {}
+    }
   }
   if (name === 'settings') loadSettings();
   if (name === 'faces') loadFaces();

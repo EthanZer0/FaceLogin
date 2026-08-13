@@ -7,6 +7,7 @@
 #include <memory>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <dlib/matrix.h>
 #include <dlib/pixel.h>
 
@@ -154,8 +155,24 @@ public:
     std::string GetConsoleVersion() const;
 
 private:
-    std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
-    std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces);
+    // Encode the frame as a base64 JPEG data URL. scale < 1 downscales the
+    // encoded image (nearest-neighbour) — the preview is displayed at half
+    // resolution while detection/capture keep working on the full frame.
+    // outW/outH receive the encoded dimensions (for overlay coordinate scaling).
+    std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame,
+                                 float scale = 1.0f,
+                                 int* outW = nullptr, int* outH = nullptr);
+    // Serialize detected faces to JSON. scale multiplies every coordinate so
+    // the overlay aligns with a scaled-down JPEG of the same frame.
+    std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces,
+                            float scale = 1.0f);
+
+    // Pull-model frame delivery: request ONE fresh frame from the frame thread
+    // (which during capture is in pull mode — it grabs a camera frame only on
+    // demand instead of streaming 30fps). Returns false if no frame arrived
+    // within budgetMs (frame thread dead / camera stalled).
+    bool RequestFreshFrame(dlib::matrix<dlib::rgb_pixel>& outFrame,
+                           DWORD budgetMs = 1500);
 
     // Load the 2d106det + ONNX models if not already loaded (called from
     // the background frame thread, so a cold start never blocks the UI thread).
@@ -201,6 +218,21 @@ private:
     std::string m_latestFrameB64;
     std::string m_latestFacesJson;
     dlib::matrix<dlib::rgb_pixel> m_latestFrame;   // for capture to read
+    // Pull-model sampling handshake (guarded by m_frameCacheMutex):
+    //   m_sampleSeq      — incremented by the capture/liveness thread per
+    //                      fresh-frame request
+    //   m_sampleDelivered — the seq the frame thread last answered
+    // The frame thread (pull mode during capture) waits until
+    // m_sampleDelivered < m_sampleSeq, grabs ONE camera frame, stores it in
+    // m_latestFrame and advances m_sampleDelivered. Counters self-heal if a
+    // waiter gives up (frame thread dead) — no stale-flag ambiguity.
+    std::condition_variable m_sampleCv;
+    uint64_t m_sampleSeq = 0;
+    uint64_t m_sampleDelivered = 0;
+    // Preview tick counter: heavy preview work (JPEG encode + face detection)
+    // runs every other camera frame (~15fps); the cheap cache write always
+    // runs, so capture sampling always has a fresh full-res frame.
+    int m_previewTick = 0;
 
     // Preview state
     bool m_previewRunning = false;

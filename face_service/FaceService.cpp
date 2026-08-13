@@ -484,7 +484,7 @@ void FaceService::Run() {
         FACELOGIN_INFO(L"Received request: %s", request.c_str());
 
         if (request == ipc::MSG_RELOAD_DB) {
-            m_store->LoadDatabase();
+            m_store->ReloadDatabase();   // force re-read (LoadDatabase is cached)
             m_pipeServer->WriteMessage(ipc::MSG_RELOAD_OK);
             m_pipeServer->Disconnect();
             FACELOGIN_INFO(L"Database reloaded");
