@@ -8,6 +8,10 @@
 #include <shlwapi.h>
 #include <comdef.h>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <thread>
 
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mf.lib")
@@ -511,18 +515,49 @@ void WebcamCapture::Shutdown() {
     // and the caller's thread join would hang forever. IMFMediaSource::Shutdown
     // makes an in-flight ReadSample return MF_E_SHUTDOWN so the frame thread
     // can exit cleanly.
-    if (m_pSource) {
-        m_pSource->Shutdown();
-    }
-    if (m_pReader) {
-        m_pReader->Release();
-        m_pReader = nullptr;
-    }
-    if (m_pSource) {
-        m_pSource->Release();
-        m_pSource = nullptr;
-    }
+    //
+    // The teardown itself is BOUNDED: a wedged camera driver can make
+    // IMFMediaSource::Shutdown() block forever, and StopPreview() runs on the
+    // UI thread — an unbounded wait here freezes the whole console
+    // (卡90%无响应 on machines with such drivers). The actual MF calls run on a
+    // detached worker that captures the interfaces by value, and we wait at
+    // most kShutdownBudgetMs. If the driver is unresponsive the worker keeps
+    // running in the background (worst case it leaks until process exit) while
+    // the caller — and with it the UI thread — moves on.
+    //
+    // The pointers are cleared synchronously so GrabFrame() bails immediately
+    // and the frame thread's re-init logic never touches a torn-down camera.
+    IMFMediaSource* src = m_pSource;
+    IMFSourceReader* rdr = m_pReader;
+    m_pSource = nullptr;
+    m_pReader = nullptr;
     m_initialized = false;
+    m_consecutiveFailures = 0;
+
+    if (!src) return;
+
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([src, rdr, done]() {
+        if (src) src->Shutdown();   // wakes an in-flight ReadSample (MF_E_SHUTDOWN)
+        if (rdr) rdr->Release();
+        if (src) src->Release();
+        done->store(true, std::memory_order_release);
+    });
+    worker.detach();
+
+    constexpr int kShutdownBudgetMs = 1500;
+    auto start = std::chrono::steady_clock::now();
+    while (!done->load(std::memory_order_acquire)) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        if (elapsed >= kShutdownBudgetMs) {
+            FACELOGIN_WARN(L"Webcam MF teardown did not finish within %d ms — "
+                           L"driver unresponsive, completing in background",
+                           kShutdownBudgetMs);
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 }
 
 } // namespace facelogin

@@ -566,6 +566,35 @@ bool EnrollmentWizard::EnsureModelsLoaded() {
     return true;
 }
 
+// Bounded thread join for StopPreview. Wait up to timeoutMs for the thread to
+// exit, then detach it if it's still running (wedged in a driver call). A
+// detach means the thread may outlive the wizard in the pathological
+// driver-hang case — far better than freezing the UI thread forever
+// (卡90%无响应). Only the frame thread can hit this: the capture thread always
+// terminates within its bounded loops.
+static void JoinBounded(std::thread& t, const wchar_t* name,
+                        DWORD timeoutMs = 2000) {
+    if (!t.joinable()) return;
+    HANDLE h = t.native_handle();
+    DWORD wait = WaitForSingleObject(h, timeoutMs);
+    if (wait == WAIT_OBJECT_0) {
+        t.join();   // thread already finished — join returns immediately
+        return;
+    }
+    if (wait == WAIT_FAILED) {
+        FACELOGIN_WARN(L"StopPreview: WaitForSingleObject on %s thread failed (%lu) — detaching",
+                       name, GetLastError());
+        t.detach();
+        return;
+    }
+    // WAIT_TIMEOUT: the thread is stuck (likely inside a driver call that
+    // Shutdown() above could not wake). Detach it so the UI thread moves on;
+    // the stuck thread ends whenever the driver recovers or the process exits.
+    FACELOGIN_WARN(L"StopPreview: %s thread did not exit within %lu ms — detaching (driver may be wedged)",
+                   name, timeoutMs);
+    t.detach();
+}
+
 void EnrollmentWizard::StopPreview() {
     m_previewRunning = false;
     m_frameRunning = false;
@@ -573,16 +602,17 @@ void EnrollmentWizard::StopPreview() {
 
     // Shut down the camera FIRST so a synchronous ReadSample that is blocked
     // (camera taken over by the credential provider at lock) returns an error.
-    // Otherwise the thread join below would block forever on the UI thread
-    // (the "console freezes after unlock" bug).
+    // Shutdown() itself is bounded (see WebcamCapture::Shutdown) so a wedged
+    // driver can no longer freeze the UI thread.
     if (m_webcam)
         m_webcam->Shutdown();
 
-    // Join background threads now that the camera is closed.
-    if (m_captureThread.joinable())
-        m_captureThread.join();
-    if (m_frameThread.joinable())
-        m_frameThread.join();
+    // Join background threads with a budget. The capture thread exits fast;
+    // the frame thread may be blocked in ReadSample until the shutdown above
+    // wakes it. If either is still running after the budget, detach instead of
+    // blocking the UI thread forever.
+    JoinBounded(m_captureThread, L"capture");
+    JoinBounded(m_frameThread, L"frame");
 }
 
 // ============================================================================
