@@ -1066,13 +1066,12 @@ var camReady = false, currentTab = 'cam';
 // True while a capture is running (set in onCapture, cleared when it ends).
 // Gates renderFrame so the 30fps preview polling doesn't starve samplePoll.
 var captureActive = false;
-// Diagnostics (卡90% 排查): renderFrame cadence + per-call cost. A healthy
-// frame render is ~1-10ms; if the WebView2 COM round-trip wedges, each call
-// balloons and the gap between calls (the period) blows past 100ms. Rendered
-// into enrollment.log via H.LogDiagnostic.
+// A renderFrame call that takes longer than the 33ms cadence (slow WebView2
+// COM / locked GetLatestFrameAndFaces) MUST NOT pile up more setTimeout
+// callbacks while it's still running — accumulation would starve the JS main
+// thread. Skip every tick while one render is still in flight, then reschedule
+// a single next tick when it finishes.
 var renderInFlight = false;          // set while a renderFrame call is running
-var renderDiagOnce = false;          // only log the first healthy interval
-var lastRenderStartedAt = 0;         // Date.now() when the previous render call began
 // The account-type-change state (0/1/2) is stashed on #refresh-overlay's
 // dataset rather than a module-level var so the dismiss handler always reads
 // the state captured AT OPEN TIME of THIS prompt — a later showRefreshPrompt()
@@ -1134,18 +1133,10 @@ function renderFrame() {
   // user is facing the camera to be captured, not watching the preview. The
   // flag is set in onCapture() and cleared when capture finishes.
   if (captureActive) return;
-  // Diagnostics + safety: a renderFrame call that takes longer than the 33ms
-  // cadence (slow WebView2 COM / locked GetLatestFrameAndFaces) MUST NOT pile
-  // up more setTimeout callbacks while it's still running. setInterval-style
-  // accumulation on a slow frame thread would starve samplePoll even harder
-  // and look exactly like "卡90% 未响应". Skip every tick while one render is
-  // still in flight, then reschedule a single next tick when it finishes.
+  // Skip every tick while one render is still in flight (see var decl above).
   if (renderInFlight) return;
   renderInFlight = true;
 
-  var startedAt = Date.now();
-  var periodMs = (lastRenderStartedAt > 0) ? (startedAt - lastRenderStartedAt) : -1;
-  lastRenderStartedAt = startedAt;
   try {
     // Get the frame AND its face overlay atomically (same frame, no desync).
     var combined = H.GetLatestFrameAndFaces();
@@ -1160,17 +1151,6 @@ function renderFrame() {
       drawBackgroundAndOverlay();
     }
   } catch(e) {}
-  // Diagnostics: only log the first healthy cadence (period ≈ 33ms, call cost
-  // low) so the log has ONE baseline reference, then only SLOW calls (>100ms
-  // total). A run of slow calls is the smoking gun for "preview polling is
-  // starving the UI thread" — or a COM lock being held by the capture thread.
-  var costMs = Date.now() - startedAt;
-  if (!renderDiagOnce) {
-    renderDiagOnce = true;
-    try { H.LogDiagnostic('render baseline period=' + periodMs + 'ms cost=' + costMs + 'ms t=' + startedAt); } catch(e) {}
-  } else if (costMs > 100 || periodMs > 120) {
-    try { H.LogDiagnostic('render SLOW period=' + periodMs + 'ms cost=' + costMs + 'ms t=' + startedAt); } catch(e) {}
-  }
   renderInFlight = false;
   timer = setTimeout(renderFrame, 33);
 }
@@ -1518,10 +1498,6 @@ function onCapture() {
   // machines (the root cause of "进度卡80/90" even though the backend
   // collected 10/10). Restored in the capture completion/timeout paths.
   captureActive = true;
-  // Reset the render-period anchor. During capture renderFrame is gated off,
-  // so without this the first render after capture would report the whole
-  // capture duration as one giant false-positive "render SLOW period".
-  lastRenderStartedAt = 0;
   btn.disabled = true;
   spinner.style.display = 'inline-block';
   prog.style.display = 'block';

@@ -393,10 +393,6 @@ bool EnrollmentWizard::StartPreview() {
             FACELOGIN_ERROR(L"Model loading failed — no frames will be produced");
             return;
         }
-        // Diagnostics (卡90% 排查): count frames written to m_latestFrame and
-        // log every ~30 so we can tell whether the frame thread is producing
-        // frames while the capture thread waits (m_latestFrame.size()==0).
-        long frameCount = 0;
         while (m_frameRunning) {
             auto itT0 = std::chrono::steady_clock::now();
             dlib::matrix<dlib::rgb_pixel> frame;
@@ -479,20 +475,16 @@ bool EnrollmentWizard::StartPreview() {
                 m_latestFrameB64  = std::move(b64);
                 m_latestFacesJson = std::move(faceJson);
                 m_latestFrame     = frame;
-                m_lockOwner       = "frame";
-                // Diagnostics: the 2.7MB frame copy happens under the lock; if
-                // it's slow it blocks BOTH the capture thread and the UI thread's
-                // GetLatestFrameAndFaces. Split wait (someone else held it) from
-                // the in-lock copy, and log EITHER over its budget.
+                // The 2.7MB frame copy happens under the lock; if it's slow it
+                // blocks the capture thread and the UI thread's
+                // GetLatestFrameAndFaces. Split wait (someone else held it)
+                // from the in-lock copy, and log EITHER over its budget.
                 auto wt1 = std::chrono::steady_clock::now();
                 long long wWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(wtLocked - wt0).count();
                 long long wCopyUs = std::chrono::duration_cast<std::chrono::microseconds>(wt1 - wtLocked).count();
                 if (wWaitUs > 20000 || wCopyUs > 50000) {
                     FACELOGIN_WARN(L"Frame cache write SLOW: wait=%lldus copy=%lldus total=%lldus (frame %ldx%ld)",
                                    wWaitUs, wCopyUs, wWaitUs + wCopyUs, frame.nr(), frame.nc());
-                }
-                if ((++frameCount % 30) == 0) {
-                    FACELOGIN_INFO(L"Preview frame thread: %ld frames written to cache", frameCount);
                 }
             }
         }
@@ -613,6 +605,10 @@ void EnrollmentWizard::StopPreview() {
     // blocking the UI thread forever.
     JoinBounded(m_captureThread, L"capture");
     JoinBounded(m_frameThread, L"frame");
+
+    // Normal-path completion marker: lets log triage confirm a teardown went
+    // through cleanly (any timeout above would emit its own WARN instead).
+    FACELOGIN_INFO(L"Preview stopped (camera released, threads joined)");
 }
 
 // ============================================================================
@@ -636,20 +632,12 @@ std::string EnrollmentWizard::GetLatestFacesJson() {
 // overlay could come from a newer frame than the displayed image, causing the
 // face box/landmarks to drift from the visible face.
 std::string EnrollmentWizard::GetLatestFrameAndFaces() {
-    // Diagnostics (卡90% 排查): this runs on the UI thread every 33ms via
-    // JS renderFrame(). If it stalls (>50ms) it blocks the JS main thread,
-    // which starves samplePoll → progress sticks at 80/90 while the backend
-    // actually finished. A slow call has two independent causes, so split the
-    // timing:
-    //   - WAIT = time spent blocked on m_frameCacheMutex before acquiring it
-    //     (the capture thread or the frame thread holds it too long — usually
-    //     the 2.7MB full-frame copy). A long wait here means WE are the victim
-    //     and cannot see our own lock-holder from inside; the holder's own
-    //     >50ms write-WARN fires in parallel with ours.
-    //   - COPY = time under the lock (string copy of ~300KB base64 + json).
-    //     This one is pure UI-thread work — if it's slow, something unrelated
-    //     (WebView2/COM/deadlock) wedged this thread, and even a free lock
-    //     wouldn't have helped.
+    // Runs on the UI thread every 33ms via JS renderFrame(). A stall here
+    // blocks the JS main thread (progress bar freezes). Split the timing:
+    //   - WAIT = time blocked on m_frameCacheMutex before acquiring it
+    //     (frame/capture thread holding it too long)
+    //   - COPY = time under the lock (string copy of ~300KB base64 + json) —
+    //     if slow, something unrelated (WebView2/COM) wedged this thread.
     auto t0 = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
     auto tLocked = std::chrono::steady_clock::now();
@@ -660,10 +648,9 @@ std::string EnrollmentWizard::GetLatestFrameAndFaces() {
     long long waitUs = std::chrono::duration_cast<std::chrono::microseconds>(tLocked - t0).count();
     long long copyUs = std::chrono::duration_cast<std::chrono::microseconds>(t1 - tLocked).count();
     if (waitUs > 20000 || copyUs > 50000) {
-        FACELOGIN_WARN(L"GetLatestFrameAndFaces SLOW: wait=%lldus copy=%lldus total=%lldus (b64=%zuB json=%zuB owner=%hs)",
+        FACELOGIN_WARN(L"GetLatestFrameAndFaces SLOW: wait=%lldus copy=%lldus total=%lldus (b64=%zuB json=%zuB)",
                        waitUs, copyUs, waitUs + copyUs,
-                       m_latestFrameB64.size(), m_latestFacesJson.size(),
-                       m_lockOwner.empty() ? "none" : m_lockOwner.c_str());
+                       m_latestFrameB64.size(), m_latestFacesJson.size());
     }
     return result;
 }
@@ -852,17 +839,8 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 {
                     // Never sleep while holding the lock (UI GetLatestFrameAndFaces
                     // needs it every rAF). Grab/copy under the lock, release, sleep.
-                    // Tag the lock owner so the UI/frame threads' wait-WARNs can
-                    // attribute their stall to the capture thread (卡90% 排查).
-                    auto lt0 = std::chrono::steady_clock::now();
                     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
-                    m_lockOwner = "capture-antispoof";
                     if (m_latestFrame.size() != 0) frame = m_latestFrame;
-                    auto lt1 = std::chrono::steady_clock::now();
-                    long long lWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(lt1 - lt0).count();
-                    if (lWaitUs > 20000) {
-                        FACELOGIN_WARN(L"Antispoof liveness read: waited %lldus on frame cache lock", lWaitUs);
-                    }
                 }
                 if (frame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                 // Detect with SCRFD, extract 106-point landmarks.
@@ -907,17 +885,8 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 {
                     // Never sleep while holding the lock (UI GetLatestFrameAndFaces
                     // needs it every rAF). Grab/copy under the lock, release, sleep.
-                    // Tag the lock owner so the UI/frame threads' wait-WARNs can
-                    // attribute their stall to the capture thread (卡90% 排查).
-                    auto lt0 = std::chrono::steady_clock::now();
                     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
-                    m_lockOwner = "capture-blink";
                     if (m_latestFrame.size() != 0) frame = m_latestFrame;
-                    auto lt1 = std::chrono::steady_clock::now();
-                    long long lWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(lt1 - lt0).count();
-                    if (lWaitUs > 20000) {
-                        FACELOGIN_WARN(L"Blink liveness read: waited %lldus on frame cache lock", lWaitUs);
-                    }
                 }
                 if (frame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                 // Detect with SCRFD, extract 106-point landmarks for EAR.
@@ -983,29 +952,19 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             dlib::matrix<dlib::rgb_pixel> frame;
             bool haveFrame = false;
             {
-                auto lt0 = std::chrono::steady_clock::now();
                 std::lock_guard<std::mutex> lock(m_frameCacheMutex);
-                m_lockOwner = "capture-sample";
                 if (m_latestFrame.size() != 0) {
                     haveFrame = true;
                     frame = m_latestFrame;
                 }
-                auto lt1 = std::chrono::steady_clock::now();
-                long long lWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(lt1 - lt0).count();
-                if (lWaitUs > 20000) {
-                    FACELOGIN_WARN(L"Sample %d read: waited %lldus on frame cache lock",
-                                   i + 1, lWaitUs);
-                }
             }
             if (!haveFrame) {
                 if ((frameWaitCount++ % 30) == 0) {
-                    // Diagnostics: report the current lock owner too — if the
-                    // frame thread died, owner stays "frame" while this loop
-                    // spins forever; if it was reset, owner is empty.
-                    std::lock_guard<std::mutex> lock(m_frameCacheMutex);
-                    FACELOGIN_INFO(L"Enrollment sample %d: waiting for frame (count=%ld, owner=%hs)",
-                                   i + 1, frameWaitCount,
-                                   m_lockOwner.empty() ? "none" : m_lockOwner.c_str());
+                    // Sparse (≈1/s): distinguishes "frame thread dead
+                    // (m_latestFrame empty forever)" from "frames exist but
+                    // detection/embedding keeps failing".
+                    FACELOGIN_INFO(L"Enrollment sample %d: waiting for frame (count=%ld)",
+                                   i + 1, frameWaitCount);
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(33));
                 continue;

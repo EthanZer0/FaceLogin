@@ -201,12 +201,6 @@ private:
     std::string m_latestFrameB64;
     std::string m_latestFacesJson;
     dlib::matrix<dlib::rgb_pixel> m_latestFrame;   // for capture to read
-    // Capture thread tag for lock-owner attribution (卡90% 排查). Set right
-    // before the capture thread reads the frame cache under the lock, cleared
-    // after it releases. The UI GetLatestFrameAndFaces and the frame-thread
-    // write path log this tag when they have to WAIT on the lock, so we can
-    // tell who held it when the UI stalled.
-    std::string m_lockOwner;   // guarded by m_frameCacheMutex
 
     // Preview state
     bool m_previewRunning = false;

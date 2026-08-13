@@ -32,6 +32,16 @@ STDMETHODIMP EnvCallback::Invoke(HRESULT hr, ICoreWebView2Environment* env) {
 // CtrlCallback
 // ==========================================================================
 
+STDMETHODIMP ProcessFailedCallback::Invoke(ICoreWebView2* sender, ICoreWebView2ProcessFailedEventArgs* args) {
+    COREWEBVIEW2_PROCESS_FAILED_KIND kind = COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED;
+    if (args) args->get_ProcessFailedKind(&kind);
+    FACELOGIN_WARN(L"WebView2 process failed: kind=%d (0=BrowserExited 1=RenderExited "
+                   L"2=RenderUnresponsive 3=FrameRenderExited 6=GPUExited 9=Unknown) — "
+                   L"the UI is likely frozen/unresponsive",
+                   static_cast<int>(kind));
+    return S_OK;
+}
+
 STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
     if (FAILED(hr) || !ctrl) return hr;
     HWND hWnd = m_hWnd;
@@ -49,6 +59,15 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
     self->m_webview->AddHostObjectToScript(L"host", &v);
     v.pdispVal->Release();
     host->Release();
+
+    // Log WebView2 process failures (renderer crash / unresponsive): with the
+    // JS side dead no diagnostic can be written, so this is the only evidence
+    // a frozen-looking UI can leave behind.
+    {
+        ICoreWebView2ProcessFailedEventHandler* pf = new ProcessFailedCallback();
+        self->m_webview->add_ProcessFailed(pf, &self->m_processFailedToken);
+        pf->Release();
+    }
 
     // Settings
     ICoreWebView2Settings* settings = nullptr;
