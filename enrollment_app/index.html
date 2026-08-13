@@ -1063,6 +1063,11 @@ var H = (function() {
 })();
 var viewing = true, lastB64 = '', lastFacesJson = '', timer = 0, faceImg = new Image();
 var camReady = false, currentTab = 'cam';
+// Debounce handle for preview teardown on tab departure: quick there-and-back
+// tab switching (well under 1.2s) must NOT repeatedly open/close the camera —
+// some USB camera drivers wedge under frequent open/close (MF Shutdown /
+// ReadSample hang), which is exactly what the bounded teardown guards against.
+var previewStopTimer = 0;
 // True while a capture is running (set in onCapture, cleared when it ends).
 // Gates renderFrame so the 30fps preview polling doesn't starve samplePoll.
 var captureActive = false;
@@ -1375,17 +1380,26 @@ function switchTab(name) {
   // pipeline. Leaving it tears the preview down (camera released, no CPU
   // burn on the other tabs); returning restarts it. An in-flight capture is
   // never disturbed here — it completes on its own and the completion path
-  // manages the screens.
+  // manages the screens. The teardown is DEBOUNCED (1.2s): switching back
+  // within that window cancels it, so quick there-and-back navigation never
+  // opens/closes the camera in a loop (some USB camera drivers wedge under
+  // frequent open/close). The `viewing` guard keeps it to exactly one
+  // teardown per departure — switching between non-camera tabs must not
+  // re-stop an already-stopped preview.
   if (name === 'cam') {
+    clearTimeout(previewStopTimer);
     if (!viewing && !captureActive) {
       viewing = true;
       try { if (H.StartPreview()) renderFrame(); } catch(e) {}
     }
   } else {
-    if (!captureActive) {
-      viewing = false;
-      clearTimeout(timer);
-      try { H.StopPreview(); } catch(e) {}
+    if (viewing && !captureActive) {
+      clearTimeout(previewStopTimer);
+      previewStopTimer = setTimeout(function() {
+        viewing = false;
+        clearTimeout(timer);
+        try { H.StopPreview(); } catch(e) {}
+      }, 1200);
     }
   }
   if (name === 'settings') loadSettings();

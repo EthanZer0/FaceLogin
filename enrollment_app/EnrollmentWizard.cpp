@@ -387,13 +387,17 @@ bool EnrollmentWizard::StartPreview() {
     // Single background thread: load models (if needed) → GrabFrame → JPEG
     // encode → detect → update caches. The UI thread stays completely free;
     // JS polls the caches via GetLatest*(). On a cold start the models are
-    // loaded first here, off the UI thread.
-    m_frameThread = std::thread([this]() {
+    // loaded first here, off the UI thread. The generation is captured by
+    // value: StopPreview() bumps it, so any zombie thread (detached after a
+    // driver wedge, then recovered) sees the mismatch and exits instead of
+    // running alongside the next StartPreview's fresh thread.
+    int myGen = ++m_frameGeneration;
+    m_frameThread = std::thread([this, myGen]() {
         if (!EnsureModelsLoaded()) {
             FACELOGIN_ERROR(L"Model loading failed — no frames will be produced");
             return;
         }
-        while (m_frameRunning) {
+        while (m_frameRunning && m_frameGeneration == myGen) {
             // ---- Pull mode (during capture) --------------------------------
             // The capture/liveness thread requests ONE fresh frame per sample;
             // we deliver exactly that and do zero inference/encoding (the
@@ -406,13 +410,14 @@ bool EnrollmentWizard::StartPreview() {
                 {
                     std::unique_lock<std::mutex> lock(m_frameCacheMutex);
                     if (!m_sampleCv.wait_for(lock, std::chrono::milliseconds(100),
-                                             [this] {
+                                             [this, myGen] {
                                                  return !m_frameRunning ||
+                                                        m_frameGeneration != myGen ||
                                                         m_sampleDelivered < m_sampleSeq;
                                              })) {
                         continue;   // nothing requested yet
                     }
-                    if (!m_frameRunning) break;
+                    if (!m_frameRunning || m_frameGeneration != myGen) break;
                     deliver = true;
                 }
                 dlib::matrix<dlib::rgb_pixel> frame;
@@ -443,7 +448,8 @@ bool EnrollmentWizard::StartPreview() {
                 // recovers instead of spinning on a dead SourceReader until the
                 // next StartPreview. Bounded retries: if the device truly is
                 // gone, stop hammering it and wait for the caller to retry.
-                if (!m_webcam->IsInitialized() && m_frameRunning) {
+                if (!m_webcam->IsInitialized() && m_frameRunning &&
+                    m_frameGeneration == myGen) {
                     if (++m_frameReinitCount >= 3) {
                         FACELOGIN_ERROR(L"Preview camera re-init exceeded limit — giving up until next start");
                         break;
@@ -465,59 +471,45 @@ bool EnrollmentWizard::StartPreview() {
             RotateFrame(frame, m_config.camera_rotation);
             auto tGrab = std::chrono::steady_clock::now();
 
-            // Heavy preview work (half-res JPEG encode + face detection for the
-            // overlay) runs every OTHER camera frame (~15fps). The cheap cache
-            // write below runs every frame, so capture sampling always sees a
-            // fresh full-res frame. JS reuses the last b64 when unchanged, so
-            // the skipped frames cost nothing on the rendering side.
-            bool doPreview = ((++m_previewTick % 2) == 0);
-            std::string b64;
+            std::string b64 = EncodeJPEGBase64(frame);
+            auto tJpeg = std::chrono::steady_clock::now();
+            // Preview overlay: detect the face with SCRFD and show its box.
             std::string faceJson = "[]";
-            int encW = 0, encH = 0;
-            if (doPreview) {
-                b64 = EncodeJPEGBase64(frame, 0.5f, &encW, &encH);
-                auto tJpeg = std::chrono::steady_clock::now();
-                // Preview overlay: detect the face with SCRFD and show its box.
-                if (m_onnxDetector) {
-                    auto det = m_onnxDetector->DetectLargestFace(frame);
-                    auto tDet = std::chrono::steady_clock::now();
-                    if (det) {
-                        std::vector<facelogin::FaceWithLandmarks> faces;
-                        FaceWithLandmarks fwl;
-                        fwl.rect = dlib::rectangle(static_cast<long>(det->x1),
-                                                   static_cast<long>(det->y1),
-                                                   static_cast<long>(det->x2),
-                                                   static_cast<long>(det->y2));
-                        m_detector->DetectLandmarks(frame, fwl.rect, fwl.landmarks);
-                        auto tLand = std::chrono::steady_clock::now();
-                        faces.push_back(std::move(fwl));
-                        // Scale overlay coordinates into the encoded (half-res)
-                        // image space so the JS contain-mapping stays aligned.
-                        float scale = (encW > 0 && frame.nc() > 0)
-                                          ? static_cast<float>(encW) / frame.nc() : 1.0f;
-                        faceJson = FacesToJson(faces, scale);
-                        // Diagnostics: frame-thread pipeline stage timing. Each
-                        // stage runs on the frame thread, so a slow stage here
-                        // does NOT directly freeze the UI — but if the FRAME
-                        // thread lags, capture waits for fresh frames and the
-                        // lock gets held longer (frame write contends with the
-                        // UI reader). Log only when slow.
-                        long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tJpeg).count();
-                        long long landUs = std::chrono::duration_cast<std::chrono::microseconds>(tLand - tDet).count();
-                        long long grabUs = std::chrono::duration_cast<std::chrono::microseconds>(tGrab - itT0).count();
-                        long long jpegUs = std::chrono::duration_cast<std::chrono::microseconds>(tJpeg - tGrab).count();
-                        if (grabUs > 50000 || jpegUs > 50000 || detUs > 50000 || landUs > 50000) {
-                            FACELOGIN_WARN(L"Frame thread SLOW: grab=%lldus jpeg=%lldus detect=%lldus landmarks=%lldus",
-                                           grabUs, jpegUs, detUs, landUs);
-                        }
-                    } else {
-                        long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tJpeg).count();
-                        long long grabUs = std::chrono::duration_cast<std::chrono::microseconds>(tGrab - itT0).count();
-                        long long jpegUs = std::chrono::duration_cast<std::chrono::microseconds>(tJpeg - tGrab).count();
-                        if (grabUs > 50000 || jpegUs > 50000 || detUs > 50000) {
-                            FACELOGIN_WARN(L"Frame thread SLOW (no face): grab=%lldus jpeg=%lldus detect=%lldus",
-                                           grabUs, jpegUs, detUs);
-                        }
+            if (m_onnxDetector) {
+                auto det = m_onnxDetector->DetectLargestFace(frame);
+                auto tDet = std::chrono::steady_clock::now();
+                if (det) {
+                    std::vector<facelogin::FaceWithLandmarks> faces;
+                    FaceWithLandmarks fwl;
+                    fwl.rect = dlib::rectangle(static_cast<long>(det->x1),
+                                               static_cast<long>(det->y1),
+                                               static_cast<long>(det->x2),
+                                               static_cast<long>(det->y2));
+                    m_detector->DetectLandmarks(frame, fwl.rect, fwl.landmarks);
+                    auto tLand = std::chrono::steady_clock::now();
+                    faces.push_back(std::move(fwl));
+                    faceJson = FacesToJson(faces);
+                    // Diagnostics: frame-thread pipeline stage timing. Each
+                    // stage runs on the frame thread, so a slow stage here
+                    // does NOT directly freeze the UI — but if the FRAME
+                    // thread lags, capture waits for fresh frames and the
+                    // lock gets held longer (frame write contends with the
+                    // UI reader). Log only when slow.
+                    long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tJpeg).count();
+                    long long landUs = std::chrono::duration_cast<std::chrono::microseconds>(tLand - tDet).count();
+                    long long grabUs = std::chrono::duration_cast<std::chrono::microseconds>(tGrab - itT0).count();
+                    long long jpegUs = std::chrono::duration_cast<std::chrono::microseconds>(tJpeg - tGrab).count();
+                    if (grabUs > 50000 || jpegUs > 50000 || detUs > 50000 || landUs > 50000) {
+                        FACELOGIN_WARN(L"Frame thread SLOW: grab=%lldus jpeg=%lldus detect=%lldus landmarks=%lldus",
+                                       grabUs, jpegUs, detUs, landUs);
+                    }
+                } else {
+                    long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tJpeg).count();
+                    long long grabUs = std::chrono::duration_cast<std::chrono::microseconds>(tGrab - itT0).count();
+                    long long jpegUs = std::chrono::duration_cast<std::chrono::microseconds>(tJpeg - tGrab).count();
+                    if (grabUs > 50000 || jpegUs > 50000 || detUs > 50000) {
+                        FACELOGIN_WARN(L"Frame thread SLOW (no face): grab=%lldus jpeg=%lldus detect=%lldus",
+                                       grabUs, jpegUs, detUs);
                     }
                 }
             }
@@ -526,10 +518,8 @@ bool EnrollmentWizard::StartPreview() {
                 auto wt0 = std::chrono::steady_clock::now();
                 std::lock_guard<std::mutex> lock(m_frameCacheMutex);
                 auto wtLocked = std::chrono::steady_clock::now();
-                if (doPreview) {
-                    m_latestFrameB64  = std::move(b64);
-                    m_latestFacesJson = std::move(faceJson);
-                }
+                m_latestFrameB64  = std::move(b64);
+                m_latestFacesJson = std::move(faceJson);
                 m_latestFrame     = frame;
                 // The 2.7MB frame copy happens under the lock; if it's slow it
                 // blocks the capture thread and the UI thread's
@@ -621,7 +611,7 @@ bool EnrollmentWizard::EnsureModelsLoaded() {
 // (卡90%无响应). Only the frame thread can hit this: the capture thread always
 // terminates within its bounded loops.
 static void JoinBounded(std::thread& t, const wchar_t* name,
-                        DWORD timeoutMs = 2000) {
+                        DWORD timeoutMs = 1500) {
     if (!t.joinable()) return;
     HANDLE h = t.native_handle();
     DWORD wait = WaitForSingleObject(h, timeoutMs);
@@ -647,6 +637,10 @@ void EnrollmentWizard::StopPreview() {
     m_previewRunning = false;
     m_frameRunning = false;
     m_capturing = false;
+    // Bump the generation: a detached zombie frame thread that later wakes up
+    // from a wedged driver call sees the mismatch and exits instead of
+    // touching the (possibly re-initialized) camera next to the fresh thread.
+    ++m_frameGeneration;
 
     // Shut down the camera FIRST so a synchronous ReadSample that is blocked
     // (camera taken over by the credential provider at lock) returns an error.
@@ -731,36 +725,27 @@ static std::string EncodeBase64(const BYTE* data, size_t len) {
     return out;
 }
 
-std::string EnrollmentWizard::EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame,
-                                               float scale, int* outW, int* outH) {
+std::string EnrollmentWizard::EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame) {
     if (!m_wicFactory) return {};
 
     int srcW = static_cast<int>(frame.nc());
     int srcH = static_cast<int>(frame.nr());
-    // Preview JPEG at half resolution: ~4x less encode work and ~4x smaller
-    // base64 across the WebView2 COM boundary. Nearest-neighbour downscale
-    // (the overlay box/landmarks don't need smooth sampling).
-    int dstW = std::max(1, static_cast<int>(srcW * scale));
-    int dstH = std::max(1, static_cast<int>(srcH * scale));
-    if (outW) *outW = dstW;
-    if (outH) *outH = dstH;
 
     // Reuse the staging buffers across frames (only reallocated on resolution
     // change) instead of allocating ~3.7MB + the JPEG output every frame.
-    if (dstW != m_encodeWidth || dstH != m_encodeHeight) {
-        m_encodeWidth = dstW;
-        m_encodeHeight = dstH;
-        m_encodeBgra.assign(static_cast<size_t>(dstW) * dstH * 4, 0);
+    if (srcW != m_encodeWidth || srcH != m_encodeHeight) {
+        m_encodeWidth = srcW;
+        m_encodeHeight = srcH;
+        m_encodeBgra.assign(static_cast<size_t>(srcW) * srcH * 4, 0);
         m_encodeJpeg.clear();
         m_encodeJpeg.shrink_to_fit();
     }
     std::vector<BYTE>& bgra = m_encodeBgra;
 
-    for (int y = 0; y < dstH; y++) {
-        int sy = (y * srcH) / dstH;   // exact for scale = 0.5 (y * 2)
-        BYTE* row = bgra.data() + static_cast<size_t>(y) * dstW * 4;
-        for (int x = 0; x < dstW; x++) {
-            const auto& p = frame(sy, (x * srcW) / dstW);
+    for (int y = 0; y < srcH; y++) {
+        BYTE* row = bgra.data() + static_cast<size_t>(y) * srcW * 4;
+        for (int x = 0; x < srcW; x++) {
+            const auto& p = frame(y, x);
             row[x * 4 + 0] = p.blue;
             row[x * 4 + 1] = p.green;
             row[x * 4 + 2] = p.red;
@@ -770,8 +755,8 @@ std::string EnrollmentWizard::EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixe
 
     IWICBitmap* pBitmap = nullptr;
     HRESULT hr = m_wicFactory->CreateBitmapFromMemory(
-        dstW, dstH, GUID_WICPixelFormat32bppBGR,
-        dstW * 4, static_cast<UINT>(bgra.size()), bgra.data(), &pBitmap);
+        srcW, srcH, GUID_WICPixelFormat32bppBGR,
+        srcW * 4, static_cast<UINT>(bgra.size()), bgra.data(), &pBitmap);
     if (FAILED(hr)) return {};
 
     IWICBitmapEncoder* pEncoder = nullptr;
@@ -796,7 +781,7 @@ std::string EnrollmentWizard::EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixe
         pProps->Write(1, &opt, &v);
         VariantClear(&v);
         pFrameEncode->Initialize(pProps);
-        pFrameEncode->SetSize(dstW, dstH);
+        pFrameEncode->SetSize(srcW, srcH);
         pFrameEncode->WriteSource(pBitmap, nullptr);
         pFrameEncode->Commit();
         pEncoder->Commit();
@@ -829,22 +814,22 @@ std::string EnrollmentWizard::EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixe
 // ============================================================================
 
 std::string EnrollmentWizard::FacesToJson(
-    const std::vector<facelogin::FaceWithLandmarks>& faces, float scale) {
+    const std::vector<facelogin::FaceWithLandmarks>& faces) {
     std::ostringstream js;
     js << "[";
     for (size_t fi = 0; fi < faces.size(); fi++) {
         if (fi > 0) js << ",";
         const auto& f = faces[fi];
         js << "{"
-           << "\"x\":" << static_cast<int>(f.rect.left() * scale)
-           << ",\"y\":" << static_cast<int>(f.rect.top() * scale)
-           << ",\"w\":" << static_cast<int>(f.rect.width() * scale)
-           << ",\"h\":" << static_cast<int>(f.rect.height() * scale)
+           << "\"x\":" << f.rect.left()
+           << ",\"y\":" << f.rect.top()
+           << ",\"w\":" << static_cast<int>(f.rect.width())
+           << ",\"h\":" << static_cast<int>(f.rect.height())
            << ",\"landmarks\":[";
         for (unsigned long i = 0; i < f.landmarks.num_parts(); i++) {
             if (i > 0) js << ",";
-            js << static_cast<int>(f.landmarks.part(i).x() * scale) << ","
-               << static_cast<int>(f.landmarks.part(i).y() * scale);
+            js << static_cast<int>(f.landmarks.part(i).x()) << ","
+               << static_cast<int>(f.landmarks.part(i).y());
         }
         js << "]}";
     }
@@ -861,8 +846,14 @@ bool EnrollmentWizard::RequestFreshFrame(dlib::matrix<dlib::rgb_pixel>& outFrame
     std::unique_lock<std::mutex> lock(m_frameCacheMutex);
     ++m_sampleSeq;
     m_sampleCv.notify_all();
+    // StopPreview() clears m_capturing/m_frameRunning, so the wait aborts
+    // immediately on teardown instead of burning the full budget — the
+    // capture thread then exits fast and its join never times out.
     if (!m_sampleCv.wait_for(lock, std::chrono::milliseconds(budgetMs),
-                             [this] { return m_sampleDelivered >= m_sampleSeq; })) {
+                             [this] {
+                                 return m_sampleDelivered >= m_sampleSeq ||
+                                        !m_capturing || !m_frameRunning;
+                             })) {
         return false;   // frame thread didn't answer in time (dead / stalled)
     }
     if (m_latestFrame.size() == 0) return false;   // answered "no frame"

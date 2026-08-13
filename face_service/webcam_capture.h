@@ -10,6 +10,7 @@
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <mfobjects.h>
+#include <mutex>
 
 #include "camera_types.h"
 
@@ -36,7 +37,7 @@ public:
     // Empty (default) = first enumerated device.
     bool Initialize(int preferredWidth = 1280, int preferredHeight = 720,
                     const std::wstring& devicePath = L"");
-    bool IsInitialized() const { return m_initialized; }
+    bool IsInitialized() const;   // locked — safe against concurrent Shutdown
     bool GrabFrame(dlib::matrix<dlib::rgb_pixel>& outFrame);
     bool IsFrameReady();
     void Shutdown();
@@ -51,9 +52,18 @@ private:
     // Find the camera matching devicePath (fallback: first device).
     bool FindCamera(const std::wstring& devicePath, IMFMediaSource** ppSource);
     bool ConfigureReader(int width, int height);
-    bool ConvertNV12toRGB(IMFSample* pSample, dlib::matrix<dlib::rgb_pixel>& outFrame);
-    bool ConvertYUY2toRGB(IMFSample* pSample, dlib::matrix<dlib::rgb_pixel>& outFrame);
+    bool ConvertNV12toRGB(IMFSourceReader* reader, IMFSample* pSample,
+                          dlib::matrix<dlib::rgb_pixel>& outFrame);
+    bool ConvertYUY2toRGB(IMFSourceReader* reader, IMFSample* pSample,
+                          dlib::matrix<dlib::rgb_pixel>& outFrame);
 
+    // Serializes the camera lifecycle: Initialize / Shutdown / GrabFrame's
+    // interface handoff. Shutdown() hands the MF interfaces to a detached
+    // worker (bounded teardown), and GrabFrame takes a short-lived AddRef
+    // under this lock — so a concurrent Shutdown can never Release the reader
+    // out from under an in-flight ReadSample (double-Release / use-after-free
+    // crashes on wedged camera drivers).
+    mutable std::mutex m_lifecycleMutex;
     IMFMediaSource* m_pSource = nullptr;
     IMFSourceReader* m_pReader = nullptr;
     int m_width = 1280;
@@ -66,6 +76,10 @@ private:
     int m_consecutiveFailures = 0;
     static bool s_mfInitialized;
     static int s_mfRefCount;
+    // Process-level counter of teardown timeouts (wedged camera driver) —
+    // reported in the Shutdown() WARN so repeated occurrences are visible
+    // even when individual calls recover.
+    static int s_teardownTimeouts;
 };
 
 } // namespace facelogin

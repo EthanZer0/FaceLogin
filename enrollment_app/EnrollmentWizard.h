@@ -155,17 +155,10 @@ public:
     std::string GetConsoleVersion() const;
 
 private:
-    // Encode the frame as a base64 JPEG data URL. scale < 1 downscales the
-    // encoded image (nearest-neighbour) — the preview is displayed at half
-    // resolution while detection/capture keep working on the full frame.
-    // outW/outH receive the encoded dimensions (for overlay coordinate scaling).
-    std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame,
-                                 float scale = 1.0f,
-                                 int* outW = nullptr, int* outH = nullptr);
-    // Serialize detected faces to JSON. scale multiplies every coordinate so
-    // the overlay aligns with a scaled-down JPEG of the same frame.
-    std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces,
-                            float scale = 1.0f);
+    // Encode the frame as a base64 JPEG data URL (full resolution).
+    std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
+    // Serialize detected faces to JSON (coordinates in full-frame space).
+    std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces);
 
     // Pull-model frame delivery: request ONE fresh frame from the frame thread
     // (which during capture is in pull mode — it grabs a camera frame only on
@@ -198,6 +191,12 @@ private:
     // Frame-grab thread (runs off UI thread — GrabFrame + JPEG encode + detection)
     std::thread m_frameThread;
     bool m_frameRunning = false;
+    // Generation counter for the frame thread. StopPreview() bumps it so a
+    // detached zombie thread (wedged in a driver call that later recovers)
+    // observes a mismatch and exits instead of continuing next to a freshly
+    // spawned thread. Incremented in StartPreview and captured by value at
+    // spawn; any thread whose captured generation != current exits its loop.
+    int m_frameGeneration = 0;
     // Consecutive camera re-inits inside the frame thread (stalled SourceReader
     // after the credential provider took the camera). Bounded so a truly-dead
     // device doesn't cause an infinite re-init loop; reset on success or start.
@@ -229,10 +228,6 @@ private:
     std::condition_variable m_sampleCv;
     uint64_t m_sampleSeq = 0;
     uint64_t m_sampleDelivered = 0;
-    // Preview tick counter: heavy preview work (JPEG encode + face detection)
-    // runs every other camera frame (~15fps); the cheap cache write always
-    // runs, so capture sampling always has a fresh full-res frame.
-    int m_previewTick = 0;
 
     // Preview state
     bool m_previewRunning = false;
