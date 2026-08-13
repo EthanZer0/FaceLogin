@@ -34,6 +34,14 @@ public:
     // Retries for up to ~5 seconds (pipe server may not be ready yet).
     bool Connect(DWORD timeoutMs = 5000);
 
+    // Lightweight liveness probe: does the service's named pipe exist right
+    // now? Attempts one CreateFileW with no wait/retry — used by the
+    // credential provider at lock-screen time to show "service not running"
+    // immediately instead of waiting for the user to press a key (which would
+    // then time out after ~5s). Returns true if the pipe is openable, false
+    // if it doesn't exist (service down).
+    static bool ProbeServiceAvailable();
+
     // Send a message to the server. Returns true on success.
     bool SendMessage(const std::wstring& message);
 

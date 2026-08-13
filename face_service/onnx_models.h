@@ -8,6 +8,7 @@
 #include <vector>
 #include <memory>
 #include <optional>
+#include <mutex>
 #include "liveness_types.h"
 
 namespace facelogin {
@@ -23,6 +24,17 @@ namespace facelogin {
 // chip is returned unchanged, so the match threshold and photo-rejection
 // boundary are untouched.
 void ApplyLowLightEnhance(dlib::matrix<dlib::rgb_pixel>& chip);
+
+// Alignment anchor selection for the 5-point arcface similarity transform.
+// OuterEye (default): uses the eye OUTER corners (landmarks 39/93) as the eye
+//   anchors — the historical behavior. Robust for most faces.
+// EyeCenter:         uses the model-predicted eye CENTERS (landmarks 38/88).
+//   The outer corners sit right under a glasses frame's hinge/rim, so when the
+//   subject wears glasses those two points can be nudged by the frame edge;
+//   the eye centers are inside the lens and steadier. Selecting this changes
+//   the alignment and therefore the embedding space — any enrollment matched
+//   with EyeCenter must be re-enrolled under the same mode.
+enum class AlignMode { OuterEye, EyeCenter };
 
 // ONNX-based face recognition using InsightFace buffalo_s (w600k_mbf).
 // Replaces dlib ResNet-34 with the more accurate MobileFaceNet @ WebFace600K.
@@ -44,6 +56,14 @@ public:
         const dlib::matrix<dlib::rgb_pixel>& image,
         const dlib::full_object_detection& landmarks);
 
+    // Alignment-mode overload: selects the eye anchors for the 5-point arcface
+    // transform (OuterEye = historical, EyeCenter = glasses-robust). Defaults
+    // to OuterEye so existing callers are unchanged.
+    std::vector<float> ComputeEmbedding(
+        const dlib::matrix<dlib::rgb_pixel>& image,
+        const dlib::full_object_detection& landmarks,
+        AlignMode mode);
+
     // Euclidean distance between two embeddings.
     static float Distance(const std::vector<float>& a, const std::vector<float>& b);
     static float Distance(const std::vector<float>& a, const float* b);
@@ -63,6 +83,19 @@ private:
     // Input/output names (cached after session creation)
     std::string m_inputName;
     std::string m_outputName;
+
+    // ONNX Runtime sessions are not thread-safe for concurrent Run(), and the
+    // reusable buffers below are shared mutable state. m_runMutex serializes
+    // the whole inference path (preprocess → Run → postprocess) so the frame
+    // thread and the capture thread can share these models safely.
+    std::mutex m_runMutex;
+
+    // Reusable buffers (perf: avoid re-allocating the ~38KB input tensor and
+    // the 112×112 chip on every inference). Allocated in Initialize(), reused
+    // across calls, guarded by m_runMutex.
+    dlib::matrix<dlib::rgb_pixel> m_faceChip;   // 112×112 warp target
+    std::vector<float> m_input;                 // [1,3,112,112] NCHW
+    std::vector<float> m_embedding;             // output copy (L2-normalized)
 };
 
 // ONNX-based face detection using InsightFace SCRFD.
@@ -97,14 +130,29 @@ private:
     std::string m_inputName;
     std::vector<std::string> m_outputNames;
 
+    // ONNX Runtime sessions are not thread-safe for concurrent Run(), and the
+    // reusable buffers below are shared mutable state. m_runMutex serializes
+    // the whole inference path (preprocess → Run → decode → NMS).
+    std::mutex m_runMutex;
+
+    // Reusable buffers (perf: avoid re-allocating the 640² resize matrix, the
+    // ~1.23M-float input tensor and the decode vectors on every Detect).
+    // Allocated in Initialize(), reused across calls, guarded by m_runMutex.
+    dlib::matrix<dlib::rgb_pixel> m_resized;   // 640×640 resize target
+    std::vector<float> m_tensor;               // [1,3,640,640] NCHW
+    std::vector<float> m_centerX, m_centerY;   // per-stride anchor centers
+    std::vector<Detection> m_results;          // output collection (reused)
+
     // Preprocess: direct resize to 640×640 (no letterbox), BGR planar,
     // normalized to [-1, 1] with (pixel-127.5)/128. Matches the model's
     // native input; insightface SCRFD is exported this way.
     // Because the resize DISTORTS non-square frames (e.g. 1280×720 → 640×640),
     // the x and y scales are DIFFERENT. scaleX/scaleY map 640-space back to
     // source pixels: srcX = detX * scaleX, srcY = detY * scaleY.
-    std::vector<float> Preprocess(const dlib::matrix<dlib::rgb_pixel>& image,
-                                   float& outScaleX, float& outScaleY);
+    // Returns a reference to the reusable m_tensor buffer (caller must hold
+    // m_runMutex — Detect does).
+    std::vector<float>& Preprocess(const dlib::matrix<dlib::rgb_pixel>& image,
+                                    float& outScaleX, float& outScaleY);
 };
 
 // Silent anti-spoofing detection.
@@ -153,6 +201,16 @@ private:
     std::string m_outputName;
     std::vector<std::string> m_outputNames; // DeepPixBiS has 2 outputs
     int m_inputSize = 224;
+
+    // ONNX Runtime sessions are not thread-safe for concurrent Run(), and the
+    // reusable buffers below are shared mutable state. m_runMutex serializes
+    // the whole inference path.
+    std::mutex m_runMutex;
+
+    // Reusable buffers (perf: avoid re-allocating the resize matrix + input
+    // tensor on every Predict). Allocated in Initialize(), guarded by m_runMutex.
+    dlib::matrix<dlib::rgb_pixel> m_resized;   // model input size (128 or 224)
+    std::vector<float> m_input;                // [1,3,N,N] NCHW
 };
 
 } // namespace facelogin

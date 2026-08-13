@@ -82,6 +82,11 @@ bool OnnxRecognizer::Initialize(const std::wstring& modelPath) {
         m_inputName = m_session->GetInputNameAllocated(0, alloc).get();
         m_outputName = m_session->GetOutputNameAllocated(0, alloc).get();
 
+        // Allocate reusable buffers for the hot inference path.
+        m_faceChip.set_size(112, 112);
+        m_input.assign(1 * 3 * 112 * 112, 0.0f);
+        m_embedding.clear();
+
         FACELOGIN_INFO(L"OnnxRecognizer initialized: %s", modelPath.c_str());
         FACELOGIN_INFO(L"  Input: %hs, Output: %hs", m_inputName.c_str(), m_outputName.c_str());
 
@@ -97,35 +102,37 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
     const dlib::matrix<dlib::rgb_pixel>& faceChip) {
     if (!m_initialized) return {};
 
-    try {
-        int h = static_cast<int>(faceChip.nr());
-        int w = static_cast<int>(faceChip.nc());
+    // Serialize inference: ONNX sessions are not thread-safe for concurrent
+    // Run(), and the reusable buffers below are shared mutable state.
+    std::lock_guard<std::mutex> lock(m_runMutex);
 
-        // InsightFace buffalo_s expects 112x112 RGB, normalized to [-1, 1]
-        // First resize to 112x112
-        dlib::matrix<dlib::rgb_pixel> resized(112, 112);
-        dlib::resize_image(faceChip, resized);
+    try {
+        // InsightFace buffalo_s expects 112x112 RGB, normalized to [-1, 1].
+        // resize_image into the reusable buffer (same fixed size every call).
+        dlib::resize_image(faceChip, m_faceChip);
 
         // Optional low-light enhancement (config-gated): normalize brightness
         // of dark chips so the embedding isn't distorted by a dark scene.
-        if (m_lowLightEnhance) ApplyLowLightEnhance(resized);
+        if (m_lowLightEnhance) ApplyLowLightEnhance(m_faceChip);
 
         // Convert to NCHW float tensor: [1, 3, 112, 112] normalized to [-1, 1]
-        std::vector<float> input(1 * 3 * 112 * 112);
+        constexpr int N = 112;
+        constexpr int plane = N * N;
+        float* input = m_input.data();
         const float scale = 1.0f / 127.5f;
-        for (int y = 0; y < 112; y++) {
-            for (int x = 0; x < 112; x++) {
-                const auto& p = resized(y, x);
-                int base = y * 112 + x;
-                input[0 * 112 * 112 + base] = static_cast<float>(p.red)   * scale - 1.0f;
-                input[1 * 112 * 112 + base] = static_cast<float>(p.green) * scale - 1.0f;
-                input[2 * 112 * 112 + base] = static_cast<float>(p.blue)  * scale - 1.0f;
+        for (int y = 0; y < N; y++) {
+            for (int x = 0; x < N; x++) {
+                const auto& p = m_faceChip(y, x);
+                int base = y * N + x;
+                input[0 * plane + base] = static_cast<float>(p.red)   * scale - 1.0f;
+                input[1 * plane + base] = static_cast<float>(p.green) * scale - 1.0f;
+                input[2 * plane + base] = static_cast<float>(p.blue)  * scale - 1.0f;
             }
         }
 
-        std::array<int64_t, 4> shape = {1, 3, 112, 112};
+        std::array<int64_t, 4> shape = {1, 3, N, N};
         Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-            *m_memoryInfo, input.data(), input.size(), shape.data(), shape.size());
+            *m_memoryInfo, input, m_input.size(), shape.data(), shape.size());
 
         const char* inputNames[] = {m_inputName.c_str()};
         const char* outName = m_outputName.c_str();
@@ -138,17 +145,17 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
         auto info = outputs[0].GetTensorTypeAndShapeInfo();
         size_t dim = info.GetElementCount();
 
-        std::vector<float> embedding(data, data + dim);
-
-        // L2 normalize
+        // Copy into the reusable output buffer (avoids reallocating the return
+        // vector each call), then L2-normalize.
+        m_embedding.assign(data, data + dim);
         float norm = 0.0f;
-        for (float v : embedding) norm += v * v;
+        for (float v : m_embedding) norm += v * v;
         norm = std::sqrt(norm);
         if (norm > 1e-8f) {
-            for (float& v : embedding) v /= norm;
+            for (float& v : m_embedding) v /= norm;
         }
 
-        return embedding;
+        return m_embedding;
     } catch (const std::exception& e) {
         FACELOGIN_WARN(L"OnnxRecognizer::ComputeEmbedding error: %hs", e.what());
         return {};
@@ -158,15 +165,31 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
 std::vector<float> OnnxRecognizer::ComputeEmbedding(
     const dlib::matrix<dlib::rgb_pixel>& image,
     const dlib::full_object_detection& landmarks) {
+    return ComputeEmbedding(image, landmarks, AlignMode::OuterEye);
+}
+
+std::vector<float> OnnxRecognizer::ComputeEmbedding(
+    const dlib::matrix<dlib::rgb_pixel>& image,
+    const dlib::full_object_detection& landmarks,
+    AlignMode mode) {
     // Align face using a 5-point similarity transform (arcface template) and
     // the 106-point landmark indices, then ONNX infer. The 106-point model's
     // "subject-first-person" eye layout:
     //   right eye outer corner = 39, left eye outer corner = 93
+    //   right eye center      = 38, left eye center      = 88
     //   nose bridge end (nose tip) = 80
     //   mouth corners = 52 (left, image-left) / 69 (right, image-right)
     // Matches insightface's arcface_dst template:
     //   [right eye, left eye, nose, left mouth, right mouth]
-    const int kArc[5] = {39, 93, 80, 52, 69};
+    //
+    // Eye anchor choice:
+    //   OuterEye (default): outer corners 39/93 — historical behavior.
+    //   EyeCenter:          eye centers 38/88 — steadier under a glasses frame,
+    //                       whose rim/hinge sits on the outer corners.
+    const int kArcOuterEye[5] = {39, 93, 80, 52, 69};
+    const int kArcEyeCenter[5] = {38, 88, 80, 52, 69};
+    const int* kArc = (mode == AlignMode::EyeCenter) ? kArcEyeCenter : kArcOuterEye;
+
     std::vector<dlib::vector<double, 2>> src, dst;
     src.reserve(5); dst.reserve(5);
     const double arcface_dst[5][2] = {
@@ -250,6 +273,12 @@ bool OnnxDetector::Initialize(const std::wstring& modelPath) {
             m_outputNames[i] = m_session->GetOutputNameAllocated(i, alloc).get();
         }
 
+        // Allocate reusable buffers for the hot inference path.
+        m_resized.set_size(640, 640);
+        m_tensor.assign(1 * 3 * 640 * 640, 0.0f);
+        m_centerX.clear(); m_centerY.clear();
+        m_results.clear();
+
         FACELOGIN_INFO(L"OnnxDetector initialized: %s", modelPath.c_str());
         m_initialized = true;
         return true;
@@ -259,7 +288,7 @@ bool OnnxDetector::Initialize(const std::wstring& modelPath) {
     }
 }
 
-std::vector<float> OnnxDetector::Preprocess(const dlib::matrix<dlib::rgb_pixel>& image,
+std::vector<float>& OnnxDetector::Preprocess(const dlib::matrix<dlib::rgb_pixel>& image,
                                               float& outScaleX, float& outScaleY) {
     int srcH = static_cast<int>(image.nr());
     int srcW = static_cast<int>(image.nc());
@@ -279,15 +308,15 @@ std::vector<float> OnnxDetector::Preprocess(const dlib::matrix<dlib::rgb_pixel>&
     outScaleX = static_cast<float>(srcW) / static_cast<float>(targetSize);
     outScaleY = static_cast<float>(srcH) / static_cast<float>(targetSize);
 
-    dlib::matrix<dlib::rgb_pixel> resized(targetSize, targetSize);
-    dlib::resize_image(image, resized);
+    // resize_image into the reusable 640×640 buffer (no realloc per call).
+    dlib::resize_image(image, m_resized);
 
     // BGR planar NCHW, normalized to [-1, 1] with (pixel - 127.5) / 128.
     // insightface normalizes with 128, NOT 255.
-    std::vector<float> tensor(1 * 3 * targetSize * targetSize, 0.0f);
+    float* tensor = m_tensor.data();
     for (int y = 0; y < targetSize; y++) {
         for (int x = 0; x < targetSize; x++) {
-            const auto& p = resized(y, x);
+            const auto& p = m_resized(y, x);
             int base = y * targetSize + x;
             tensor[0 * targetSize * targetSize + base] = (static_cast<float>(p.blue)  - 127.5f) / 128.0f;
             tensor[1 * targetSize * targetSize + base] = (static_cast<float>(p.green) - 127.5f) / 128.0f;
@@ -295,7 +324,7 @@ std::vector<float> OnnxDetector::Preprocess(const dlib::matrix<dlib::rgb_pixel>&
         }
     }
 
-    return tensor;
+    return m_tensor;
 }
 
 // SCRFD decode helpers (matching insightface's scrfd.py).
@@ -328,9 +357,14 @@ std::vector<OnnxDetector::Detection> OnnxDetector::Detect(
     std::vector<Detection> results;
     if (!m_initialized) return results;
 
+    // Serialize inference: ONNX sessions are not thread-safe for concurrent
+    // Run(), and the reusable buffers below are shared mutable state. The
+    // Console's frame thread and capture thread share this session.
+    std::lock_guard<std::mutex> lock(m_runMutex);
+
     try {
         float scaleX = 0.0f, scaleY = 0.0f;
-        auto input = Preprocess(image, scaleX, scaleY);
+        auto& input = Preprocess(image, scaleX, scaleY);
 
         // Fixed 640×640 model input.
         const int inputSize = 640;
@@ -379,11 +413,13 @@ std::vector<OnnxDetector::Detection> OnnxDetector::Detect(
             // inner loop). Center = (col, row) * stride, NO +0.5 offset.
             // Both anchors of a cell share this center; output is interleaved:
             //   index i → cell i/2, anchor i%2.
-            std::vector<float> centerX(numPts), centerY(numPts);
+            // Reuse the member vectors (resized per stride, no realloc).
+            m_centerX.resize(numPts);
+            m_centerY.resize(numPts);
             for (int r = 0; r < grid; r++) {          // row outer
                 for (int c = 0; c < grid; c++) {      // col inner (x fastest)
-                    centerX[r * grid + c] = c * stride;
-                    centerY[r * grid + c] = r * stride;
+                    m_centerX[r * grid + c] = c * stride;
+                    m_centerY[r * grid + c] = r * stride;
                 }
             }
 
@@ -392,8 +428,8 @@ std::vector<OnnxDetector::Detection> OnnxDetector::Detect(
                 if (score < kScoreThreshold) continue;
 
                 size_t cell = i / 2;   // both anchors share this cell's center
-                float cx = centerX[cell];
-                float cy = centerY[cell];
+                float cx = m_centerX[cell];
+                float cy = m_centerY[cell];
 
                 RawDet det;
                 det.score = score;
@@ -443,6 +479,8 @@ std::vector<OnnxDetector::Detection> OnnxDetector::Detect(
 
         // Map surviving detections back to source-pixel coordinates. The model
         // DISTORTS non-square frames, so x and y scale independently.
+        // Fill the reusable m_results buffer.
+        m_results.clear();
         for (size_t i = 0; i < raw.size(); i++) {
             if (suppressed[i]) continue;
             const RawDet& d = raw[i];
@@ -456,13 +494,15 @@ std::vector<OnnxDetector::Detection> OnnxDetector::Detect(
                 det.kps[k * 2]     = d.kps[k * 2]     * scaleX;
                 det.kps[k * 2 + 1] = d.kps[k * 2 + 1] * scaleY;
             }
-            results.push_back(det);
+            m_results.push_back(det);
         }
 
         // Sort by confidence descending (already score-sorted after NMS, but
         // keep it explicit for the public contract).
-        std::sort(results.begin(), results.end(),
+        std::sort(m_results.begin(), m_results.end(),
             [](const Detection& a, const Detection& b) { return a.score > b.score; });
+
+        results = m_results;   // copy out under the lock
 
     } catch (const std::exception& e) {
         FACELOGIN_WARN(L"OnnxDetector::Detect error: %hs", e.what());
@@ -547,6 +587,10 @@ bool OnnxAntiSpoof::Initialize(const std::wstring& modelPath) {
             FACELOGIN_INFO(L"OnnxAntiSpoof: facenox MiniFAS mode (input=%d, logit output)", m_inputSize);
         }
 
+        // Allocate reusable buffers for the hot inference path.
+        m_resized.set_size(m_inputSize, m_inputSize);
+        m_input.assign(1 * 3 * m_inputSize * m_inputSize, 0.0f);
+
         FACELOGIN_INFO(L"OnnxAntiSpoof initialized: %s (input=%d, outputs=%zu)",
                       modelPath.c_str(), m_inputSize, numOutputs);
         m_initialized = true;
@@ -559,22 +603,26 @@ bool OnnxAntiSpoof::Initialize(const std::wstring& modelPath) {
 
 float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
     if (!m_initialized) return -1.0f;
+
+    // Serialize inference: ONNX sessions are not thread-safe for concurrent
+    // Run(), and the reusable buffers below are shared mutable state.
+    std::lock_guard<std::mutex> lock(m_runMutex);
+
     try {
         int isize = m_inputSize; // 128 (MiniFAS) or 224 (DeepPixBiS)
-        dlib::matrix<dlib::rgb_pixel> resized(isize, isize);
-        dlib::resize_image(faceChip, resized);
+        dlib::resize_image(faceChip, m_resized);
 
         // Optional low-light enhancement (config-gated): normalize brightness
         // of dark chips so anti-spoof scores don't drop in dark scenes.
-        if (m_lowLightEnhance) ApplyLowLightEnhance(resized);
+        if (m_lowLightEnhance) ApplyLowLightEnhance(m_resized);
 
         // facenox MiniFAS expects RGB NCHW normalized to [0,1].
         // DeepPixBiS expects ImageNet normalization: (pixel/255 - mean) / std.
-        std::vector<float> input(1 * 3 * isize * isize);
+        float* input = m_input.data();
         if (m_facenoxMode) {
             for (int y = 0; y < isize; y++) {
                 for (int x = 0; x < isize; x++) {
-                    const auto& p = resized(y, x);
+                    const auto& p = m_resized(y, x);
                     int base = y * isize + x;
                     input[0 * isize * isize + base] = p.red   / 255.0f;
                     input[1 * isize * isize + base] = p.green / 255.0f;
@@ -584,7 +632,7 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
         } else {
             for (int y = 0; y < isize; y++) {
                 for (int x = 0; x < isize; x++) {
-                    const auto& p = resized(y, x);
+                    const auto& p = m_resized(y, x);
                     int base = y * isize + x;
                     input[0 * isize * isize + base] = (p.red   / 255.0f - DPB_MEAN[0]) / DPB_STD[0];
                     input[1 * isize * isize + base] = (p.green / 255.0f - DPB_MEAN[1]) / DPB_STD[1];
@@ -595,7 +643,7 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
 
         std::array<int64_t, 4> shape = {1, 3, isize, isize};
         Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-            *m_memoryInfo, input.data(), input.size(), shape.data(), shape.size());
+            *m_memoryInfo, input, m_input.size(), shape.data(), shape.size());
 
         const char* inputNames[] = {m_inputName.c_str()};
         std::vector<const char*> outNamePtrs;
@@ -650,7 +698,21 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& image,
     long cy = rect.top() + rect.height() / 2;
     float margin = m_facenoxMode ? 1.5f : 1.1f;
     long halfSize = static_cast<long>(std::max(rect.width(), rect.height()) / 2 * margin);
-    dlib::rectangle cropRect(cx - halfSize, cy - halfSize, cx + halfSize, cy + halfSize);
+
+    // Keep the crop fully inside the frame. dlib's extract_image_chip fills
+    // out-of-bounds areas with BLACK — for a large face near the frame edge
+    // (user close to the camera) that black border can cover a big part of
+    // the 128×128 input, which MiniFAS reads as a spoof cue and the score
+    // collapses (real ≈ +4 → spoof-classified ≈ -3; reproduced on both the
+    // Console and the service). Clamp the half-size to the frame, then shift
+    // the crop center inward so the crop stays square and fully in-bounds.
+    auto cl = [](long v, long lo, long hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    long maxHalf = std::min(image.nr(), image.nc()) / 2 - 1;
+    if (halfSize > maxHalf) halfSize = maxHalf;
+    if (halfSize < 8) halfSize = 8;
+    long cx2 = cl(cx, halfSize, image.nc() - 1 - halfSize);
+    long cy2 = cl(cy, halfSize, image.nr() - 1 - halfSize);
+    dlib::rectangle cropRect(cx2 - halfSize, cy2 - halfSize, cx2 + halfSize, cy2 + halfSize);
     dlib::chip_details chip(cropRect, dlib::chip_dims(m_inputSize, m_inputSize));
     dlib::matrix<dlib::rgb_pixel> crop;
     dlib::extract_image_chip(image, chip, crop);

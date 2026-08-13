@@ -8,6 +8,10 @@
 #include <shlwapi.h>
 #include <comdef.h>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <thread>
 
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mf.lib")
@@ -19,6 +23,7 @@ namespace facelogin {
 
 bool WebcamCapture::s_mfInitialized = false;
 int WebcamCapture::s_mfRefCount = 0;
+int WebcamCapture::s_teardownTimeouts = 0;
 
 WebcamCapture::~WebcamCapture() {
     Shutdown();
@@ -49,6 +54,9 @@ void WebcamCapture::ShutdownMF() {
 
 bool WebcamCapture::Initialize(int preferredWidth, int preferredHeight,
                                const std::wstring& devicePath) {
+    // Serialize with Shutdown/GrabFrame — the frame thread's re-init path can
+    // race the UI thread's StartPreview/StopPreview on wedged drivers.
+    std::lock_guard<std::mutex> lock(m_lifecycleMutex);
     if (m_initialized) return true;
 
     m_width = preferredWidth;
@@ -183,6 +191,25 @@ bool WebcamCapture::FindCamera(const std::wstring& devicePath,
 
     hr = ppDevices[selected]->ActivateObject(IID_PPV_ARGS(ppSource));
 
+    // Diagnostics: log which camera was actually selected (friendly name +
+    // symbolic link). Helps identify a mis-picked / virtual camera when
+    // enrollment or the lock-screen behaves oddly (卡90% 排查).
+    {
+        LPWSTR selPath = nullptr, selName = nullptr;
+        if (SUCCEEDED(ppDevices[selected]->GetAllocatedString(
+                MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, &selPath, nullptr))) {
+            if (SUCCEEDED(ppDevices[selected]->GetAllocatedString(
+                    MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &selName, nullptr))) {
+                FACELOGIN_INFO(L"Selected camera: %s (%s)",
+                               selName, selPath);
+            } else {
+                FACELOGIN_INFO(L"Selected camera: %s", selPath);
+            }
+            CoTaskMemFree(selPath);
+            if (selName) CoTaskMemFree(selName);
+        }
+    }
+
     for (UINT32 i = 0; i < count; i++) {
         ppDevices[i]->Release();
     }
@@ -295,14 +322,24 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
 }
 
 bool WebcamCapture::GrabFrame(dlib::matrix<dlib::rgb_pixel>& outFrame) {
-    if (!m_initialized || !m_pReader) return false;
+    // Take a short-lived AddRef under the lifecycle lock: Shutdown() may have
+    // already handed the reader to its teardown worker (which Releases it), so
+    // a plain member read could race a Release-to-zero → use-after-free in
+    // ReadSample below. The AddRef guarantees the object survives our call.
+    IMFSourceReader* reader = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+        if (!m_initialized || !m_pReader) return false;
+        reader = m_pReader;
+        reader->AddRef();
+    }
 
     DWORD streamIndex, flags;
     LONGLONG timestamp;
     IMFSample* pSample = nullptr;
 
-    HRESULT hr = m_pReader->ReadSample(
-        MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0,
+    HRESULT hr = reader->ReadSample(
+        static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0,
         &streamIndex, &flags, &timestamp, &pSample);
 
     if (FAILED(hr) || !pSample) {
@@ -315,18 +352,25 @@ bool WebcamCapture::GrabFrame(dlib::matrix<dlib::rgb_pixel>& outFrame) {
             m_consecutiveFailures = 0;
             Shutdown();
         }
+        reader->Release();
         return false;
     }
     m_consecutiveFailures = 0;
 
     bool result = false;
     if (m_isNV12) {
-        result = ConvertNV12toRGB(pSample, outFrame);
+        result = ConvertNV12toRGB(reader, pSample, outFrame);
     } else {
-        result = ConvertYUY2toRGB(pSample, outFrame);
+        result = ConvertYUY2toRGB(reader, pSample, outFrame);
     }
     pSample->Release();
+    reader->Release();
     return result;
+}
+
+bool WebcamCapture::IsInitialized() const {
+    std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+    return m_initialized;
 }
 
 bool WebcamCapture::IsFrameReady() {
@@ -344,7 +388,7 @@ bool WebcamCapture::IsFrameReady() {
     return SUCCEEDED(hr) && (flags & static_cast<DWORD>(MF_SOURCE_READERF_STREAMTICK)) == 0;
 }
 
-bool WebcamCapture::ConvertNV12toRGB(IMFSample* pSample,
+bool WebcamCapture::ConvertNV12toRGB(IMFSourceReader* reader, IMFSample* pSample,
                                       dlib::matrix<dlib::rgb_pixel>& outFrame) {
     IMFMediaBuffer* pBuffer = nullptr;
     HRESULT hr = pSample->ConvertToContiguousBuffer(&pBuffer);
@@ -360,8 +404,8 @@ bool WebcamCapture::ConvertNV12toRGB(IMFSample* pSample,
 
     IMFMediaType* pType = nullptr;
     UINT32 width = 1280, height = 720;
-    hr = m_pReader->GetCurrentMediaType(
-        MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pType);
+    hr = reader->GetCurrentMediaType(
+        static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), &pType);
     if (SUCCEEDED(hr)) {
         MFGetAttributeSize(pType, MF_MT_FRAME_SIZE, &width, &height);
         pType->Release();
@@ -427,7 +471,7 @@ bool WebcamCapture::ConvertNV12toRGB(IMFSample* pSample,
     return true;
 }
 
-bool WebcamCapture::ConvertYUY2toRGB(IMFSample* pSample,
+bool WebcamCapture::ConvertYUY2toRGB(IMFSourceReader* reader, IMFSample* pSample,
                                       dlib::matrix<dlib::rgb_pixel>& outFrame) {
     IMFMediaBuffer* pBuffer = nullptr;
     HRESULT hr = pSample->ConvertToContiguousBuffer(&pBuffer);
@@ -443,8 +487,8 @@ bool WebcamCapture::ConvertYUY2toRGB(IMFSample* pSample,
 
     IMFMediaType* pType = nullptr;
     UINT32 width = 1280, height = 720;
-    hr = m_pReader->GetCurrentMediaType(
-        MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pType);
+    hr = reader->GetCurrentMediaType(
+        static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), &pType);
     if (SUCCEEDED(hr)) {
         MFGetAttributeSize(pType, MF_MT_FRAME_SIZE, &width, &height);
         pType->Release();
@@ -492,18 +536,70 @@ void WebcamCapture::Shutdown() {
     // and the caller's thread join would hang forever. IMFMediaSource::Shutdown
     // makes an in-flight ReadSample return MF_E_SHUTDOWN so the frame thread
     // can exit cleanly.
-    if (m_pSource) {
-        m_pSource->Shutdown();
-    }
-    if (m_pReader) {
-        m_pReader->Release();
-        m_pReader = nullptr;
-    }
-    if (m_pSource) {
-        m_pSource->Release();
+    //
+    // The teardown itself is BOUNDED: a wedged camera driver can make
+    // IMFMediaSource::Shutdown() block forever, and StopPreview() runs on the
+    // UI thread — an unbounded wait here freezes the whole console
+    // (卡90%无响应 on machines with such drivers). The actual MF calls run on a
+    // detached worker that captures the interfaces by value, and we wait at
+    // most kShutdownBudgetMs. If the driver is unresponsive the worker keeps
+    // running in the background (worst case it leaks until process exit) while
+    // the caller — and with it the UI thread — moves on.
+    //
+    // The pointers are cleared synchronously so GrabFrame() bails immediately
+    // and the frame thread's re-init logic never touches a torn-down camera.
+    // The transfer happens under the lifecycle lock: Initialize (frame-thread
+    // re-init) and GrabFrame (AddRef handoff) serialize against it, so a
+    // concurrent second Shutdown can never grab the same interfaces — that
+    // would double-Release them in two teardown workers (crash).
+    IMFMediaSource* src = nullptr;
+    IMFSourceReader* rdr = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+        src = m_pSource;
+        rdr = m_pReader;
         m_pSource = nullptr;
+        m_pReader = nullptr;
+        m_initialized = false;
+        m_consecutiveFailures = 0;
     }
-    m_initialized = false;
+
+    if (!src) return;
+
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([src, rdr, done]() {
+        // Graceful teardown order: stop the stream FIRST so an in-flight
+        // synchronous ReadSample can return (MF_E_END_OF_STREAM), THEN shut
+        // the source down. Shutting down a still-streaming source is what
+        // wedges some USB camera drivers — they wait for a data callback
+        // that never arrives, so Shutdown() (and the frame thread's
+        // ReadSample) hang forever. The 80ms pause gives the frame thread a
+        // chance to observe the stream stop and exit cleanly.
+        if (rdr) {
+            rdr->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), FALSE);
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        }
+        if (src) src->Shutdown();   // wakes a still-blocked ReadSample (MF_E_SHUTDOWN)
+        if (rdr) rdr->Release();
+        if (src) src->Release();
+        done->store(true, std::memory_order_release);
+    });
+    worker.detach();
+
+    constexpr int kShutdownBudgetMs = 1200;
+    auto start = std::chrono::steady_clock::now();
+    while (!done->load(std::memory_order_acquire)) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        if (elapsed >= kShutdownBudgetMs) {
+            ++s_teardownTimeouts;
+            FACELOGIN_WARN(L"Webcam MF teardown did not finish within %d ms (%d so far) — "
+                           L"driver unresponsive, completing in background",
+                           kShutdownBudgetMs, s_teardownTimeouts);
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 }
 
 } // namespace facelogin

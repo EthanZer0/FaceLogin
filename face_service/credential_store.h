@@ -110,8 +110,14 @@ public:
     // Set the data directory path. Default: PROGRAMDATA/FaceLogin/
     void SetDataDir(const std::wstring& dir) { m_dataDir = dir; }
 
-    // Load users.dat from disk. Returns true on success.
+    // Load users.dat from disk. Idempotent: subsequent calls reuse the
+    // in-memory copy (the UI reads this on every face-list refresh) until the
+    // cache is invalidated by ReloadDatabase() or a successful SaveDatabase().
     bool LoadDatabase();
+
+    // Force a fresh read from disk, bypassing the cache. Used when the file
+    // may have changed underneath this instance (RELOAD_DB from the console).
+    bool ReloadDatabase();
 
     // Save current in-memory records to users.dat. Returns true on success.
     bool SaveDatabase();
@@ -235,6 +241,7 @@ private:
     std::wstring m_dataDir;  // If empty, uses default
     std::vector<UserRecord> m_users;
     bool m_needsReenrollment = false;
+    bool m_loaded = false;   // true once users.dat has been read into m_users
 };
 
 } // namespace facelogin

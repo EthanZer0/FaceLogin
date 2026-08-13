@@ -7,6 +7,7 @@
 #include <memory>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <dlib/matrix.h>
 #include <dlib/pixel.h>
 
@@ -128,6 +129,11 @@ public:
     std::string GetServiceLogLines();
     void ClearLog();
 
+    // Frontend diagnostic hook: the JS layer calls this to write a line into
+    // enrollment.log (the C++ log file). Used to record frontend-side timing /
+    // stall events that plain console.log would not capture (卡90% 排查).
+    void LogDiagnostic(const std::string& message);
+
     // Per-frame data for JS canvas rendering (pull model — JS calls these from rAF)
     std::string GetLatestFrameBase64(); // JPEG base64, ~200KB
     std::string GetLatestFacesJson();   // [{x,y,w,h,landmarks:[{x,y},...]},...]
@@ -149,8 +155,17 @@ public:
     std::string GetConsoleVersion() const;
 
 private:
+    // Encode the frame as a base64 JPEG data URL (full resolution).
     std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
+    // Serialize detected faces to JSON (coordinates in full-frame space).
     std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces);
+
+    // Pull-model frame delivery: request ONE fresh frame from the frame thread
+    // (which during capture is in pull mode — it grabs a camera frame only on
+    // demand instead of streaming 30fps). Returns false if no frame arrived
+    // within budgetMs (frame thread dead / camera stalled).
+    bool RequestFreshFrame(dlib::matrix<dlib::rgb_pixel>& outFrame,
+                           DWORD budgetMs = 1500);
 
     // Load the 2d106det + ONNX models if not already loaded (called from
     // the background frame thread, so a cold start never blocks the UI thread).
@@ -159,6 +174,14 @@ private:
     bool SaveEnrollmentImpl(const std::wstring& password, bool passwordless,
                             const std::wstring& label);
     static std::wstring GetCurrentProcessUserSid();
+
+    // Diagnostics: persist the exact frame that failed anti-spoof as a BMP
+    // under <dataDir>\diag\ (max 10, first N only). Lets a collapsed MiniFAS
+    // score be attributed to the frame (driver-stalled camera after the
+    // service grabbed it → frozen/tinted/noisy frames with normal mean
+    // brightness) vs the crop/model, by looking at the actual pixels.
+    void SaveAntiSpoofFailFrame(const dlib::matrix<dlib::rgb_pixel>& frame,
+                                float score);
 
     // Camera & face processing
     std::unique_ptr<WebcamCapture>  m_webcam;
@@ -176,6 +199,12 @@ private:
     // Frame-grab thread (runs off UI thread — GrabFrame + JPEG encode + detection)
     std::thread m_frameThread;
     bool m_frameRunning = false;
+    // Generation counter for the frame thread. StopPreview() bumps it so a
+    // detached zombie thread (wedged in a driver call that later recovers)
+    // observes a mismatch and exits instead of continuing next to a freshly
+    // spawned thread. Incremented in StartPreview and captured by value at
+    // spawn; any thread whose captured generation != current exits its loop.
+    int m_frameGeneration = 0;
     // Consecutive camera re-inits inside the frame thread (stalled SourceReader
     // after the credential provider took the camera). Bounded so a truly-dead
     // device doesn't cause an infinite re-init loop; reset on success or start.
@@ -196,6 +225,17 @@ private:
     std::string m_latestFrameB64;
     std::string m_latestFacesJson;
     dlib::matrix<dlib::rgb_pixel> m_latestFrame;   // for capture to read
+    // Pull-model sampling handshake (guarded by m_frameCacheMutex):
+    //   m_sampleSeq      — incremented by the capture/liveness thread per
+    //                      fresh-frame request
+    //   m_sampleDelivered — the seq the frame thread last answered
+    // The frame thread (pull mode during capture) waits until
+    // m_sampleDelivered < m_sampleSeq, grabs ONE camera frame, stores it in
+    // m_latestFrame and advances m_sampleDelivered. Counters self-heal if a
+    // waiter gives up (frame thread dead) — no stale-flag ambiguity.
+    std::condition_variable m_sampleCv;
+    uint64_t m_sampleSeq = 0;
+    uint64_t m_sampleDelivered = 0;
 
     // Preview state
     bool m_previewRunning = false;
@@ -206,6 +246,13 @@ private:
     bool m_capturing = false;
     bool m_livenessPassed = false;
     bool m_livenessChecking = false;
+    // True only while the capture thread is in the sampling phase (after
+    // liveness passed). The frame thread stays in PUSH mode during liveness:
+    // continuous grabbing keeps the camera's auto-exposure/white-balance
+    // stable, which facenox MiniFAS depends on — switching to on-demand
+    // grabbing mid-liveness made frames fluctuate and anti-spoof scores
+    // collapse (real≈+6 → spoof-classified ≈-3). Sampling switches to PULL.
+    bool m_phase2Active = false;
     std::thread m_captureThread;
     static constexpr int TARGET_SAMPLES = 10;
 

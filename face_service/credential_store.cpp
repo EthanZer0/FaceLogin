@@ -94,13 +94,21 @@ bool CredentialStore::EnsureDataDir() {
 }
 
 bool CredentialStore::LoadDatabase() {
+    // Cache the in-memory copy: the console/UI calls this on every face-list
+    // read (page switches, face management) — re-reading users.dat from disk
+    // each time is pure waste. Invalidated by ReloadDatabase() (RELOAD_DB /
+    // external writes) and by a successful SaveDatabase() (memory is then the
+    // source of truth).
+    if (m_loaded) return true;
+
     std::wstring path = GetDataDir() + L"\\data\\users.dat";
     m_users.clear();
 
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {
         FACELOGIN_INFO(L"No existing database at %s (this is normal on first run)", path.c_str());
-        return true; // Empty database is valid
+        m_loaded = true;   // empty database is a valid state
+        return true;
     }
 
     // Read header
@@ -281,7 +289,13 @@ bool CredentialStore::LoadDatabase() {
     }
 
     FACELOGIN_INFO(L"Loaded %zu user(s) successfully", m_users.size());
+    m_loaded = true;
     return true;
+}
+
+bool CredentialStore::ReloadDatabase() {
+    m_loaded = false;
+    return LoadDatabase();
 }
 
 bool CredentialStore::SaveDatabase() {
@@ -373,6 +387,8 @@ bool CredentialStore::SaveDatabase() {
     // A successful save writes V5 (new alignment) data, so any prior
     // "old alignment, needs re-enrollment" flag is now resolved.
     m_needsReenrollment = false;
+    // Memory == disk after a save — the cache stays valid without a re-read.
+    m_loaded = true;
     FACELOGIN_INFO(L"Saved %zu user(s) to database (v%u)", count, FILE_VERSION);
     return true;
 }

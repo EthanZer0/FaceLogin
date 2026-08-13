@@ -44,7 +44,6 @@ void PipeClient::CleanupReadThread() {
 
 bool PipeClient::Connect(DWORD timeoutMs) {
     Disconnect();
-
     auto startTime = std::chrono::steady_clock::now();
 
     while (true) {
@@ -97,6 +96,33 @@ bool PipeClient::Connect(DWORD timeoutMs) {
     }
 }
 
+bool PipeClient::ProbeServiceAvailable() {
+    // One-shot CreateFileW with no retry and no wait. If the pipe exists we
+    // can open it (even if busy, ERROR_PIPE_BUSY means the service is up); if
+    // it's ERROR_FILE_NOT_FOUND the service is not running.
+    HANDLE h = CreateFileW(
+        ipc::PIPE_NAME,
+        GENERIC_READ | GENERIC_WRITE,
+        0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        CloseHandle(h);
+        return true;
+    }
+    DWORD err = GetLastError();
+    if (err == ERROR_PIPE_BUSY) {
+        // Pipe exists but a client is already connected — service is up.
+        return true;
+    }
+    if (err == ERROR_FILE_NOT_FOUND) {
+        FACELOGIN_INFO(L"ProbeServiceAvailable: service pipe not found — service down");
+        return false;
+    }
+    // Other errors (e.g. access denied) — treat as available so we don't
+    // mislabel a permission issue as "service down".
+    FACELOGIN_WARN(L"ProbeServiceAvailable: CreateFile err=%lu (treating as available)", err);
+    return true;
+}
+
 bool PipeClient::SendMessage(const std::wstring& message) {
     if (!m_connected || m_hPipe == INVALID_HANDLE_VALUE) return false;
 
@@ -131,6 +157,8 @@ bool PipeClient::IsTerminalMessage(const std::wstring& msg) {
     return msg.starts_with(ipc::MSG_AUTH_SUCCESS_PREFIX) ||
            msg.starts_with(ipc::MSG_AUTH_ERROR_PREFIX) ||
            msg == ipc::MSG_AUTH_TIMEOUT ||
+           msg == ipc::MSG_AUTH_NO_FACE ||
+           msg == ipc::MSG_AUTH_NO_MATCH ||
            msg == ipc::MSG_AUTH_CANCELLED;
 }
 
@@ -154,7 +182,11 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
         if (PeekNamedPipe(self->m_hPipe, nullptr, 0, nullptr, &bytesAvail, &totalBytes)) {
             if (bytesAvail == 0) {
                 // Connected but idle — wait briefly, keep polling.
-                Sleep(50);
+                // 10ms (was 50ms): the auth result arrives from the service via
+                // this loop, so a shorter poll cuts the perceived unlock delay
+                // by ~40ms while staying trivially cheap (a few wakeups/frame
+                // of CPU on a 60Hz display).
+                Sleep(10);
                 continue;
             }
         } else {

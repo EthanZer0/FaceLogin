@@ -72,13 +72,16 @@ static unsigned __stdcall InputDetectionThreadProc(void* pParam) {
         LASTINPUTINFO lii = {};
         lii.cbSize = sizeof(lii);
         if (GetLastInputInfo(&lii)) {
-            // 500ms threshold: the first keypress to dismiss the lock-screen
+            // 300ms threshold: the first keypress to dismiss the lock-screen
             // wallpaper generates both KEYDOWN and KEYUP events, but the
             // KEYDOWN itself is the user's intent to unlock — trigger on the
             // first keystroke instead of requiring a second one. The small
-            // 500ms guard only skips stray input recorded right around the
-            // baseline (Advise) so we don't fire on noise.
-            DWORD threshold = pCred->m_waitingStartTick + 500;
+            // guard only skips stray input recorded right around the
+            // baseline (Advise) so we don't fire on noise. 500→300ms shrinks
+            // the "dead zone" where a first keypress is silently swallowed
+            // after the lock screen appears, so the user's first press more
+            // often starts recognition immediately.
+            DWORD threshold = pCred->m_waitingStartTick + 300;
             if (lii.dwTime > threshold) {
                 FACELOGIN_INFO(L"[InputThread] NEW input detected! (last=%lu > threshold=%lu, diff=%ld)",
                               lii.dwTime, threshold,
@@ -232,6 +235,20 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         FACELOGIN_INFO(L"Advise: cold boot — starting auth immediately");
         StartAuth();
     } else {
+        // Unlock / switch user. Probe the service up-front so a down service
+        // surfaces immediately ("service not running") instead of showing
+        // "press any key" and only revealing the failure after the user presses
+        // (and the connect retry times out ~5s later).
+        if (!facelogin::PipeClient::ProbeServiceAvailable()) {
+            FACELOGIN_WARN(L"Advise: service pipe missing at lock time — showing service-not-running notice");
+            m_statusText = L"人脸识别服务未运行，请检查 FaceLoginService";
+            m_state = State::Error;
+            if (m_pCredentialEvents) {
+                m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
+            }
+            return S_OK;
+        }
+
         FACELOGIN_INFO(L"Advise: unlock scenario — starting input detection thread");
         m_state = State::Waiting;
         m_waitingStartTick = GetTickCount();
@@ -353,6 +370,13 @@ STDMETHODIMP FaceLoginCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) 
         case State::Ready:
             return SHStrDupW(L"人脸识别成功，正在解锁...", ppwsz);
         case State::Failed:
+            // AUTH_NO_MATCH carries its own wording ("人脸匹配失败...");
+            // plain timeouts keep the generic text.
+            if (m_noMatchFailed) {
+                return SHStrDupW(m_statusText.empty() ?
+                                 L"人脸匹配失败，请重试或使用密码登录" :
+                                 m_statusText.c_str(), ppwsz);
+            }
             return SHStrDupW(L"未识别到人脸，请重试或使用密码登录", ppwsz);
         case State::Blocked:
             // Passwordless account notice (set by OnPipeResponse / polling).
@@ -636,6 +660,7 @@ void FaceLoginCredential::StartAuth() {
     }
 
     m_state = State::Authenticating;
+    m_noMatchFailed = false;   // fresh attempt: clear the previous no-match flag
     m_pipeClient = std::make_unique<facelogin::PipeClient>();
 
     if (m_pipeClient->Connect()) {
@@ -653,8 +678,18 @@ void FaceLoginCredential::StartAuth() {
             });
         FACELOGIN_INFO(L"Pipe connected, auth request sent");
     } else {
+        // Pipe connect failed (most likely the FaceLoginService isn't running,
+        // e.g. it crashed or was stopped — the named pipe doesn't exist).
+        // Set a concrete message and push it to the tile so the user sees WHY
+        // nothing is happening, instead of a silent hang or a generic label.
+        // (PipeClient::Connect already logged the precise error to
+        // credential_provider.log.)
         FACELOGIN_WARN(L"Failed to connect to face service pipe");
+        m_statusText = L"人脸识别服务未运行，请检查 FaceLoginService";
         m_state = State::Error;
+        if (m_pCredentialEvents) {
+            m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
+        }
     }
 }
 
@@ -881,6 +916,17 @@ void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& messa
             return;
         } else if (result.status == facelogin::ipc::AuthResult::Status::Timeout) {
             FACELOGIN_INFO(L"OnPipeResponse: Auth timeout");
+            m_state = State::Failed;
+        } else if (result.status == facelogin::ipc::AuthResult::Status::NoMatch) {
+            // A face was seen but did not match any enrolled face. Show the
+            // specific wording (and keep it — the timeout case below shows the
+            // generic "未识别到人脸" instead).
+            FACELOGIN_INFO(L"OnPipeResponse: Face present but no match");
+            m_statusText = L"\u4eba\u8138\u5339\u914d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u6216\u4f7f\u7528\u5bc6\u7801\u767b\u5f55";
+            m_noMatchFailed = true;
+            if (m_pCredentialEvents) {
+                m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
+            }
             m_state = State::Failed;
         } else if (result.status == facelogin::ipc::AuthResult::Status::Error) {
             FACELOGIN_WARN(L"OnPipeResponse: Auth error: %s", result.errorMessage.c_str());

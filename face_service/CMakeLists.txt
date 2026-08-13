@@ -30,6 +30,27 @@ set_target_properties(FaceLoginService PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
 )
 
+# Diagnostic: glasses-mode alignment comparison (dev-only, not installed).
+add_executable(diag_glasses
+    diag_glasses.cpp
+    onnx_models.cpp
+    landmark_detector.cpp
+)
+
+target_link_libraries(diag_glasses PRIVATE
+    facelogin_common
+    dlib::dlib
+    onnxruntime::onnxruntime
+    advapi32
+    ole32
+)
+
+target_include_directories(diag_glasses PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+set_target_properties(diag_glasses PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+)
+
 # No console window for service
 # set_target_properties(FaceLoginService PROPERTIES
 #     WIN32_EXECUTABLE TRUE

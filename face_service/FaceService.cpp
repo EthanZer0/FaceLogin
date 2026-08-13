@@ -484,7 +484,7 @@ void FaceService::Run() {
         FACELOGIN_INFO(L"Received request: %s", request.c_str());
 
         if (request == ipc::MSG_RELOAD_DB) {
-            m_store->LoadDatabase();
+            m_store->ReloadDatabase();   // force re-read (LoadDatabase is cached)
             m_pipeServer->WriteMessage(ipc::MSG_RELOAD_OK);
             m_pipeServer->Disconnect();
             FACELOGIN_INFO(L"Database reloaded");
@@ -720,8 +720,19 @@ bool FaceService::ProcessAuthRequest() {
         constexpr int kWarmupMinFrames = 2;    // never exit before this many
         constexpr int kWarmupMaxFrames = 10;   // hard cap \u2014 proceed regardless
         constexpr int kWarmupWindow     = 3;   // rolling window size
-        constexpr float kLumaTol        = 12.0f;  // mean-luma delta that counts as "stable"
-        constexpr int kStableFrames     = 3;   // consecutive stable frames to exit
+        // Stability tolerance (mean-luma delta counted as "stable"). Raised
+        // 12 \u2192 20: a camera's auto-exposure converges gradually, so "continuous
+        // 3 frames within \u00b112" rarely fires and the warmup burns the full 10
+        // frames (~400ms) waiting for near-perfect stillness. \u00b120 still
+        // separates a genuinely dark scene (mean < 40) from a lit one (100+),
+        // so the adaptive behavior (wait in the dark, proceed fast in light) is
+        // preserved \u2014 it just stops waiting for a flat line that AGC never gives.
+        constexpr float kLumaTol        = 20.0f;
+        // Consecutive stable frames to exit. 3 \u2192 2: with a wider tolerance, two
+        // consistent windows are enough to trust the exposure has settled;
+        // recognition itself still runs several frames, so a marginal third
+        // window adds latency without meaningful protection.
+        constexpr int kStableFrames     = 2;   // consecutive stable frames to exit
 
         dlib::matrix<dlib::rgb_pixel> warmFrame;
         int dropped = 0;
@@ -796,7 +807,22 @@ bool FaceService::ProcessAuthRequest() {
     auto startTime = std::chrono::steady_clock::now();
     bool authSent = false;
     int consecutiveMatches = 0;
-    static constexpr int CONSENSUS_FRAMES = 3;
+    // Consecutive frames where a face WAS detected (and its embedding was
+    // computed) but no enrolled face matched. After kNoMatchFailFrames such
+    // frames the auth stops immediately with a "人脸匹配失败" notice instead
+    // of staring at the user until the 15s timeout — a stranger (or a
+    // registered user the camera can't recognize right now) gets instant
+    // feedback and can retry with a key press or fall back to the password.
+    // Face-less frames and embedding failures are NOT counted.
+    int consecutiveNoMatch = 0;
+    static constexpr int kNoMatchFailFrames = 3;
+    // Consensus: how many consecutive matched frames release credentials.
+    // 2 frames (was 3): the liveness phase AND the post-liveness final-match
+    // verify (below) still re-check the face on fresh frames before the
+    // credential is released, so dropping one consensus frame does not shrink
+    // the attack surface — it only removes one redundant full
+    // detect+landmark+embed+match pass (~100ms) from the happy path.
+    static constexpr int CONSENSUS_FRAMES = 2;
 
     while (m_running) {
         // Abort early if the client (LogonUI) has gone away — e.g. the user
@@ -866,6 +892,7 @@ bool FaceService::ProcessAuthRequest() {
 
         if (match) {
             consecutiveMatches++;
+            consecutiveNoMatch = 0;   // a match resets the no-match counter
             FACELOGIN_INFO(L"Face matched: %s (distance=%.4f) [%d/%d]",
                           match->username.c_str(), match->distance,
                           consecutiveMatches, CONSENSUS_FRAMES);
@@ -875,6 +902,25 @@ bool FaceService::ProcessAuthRequest() {
                 continue;
             }
         } else {
+            // Only count frames where a face was really present but failed to
+            // match (embedding computed, no stored face close enough) — not
+            // face-less frames or embedding failures.
+            if (!onnxEmb.empty()) {
+                if (++consecutiveNoMatch >= kNoMatchFailFrames) {
+                    FACELOGIN_INFO(L"No match for %d consecutive frames — reporting failure to CP",
+                                   consecutiveNoMatch);
+                    // Distinct terminal message (AUTH_NO_MATCH) so the CP can
+                    // show "人脸匹配失败" instead of the timeout wording
+                    // ("未识别到人脸") — a face WAS seen, it just didn't match.
+                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) +
+                        L"\u4eba\u8138\u5339\u914d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u6216\u4f7f\u7528\u5bc6\u7801\u767b\u5f55");
+                    FlushFileBuffers(m_pipeServer->GetHandle());
+                    m_pipeServer->WriteMessage(ipc::MSG_AUTH_NO_MATCH);
+                    FlushFileBuffers(m_pipeServer->GetHandle());
+                    m_pipeServer->DrainOutput(5000);
+                    return false;
+                }
+            }
             // Soft consensus: a miss DECAYS the counter by 1 instead of fully
             // resetting to 0. A single intermittent bad frame (motion, blink,
             // momentary profile turn, partial occlusion) then no longer forces

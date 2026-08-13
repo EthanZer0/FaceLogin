@@ -117,6 +117,10 @@ private:
     UINT_PTR m_upAdviseContext = 0;
 
     State m_state = State::Waiting;
+    // Set when the service reported AUTH_NO_MATCH (face seen, no enrolled
+    // face matched). The Failed-state status text then shows "人脸匹配失败"
+    // instead of the generic timeout wording. Cleared at each StartAuth.
+    bool m_noMatchFailed = false;
     std::unique_ptr<facelogin::PipeClient> m_pipeClient;
 
     // Received credentials (zeroed after serialization)

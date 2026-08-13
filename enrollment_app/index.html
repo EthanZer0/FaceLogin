@@ -238,6 +238,40 @@ button{font-family:inherit}
 .field input:focus,.field select:focus{border-color:#B9C0CC;box-shadow:0 0 0 3px rgba(14,159,110,.12)}
 .field input[readonly]{color:var(--fog)}
 .dim{font-size:11px;color:#8A919E;line-height:1.6;font-weight:400;margin-bottom:8px;letter-spacing:.01em}
+
+/* ---- Hover tooltip for setting descriptions (方案A) ----
+   Each setting's label carries a small circular "i" glyph (.tip-ico). Only
+   hovering the glyph (not the whole label) shows the description bubble —
+   hovering the label itself would fire too early (the label spans the full
+   field width). The bubble stays open while the pointer is over it too, so
+   the reader can actually finish reading. Pure CSS, no JS. */
+.tip{position:relative;display:inline-flex;align-items:center}
+.tip .tip-ico{width:14px;height:14px;margin-left:6px;border-radius:50%;
+  background:var(--hair);color:var(--fog);font-size:10px;font-weight:700;
+  display:inline-flex;align-items:center;justify-content:center;line-height:1;
+  cursor:help;flex:none;opacity:.55;transition:opacity .15s,background .15s,color .15s}
+/* In a .check label the 9px flex gap already separates items — an extra
+   margin-left would push the "i" too far from the label text. Zero it so the
+   spacing stays uniform with the non-checkbox labels. */
+.check .tip-ico{margin-left:0}
+.tip .tip-ico:hover{background:var(--live);color:#fff;opacity:1}
+.tip .tip-box{opacity:0;visibility:hidden;transform:translateY(-4px);
+  position:absolute;top:calc(100% + 8px);left:0;z-index:50;
+  max-width:300px;min-width:200px;padding:8px 10px;border-radius:6px;
+  background:var(--ink);color:#fff;font-size:11px;line-height:1.6;
+  font-weight:400;letter-spacing:.01em;white-space:normal;text-transform:none;
+  box-shadow:0 4px 16px rgba(0,0,0,.18);
+  transition:opacity .15s ease,transform .15s ease,visibility .15s ease}
+.tip .tip-box::before{content:"";position:absolute;top:-6px;left:14px;
+  width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;
+  border-bottom:6px solid var(--ink)}
+/* Show only while the "i" icon is hovered. Moving the pointer onto the bubble
+   itself hides it again (visibility toggles), so the bubble disappears the
+   moment the cursor leaves the icon. visibility/opacity give the fade+slide
+   animation; visibility still toggles so the bubble isn't hit-testable when
+   hidden. */
+.tip .tip-ico:hover + .tip-box{opacity:1;visibility:visible;transform:translateY(0)}
+
 .check{
   display:flex;gap:9px;align-items:center;font-size:12px;cursor:pointer;
   text-transform:none;letter-spacing:.01em;color:var(--ink);line-height:1.5;
@@ -783,7 +817,7 @@ button{font-family:inherit}
          dlib was dropped, the system is now pure ONNX (InsightFace + SCRFD). -->
 
     <div class="field">
-      <label>摄像头旋转 (Camera Rotation)</label>
+      <label class="tip"><span>摄像头旋转 (Camera Rotation)</span><span class="tip-ico">i</span><span class="tip-box">摄像头物理安装方向不是正向上时（如竖屏安装），可在此调整。实时预览会立即反映旋转效果。</span></label>
       <div class="cs-wrap" data-cs="rotation">
         <select id="cfg-rotation" class="cs-native">
           <option value="0">不旋转 (0°)</option>
@@ -794,11 +828,10 @@ button{font-family:inherit}
         <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false"><span class="cs-val"></span><span class="cs-arrow"></span></button>
         <div class="cs-list" role="listbox"></div>
       </div>
-      <p class="dim" style="margin-top:4px;font-size:11px">摄像头物理安装方向不是正向上时（如竖屏安装），可在此调整。实时预览会立即反映旋转效果。</p>
     </div>
 
     <div class="field">
-      <label>摄像头 (Camera)</label>
+      <label class="tip"><span>摄像头 (Camera)</span><span class="tip-ico">i</span><span class="tip-box">有多台或虚拟摄像头时，可在此选择用于录入与登录的摄像头。</span></label>
       <div class="cs-wrap" data-cs="camera">
         <select id="cfg-camera" class="cs-native">
           <option value="">默认（第一个设备）</option>
@@ -806,7 +839,6 @@ button{font-family:inherit}
         <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false"><span class="cs-val"></span><span class="cs-arrow"></span></button>
         <div class="cs-list" role="listbox"></div>
       </div>
-      <p class="dim" style="margin-top:4px;font-size:11px">有多台或虚拟摄像头时，可在此选择用于录入与登录的摄像头。</p>
     </div>
 
     <div class="field">
@@ -823,34 +855,37 @@ button{font-family:inherit}
     </div>
 
     <div class="field" id="field-blink-glasses" style="display:none">
-      <label class="check">
+      <label class="check tip">
         <input type="checkbox" id="cfg-blink-glasses">
         <span class="cbx"></span>
         <span>眼镜模式（戴眼镜导致眨眼检测不稳定时开启）</span>
+        <span class="tip-ico">i</span>
+        <span class="tip-box">眼镜模式使用自适应眨眼检测，对镜框/反光更鲁棒，但可能不如默认模式稳定。非必要建议保持关闭。</span>
       </label>
-      <p class="dim" style="font-size:11px">眼镜模式使用自适应眨眼检测，对镜框/反光更鲁棒，但可能不如默认模式稳定。非必要建议保持关闭。</p>
     </div>
 
     <div class="field">
-      <label class="check">
+      <label class="check tip">
         <input type="checkbox" id="cfg-low-light">
         <span class="cbx"></span>
         <span>暗光增强（暗光环境下人脸识别不稳定时开启）</span>
+        <span class="tip-ico">i</span>
+        <span class="tip-box">暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。</span>
       </label>
-      <p class="dim" style="font-size:11px">暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。</p>
     </div>
 
     <div class="field">
-      <label class="check">
+      <label class="check tip">
         <input type="checkbox" id="cfg-unload-models">
         <span class="cbx"></span>
         <span>内存优化（识别后释放模型，降低后台内存占用）</span>
+        <span class="tip-ico">i</span>
+        <span class="tip-box">识别完成后释放人脸模型，服务后台内存占用从约 60MB 降至约 20MB。下次解锁时模型自动重新加载（约 0.2-0.5 秒）。对内存敏感的设备可开启。</span>
       </label>
-      <p class="dim" style="font-size:11px">识别完成后释放人脸模型，服务后台内存占用从约 60MB 降至约 20MB。下次解锁时模型自动重新加载（约 0.2-0.5 秒）。对内存敏感的设备可开启。</p>
     </div>
 
     <div class="field" id="field-antispoof-threshold" style="display:none">
-      <label>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.30</span></label>
+      <label class="tip"><span>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.30</span></span><span class="tip-ico">i</span><span class="tip-box">阈值越低越宽松（容易通过），越高越严格（更难通过）。默认0.30。</span></label>
       <div class="range-wrap">
         <div class="rng">
           <input type="range" id="cfg-antispoof-threshold" min="25" max="75" value="30" step="1"
@@ -862,11 +897,10 @@ button{font-family:inherit}
           </div>
         </div>
       </div>
-      <p class="dim" style="margin-top:4px;font-size:11px">阈值越低越宽松（容易通过），越高越严格（更难通过）。默认0.30。</p>
     </div>
 
     <div class="field">
-      <label>匹配严格度 (Match Strictness): <span id="cfg-threshold-val">70</span></label>
+      <label class="tip"><span>匹配严格度 (Match Strictness): <span id="cfg-threshold-val">70</span></span><span class="tip-ico">i</span><span class="tip-box">值越高越严格（人脸需更相似才能通过）。默认70。</span></label>
       <div class="range-wrap">
         <div class="rng">
           <input type="range" id="cfg-threshold" min="20" max="90" value="70" step="1"
@@ -878,7 +912,6 @@ button{font-family:inherit}
           </div>
         </div>
       </div>
-      <p class="dim" style="margin-top:4px;font-size:11px">值越高越严格（人脸需更相似才能通过）。默认70。</p>
     </div>
 
     <button class="btn btn-primary" onclick="onSaveSettings()">
@@ -1030,6 +1063,20 @@ var H = (function() {
 })();
 var viewing = true, lastB64 = '', lastFacesJson = '', timer = 0, faceImg = new Image();
 var camReady = false, currentTab = 'cam';
+// Debounce handle for preview teardown on tab departure: quick there-and-back
+// tab switching (well under 1.2s) must NOT repeatedly open/close the camera —
+// some USB camera drivers wedge under frequent open/close (MF Shutdown /
+// ReadSample hang), which is exactly what the bounded teardown guards against.
+var previewStopTimer = 0;
+// True while a capture is running (set in onCapture, cleared when it ends).
+// Gates renderFrame so the 30fps preview polling doesn't starve samplePoll.
+var captureActive = false;
+// A renderFrame call that takes longer than the 33ms cadence (slow WebView2
+// COM / locked GetLatestFrameAndFaces) MUST NOT pile up more setTimeout
+// callbacks while it's still running — accumulation would starve the JS main
+// thread. Skip every tick while one render is still in flight, then reschedule
+// a single next tick when it finishes.
+var renderInFlight = false;          // set while a renderFrame call is running
 // The account-type-change state (0/1/2) is stashed on #refresh-overlay's
 // dataset rather than a module-level var so the dismiss handler always reads
 // the state captured AT OPEN TIME of THIS prompt — a later showRefreshPrompt()
@@ -1085,6 +1132,16 @@ function drawBackgroundAndOverlay() {
 
 function renderFrame() {
   if (!viewing) return;
+  // During capture, skip the 30fps preview polling entirely — it pulls the
+  // half-res JPEG + sets faceImg.src every 33ms, which on a slow machine
+  // starves the JS main thread and delays samplePoll (the progress bar) by
+  // seconds. The user is facing the camera to be captured, not watching the
+  // preview. The flag is set in onCapture() and cleared when capture finishes.
+  if (captureActive) return;
+  // Skip every tick while one render is still in flight (see var decl above).
+  if (renderInFlight) return;
+  renderInFlight = true;
+
   try {
     // Get the frame AND its face overlay atomically (same frame, no desync).
     var combined = H.GetLatestFrameAndFaces();
@@ -1099,6 +1156,7 @@ function renderFrame() {
       drawBackgroundAndOverlay();
     }
   } catch(e) {}
+  renderInFlight = false;
   timer = setTimeout(renderFrame, 33);
 }
 
@@ -1289,10 +1347,17 @@ function rngSync(input) {
   rng.querySelector('.rng-fill').style.width = pct + '%';
   rng.querySelector('.rng-knob').style.left = pct + '%';
   // Keep the field's value label (e.g. "匹配严格度 …: 70") in sync — it was
-  // previously updated by the inline oninput handler, now removed.
-  var labelSpan = input.closest('.field').querySelector('label > span');
-  if (labelSpan && input.id === 'cfg-threshold') labelSpan.textContent = input.value;
-  if (labelSpan && input.id === 'cfg-antispoof-threshold') labelSpan.textContent = (parseFloat(input.value) / 100).toFixed(2);
+  // previously updated by the inline oninput handler, now removed. The label is
+  // a .tip wrapper now, so target the value span by id (the old 'label > span'
+  // would match the wrapping span and clobber the whole label text).
+  if (input.id === 'cfg-threshold') {
+    var tv = document.getElementById('cfg-threshold-val');
+    if (tv) tv.textContent = input.value;
+  }
+  if (input.id === 'cfg-antispoof-threshold') {
+    var av = document.getElementById('cfg-asthr-val');
+    if (av) av.textContent = (parseFloat(input.value) / 100).toFixed(2);
+  }
 }
 
 function switchTab(name) {
@@ -1310,6 +1375,32 @@ function switchTab(name) {
     var on = allTabs[i].getAttribute('data-tab') === name;
     allTabs[i].classList.toggle('active', on);
     allTabs[i].setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  // Preview lifecycle: only the capture screen needs the camera + frame
+  // pipeline. Leaving it tears the preview down (camera released, no CPU
+  // burn on the other tabs); returning restarts it. An in-flight capture is
+  // never disturbed here — it completes on its own and the completion path
+  // manages the screens. The teardown is DEBOUNCED (1.2s): switching back
+  // within that window cancels it, so quick there-and-back navigation never
+  // opens/closes the camera in a loop (some USB camera drivers wedge under
+  // frequent open/close). The `viewing` guard keeps it to exactly one
+  // teardown per departure — switching between non-camera tabs must not
+  // re-stop an already-stopped preview.
+  if (name === 'cam') {
+    clearTimeout(previewStopTimer);
+    if (!viewing && !captureActive) {
+      viewing = true;
+      try { if (H.StartPreview()) renderFrame(); } catch(e) {}
+    }
+  } else {
+    if (viewing && !captureActive) {
+      clearTimeout(previewStopTimer);
+      previewStopTimer = setTimeout(function() {
+        viewing = false;
+        clearTimeout(timer);
+        try { H.StopPreview(); } catch(e) {}
+      }, 1200);
+    }
   }
   if (name === 'settings') loadSettings();
   if (name === 'faces') loadFaces();
@@ -1434,6 +1525,10 @@ function onCapture() {
   var btn = document.getElementById('btn-capture');
   var spinner = document.getElementById('cap-spinner');
   var prog = document.getElementById('cap-progress');
+  // Pause the 30fps preview polling so it can't starve samplePoll on slow
+  // machines (the root cause of "进度卡80/90" even though the backend
+  // collected 10/10). Restored in the capture completion/timeout paths.
+  captureActive = true;
   btn.disabled = true;
   spinner.style.display = 'inline-block';
   prog.style.display = 'block';
@@ -1455,9 +1550,19 @@ function onCapture() {
   document.getElementById('cap-pct').textContent = '';
   document.getElementById('cap-fill').style.width = '0%';
 
+  var tCapture = Date.now();
   H.CaptureFaceSamples();
+  try {
+    H.LogDiagnostic('capture_start method=' + liveMethod + ' t=' + tCapture
+      + ' com_ret=' + (Date.now() - tCapture) + 'ms');
+  } catch(e) {}
+  // Diagnostics (卡90% 排查): the JS call above BLOCKS the UI thread until the
+  // C++ side returns. CaptureFaceSamples only spawns a thread and returns
+  // fast, so a big com_ret here means the C++ method itself hung — not the
+  // capture loop.
 
   var livenessPoll = setInterval(function() {
+    var tickAt = Date.now();
     var checking = false;
     var passed = false;
     try { checking = H.IsLivenessChecking(); } catch(e) {}
@@ -1465,24 +1570,84 @@ function onCapture() {
 
     if (!checking) {
       clearInterval(livenessPoll);
+      // Diagnostics (卡90% 排查): the transition from liveness→sampling.
+      // liveness_dur = wall time from capture_start to here; com_ret = time
+      // the IsLivenessChecking() COM call itself blocked (a healthy read is
+      // microseconds, so a large value means the UI thread was wedged).
+      try {
+        H.LogDiagnostic('liveness_done passed=' + !!passed
+          + ' dur=' + (Date.now() - tCapture) + 'ms com_ret=' + (Date.now() - tickAt) + 'ms t=' + Date.now());
+      } catch(e) {}
       if (!passed) {
+        captureActive = false;
         prog.style.display = 'none';
         btn.disabled = false;
         spinner.style.display = 'none';
         document.getElementById('cap-step').textContent = '采集人脸样本...';
         document.getElementById('cap-pct').textContent = '0%';
+        // Restart the preview render chain: while captureActive was set, the
+        // renderFrame timer chain broke (it returns before rescheduling), so
+        // without this the preview would stay frozen on the last pre-capture
+        // frame after a failed liveness.
+        if (viewing) renderFrame();
         showBanner('cam', '活体检测失败，请确保是真人并重试。', 'error');
         return;
       }
       document.getElementById('cap-step').textContent = '采集人脸样本...';
+      // Total capture watchdog: normal capture of 10 samples takes ~2.5s.
+      // If the backend hasn't finished after 8s (backend stuck, frame thread
+      // died, detection never succeeds), stop polling and tell the user —
+      // never hang at 90% forever.
+      var pollStart = Date.now();
+      var CAPTURE_TIMEOUT_MS = 8000;
+      // Diagnostics (卡90% 排查): track poll intervals. If the UI thread is
+      // starved (slow GetLatestFrameAndFaces / COM), intervals blow past the
+      // intended 200ms — log the gap so we can see the stall in enrollment.log.
+      var lastPollAt = Date.now();
       var samplePoll = setInterval(function() {
+        var now = Date.now();
+        var gap = now - lastPollAt;
+        lastPollAt = now;
+        if (gap > 500) {
+          try { H.LogDiagnostic('poll_stall gap=' + gap + 'ms n_before t=' + now); } catch(e) {}
+        }
         var n = H.GetSampleCount();
         var pct = Math.round(n / 10 * 100);
         document.getElementById('samples-tag').textContent = n + ' / 10';
         document.getElementById('cap-fill').style.width = pct + '%';
         document.getElementById('cap-pct').textContent = pct + '%';
-        if (n >= 10) {
+        if (now - pollStart > CAPTURE_TIMEOUT_MS) {
+          // Hard timeout regardless of backend state — guaranteed exit.
           clearInterval(samplePoll);
+          captureActive = false;
+          // Diagnostics (卡90% 排查): distinguish a true 8s backend timeout
+          // from a UI thread stall. If this fires, it means the backend did
+          // NOT reach 10 samples (or the poll was starved — cross-check the
+          // C++ "sampling loop ended captured=N/10" line).
+          try {
+            H.LogDiagnostic('capture_timeout n=' + H.GetSampleCount() + ' t=' + Date.now());
+          } catch(e) {}
+          prog.style.display = 'none';
+          btn.disabled = false;
+          spinner.style.display = 'none';
+          document.getElementById('samples-tag').textContent = '0 / 10';
+          document.getElementById('cap-fill').style.width = '0%';
+          document.getElementById('cap-pct').textContent = '0%';
+          // Restart the preview render chain (broke while captureActive).
+          if (viewing) renderFrame();
+          showBanner('cam', '采集超时：未能在限时内采集到足够的人脸样本。请确保面部在取景框内且光线充足后重试。', 'error', 8000);
+          return;
+        }
+        if (n >= 10) {          clearInterval(samplePoll);
+          captureActive = false;
+          // Diagnostics (卡90% 排查): capture succeeded end-to-end, with total
+          // wall time from sampling start to 10/10. Healthy is ~2-3s (10 ×
+          // ~200ms poll ticks); a large dur means the UI thread was starved
+          // between ticks.
+          try {
+            H.LogDiagnostic('capture_done n=' + n + ' dur=' + (Date.now() - pollStart)
+              + 'ms t=' + Date.now());
+          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
@@ -1565,12 +1730,21 @@ function onCapture() {
           // otherwise sit forever at 90% with the spinner spinning and no
           // response. Reset the UI and tell the user what happened.
           clearInterval(samplePoll);
+          captureActive = false;
+          // Diagnostics (卡90% 排查): backend bailed early — cross-check the
+          // C++ "Enrollment sampling loop ended: captured=N/10" line to see
+          // whether it was a liveness failure or a sample-loop bail.
+          try {
+            H.LogDiagnostic('capture_early_end n=' + H.GetSampleCount() + ' t=' + Date.now());
+          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
           document.getElementById('samples-tag').textContent = '0 / 10';
           document.getElementById('cap-fill').style.width = '0%';
           document.getElementById('cap-pct').textContent = '0%';
+          // Restart the preview render chain (broke while captureActive).
+          if (viewing) renderFrame();
           showBanner('cam', '采集未完成：未能在限时内采集到足够的人脸样本。请确保面部在取景框内且光线充足后重试。', 'error', 8000);
         }
       }, 200);
@@ -1985,7 +2159,7 @@ function clearLogs() {
 // of truth for the version string (no hardcoded duplicates to bump per
 // release). In a browser preview there is no host, so fall back to a fixed
 // default so the layout still renders.
-var CONSOLE_VERSION = '1.6.1';
+var CONSOLE_VERSION = '1.7.0';
 function consoleVersion() {
   try { if (H.GetConsoleVersion) { var v = H.GetConsoleVersion(); if (v) return v; } } catch (e) {}
   return CONSOLE_VERSION;

@@ -60,6 +60,31 @@ private:
     ULONG m_ref;
 };
 
+// WebView2 process failure callback (crash / unresponsive renderer).
+// A dead renderer makes the UI look exactly like "卡90%无响应" while the C++
+// side keeps running and the JS side can no longer write logs — this is the
+// only evidence such an event leaves behind.
+class ProcessFailedCallback : public ICoreWebView2ProcessFailedEventHandler {
+public:
+    ProcessFailedCallback() : m_ref(1) {}
+
+    STDMETHOD(QueryInterface)(REFIID riid, void** ppv) {
+        if (riid == IID_IUnknown || riid == __uuidof(ICoreWebView2ProcessFailedEventHandler)) {
+            *ppv = this; AddRef(); return S_OK;
+        }
+        *ppv = nullptr; return E_NOINTERFACE;
+    }
+    STDMETHOD_(ULONG, AddRef)()  { return InterlockedIncrement(&m_ref); }
+    STDMETHOD_(ULONG, Release)() {
+        ULONG c = InterlockedDecrement(&m_ref);
+        if (c == 0) delete this;
+        return c;
+    }
+    STDMETHOD(Invoke)(ICoreWebView2* sender, ICoreWebView2ProcessFailedEventArgs* args) override;
+private:
+    ULONG m_ref;
+};
+
 // Main window + WebView2 host
 class WebviewHost {
 public:
@@ -77,6 +102,7 @@ public:
     ICoreWebView2Controller*  m_controller = nullptr;
     ICoreWebView2*            m_webview    = nullptr;
     ICoreWebView2Environment* m_env        = nullptr;
+    EventRegistrationToken m_processFailedToken = {};
     bool m_sessionNotifRegistered = false;
 
     std::string m_html;
