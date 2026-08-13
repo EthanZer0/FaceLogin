@@ -807,6 +807,15 @@ bool FaceService::ProcessAuthRequest() {
     auto startTime = std::chrono::steady_clock::now();
     bool authSent = false;
     int consecutiveMatches = 0;
+    // Consecutive frames where a face WAS detected (and its embedding was
+    // computed) but no enrolled face matched. After kNoMatchFailFrames such
+    // frames the auth stops immediately with a "人脸匹配失败" notice instead
+    // of staring at the user until the 15s timeout — a stranger (or a
+    // registered user the camera can't recognize right now) gets instant
+    // feedback and can retry with a key press or fall back to the password.
+    // Face-less frames and embedding failures are NOT counted.
+    int consecutiveNoMatch = 0;
+    static constexpr int kNoMatchFailFrames = 3;
     // Consensus: how many consecutive matched frames release credentials.
     // 2 frames (was 3): the liveness phase AND the post-liveness final-match
     // verify (below) still re-check the face on fresh frames before the
@@ -883,6 +892,7 @@ bool FaceService::ProcessAuthRequest() {
 
         if (match) {
             consecutiveMatches++;
+            consecutiveNoMatch = 0;   // a match resets the no-match counter
             FACELOGIN_INFO(L"Face matched: %s (distance=%.4f) [%d/%d]",
                           match->username.c_str(), match->distance,
                           consecutiveMatches, CONSENSUS_FRAMES);
@@ -892,6 +902,25 @@ bool FaceService::ProcessAuthRequest() {
                 continue;
             }
         } else {
+            // Only count frames where a face was really present but failed to
+            // match (embedding computed, no stored face close enough) — not
+            // face-less frames or embedding failures.
+            if (!onnxEmb.empty()) {
+                if (++consecutiveNoMatch >= kNoMatchFailFrames) {
+                    FACELOGIN_INFO(L"No match for %d consecutive frames — reporting failure to CP",
+                                   consecutiveNoMatch);
+                    // Distinct terminal message (AUTH_NO_MATCH) so the CP can
+                    // show "人脸匹配失败" instead of the timeout wording
+                    // ("未识别到人脸") — a face WAS seen, it just didn't match.
+                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) +
+                        L"\u4eba\u8138\u5339\u914d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u6216\u4f7f\u7528\u5bc6\u7801\u767b\u5f55");
+                    FlushFileBuffers(m_pipeServer->GetHandle());
+                    m_pipeServer->WriteMessage(ipc::MSG_AUTH_NO_MATCH);
+                    FlushFileBuffers(m_pipeServer->GetHandle());
+                    m_pipeServer->DrainOutput(5000);
+                    return false;
+                }
+            }
             // Soft consensus: a miss DECAYS the counter by 1 instead of fully
             // resetting to 0. A single intermittent bad frame (motion, blink,
             // momentary profile turn, partial occlusion) then no longer forces

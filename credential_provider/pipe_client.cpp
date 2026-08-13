@@ -157,6 +157,8 @@ bool PipeClient::IsTerminalMessage(const std::wstring& msg) {
     return msg.starts_with(ipc::MSG_AUTH_SUCCESS_PREFIX) ||
            msg.starts_with(ipc::MSG_AUTH_ERROR_PREFIX) ||
            msg == ipc::MSG_AUTH_TIMEOUT ||
+           msg == ipc::MSG_AUTH_NO_FACE ||
+           msg == ipc::MSG_AUTH_NO_MATCH ||
            msg == ipc::MSG_AUTH_CANCELLED;
 }
 

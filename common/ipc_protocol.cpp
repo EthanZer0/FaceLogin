@@ -92,6 +92,11 @@ AuthResult ParseAuthMessage(const std::wstring& message) {
         return result;
     }
 
+    if (message == MSG_AUTH_NO_MATCH) {
+        result.status = AuthResult::Status::NoMatch;
+        return result;
+    }
+
     if (message == MSG_AUTH_CANCELLED) {
         result.status = AuthResult::Status::Cancelled;
         return result;

@@ -370,6 +370,13 @@ STDMETHODIMP FaceLoginCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) 
         case State::Ready:
             return SHStrDupW(L"人脸识别成功，正在解锁...", ppwsz);
         case State::Failed:
+            // AUTH_NO_MATCH carries its own wording ("人脸匹配失败...");
+            // plain timeouts keep the generic text.
+            if (m_noMatchFailed) {
+                return SHStrDupW(m_statusText.empty() ?
+                                 L"人脸匹配失败，请重试或使用密码登录" :
+                                 m_statusText.c_str(), ppwsz);
+            }
             return SHStrDupW(L"未识别到人脸，请重试或使用密码登录", ppwsz);
         case State::Blocked:
             // Passwordless account notice (set by OnPipeResponse / polling).
@@ -653,6 +660,7 @@ void FaceLoginCredential::StartAuth() {
     }
 
     m_state = State::Authenticating;
+    m_noMatchFailed = false;   // fresh attempt: clear the previous no-match flag
     m_pipeClient = std::make_unique<facelogin::PipeClient>();
 
     if (m_pipeClient->Connect()) {
@@ -908,6 +916,17 @@ void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& messa
             return;
         } else if (result.status == facelogin::ipc::AuthResult::Status::Timeout) {
             FACELOGIN_INFO(L"OnPipeResponse: Auth timeout");
+            m_state = State::Failed;
+        } else if (result.status == facelogin::ipc::AuthResult::Status::NoMatch) {
+            // A face was seen but did not match any enrolled face. Show the
+            // specific wording (and keep it — the timeout case below shows the
+            // generic "未识别到人脸" instead).
+            FACELOGIN_INFO(L"OnPipeResponse: Face present but no match");
+            m_statusText = L"\u4eba\u8138\u5339\u914d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u6216\u4f7f\u7528\u5bc6\u7801\u767b\u5f55";
+            m_noMatchFailed = true;
+            if (m_pCredentialEvents) {
+                m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
+            }
             m_state = State::Failed;
         } else if (result.status == facelogin::ipc::AuthResult::Status::Error) {
             FACELOGIN_WARN(L"OnPipeResponse: Auth error: %s", result.errorMessage.c_str());

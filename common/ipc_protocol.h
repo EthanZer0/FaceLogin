@@ -23,6 +23,11 @@ constexpr wchar_t MSG_AUTH_REQUEST[] = L"AUTH_REQUEST";
 constexpr wchar_t MSG_AUTH_SUCCESS_PREFIX[] = L"AUTH_SUCCESS:";
 constexpr wchar_t MSG_AUTH_TIMEOUT[] = L"AUTH_TIMEOUT";
 constexpr wchar_t MSG_AUTH_NO_FACE[] = L"AUTH_NO_FACE";
+// A face WAS detected (embedding computed) but no enrolled face matched it —
+// distinct from AUTH_TIMEOUT (nothing useful seen for the whole window) and
+// AUTH_NO_FACE (no face at all). The CP shows "人脸匹配失败" for this and
+// reserves "未识别到人脸" for the timeout case.
+constexpr wchar_t MSG_AUTH_NO_MATCH[] = L"AUTH_NO_MATCH";
 constexpr wchar_t MSG_AUTH_ERROR_PREFIX[] = L"AUTH_ERROR:";
 constexpr wchar_t MSG_AUTH_CANCELLED[] = L"AUTH_CANCELLED";
 constexpr wchar_t MSG_STATUS_PREFIX[] = L"STATUS:";
@@ -48,6 +53,7 @@ struct AuthResult {
         Success,
         Timeout,
         NoFace,
+        NoMatch,
         Error,
         Cancelled
     };
