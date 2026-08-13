@@ -175,6 +175,14 @@ private:
                             const std::wstring& label);
     static std::wstring GetCurrentProcessUserSid();
 
+    // Diagnostics: persist the exact frame that failed anti-spoof as a BMP
+    // under <dataDir>\diag\ (max 10, first N only). Lets a collapsed MiniFAS
+    // score be attributed to the frame (driver-stalled camera after the
+    // service grabbed it → frozen/tinted/noisy frames with normal mean
+    // brightness) vs the crop/model, by looking at the actual pixels.
+    void SaveAntiSpoofFailFrame(const dlib::matrix<dlib::rgb_pixel>& frame,
+                                float score);
+
     // Camera & face processing
     std::unique_ptr<WebcamCapture>  m_webcam;
     std::unique_ptr<OnnxLandmarkDetector> m_detector;   // 106-point landmarks (2d106det)
@@ -238,6 +246,13 @@ private:
     bool m_capturing = false;
     bool m_livenessPassed = false;
     bool m_livenessChecking = false;
+    // True only while the capture thread is in the sampling phase (after
+    // liveness passed). The frame thread stays in PUSH mode during liveness:
+    // continuous grabbing keeps the camera's auto-exposure/white-balance
+    // stable, which facenox MiniFAS depends on — switching to on-demand
+    // grabbing mid-liveness made frames fluctuate and anti-spoof scores
+    // collapse (real≈+6 → spoof-classified ≈-3). Sampling switches to PULL.
+    bool m_phase2Active = false;
     std::thread m_captureThread;
     static constexpr int TARGET_SAMPLES = 10;
 

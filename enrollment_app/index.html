@@ -1585,6 +1585,11 @@ function onCapture() {
         spinner.style.display = 'none';
         document.getElementById('cap-step').textContent = '采集人脸样本...';
         document.getElementById('cap-pct').textContent = '0%';
+        // Restart the preview render chain: while captureActive was set, the
+        // renderFrame timer chain broke (it returns before rescheduling), so
+        // without this the preview would stay frozen on the last pre-capture
+        // frame after a failed liveness.
+        if (viewing) renderFrame();
         showBanner('cam', '活体检测失败，请确保是真人并重试。', 'error');
         return;
       }
@@ -1628,6 +1633,8 @@ function onCapture() {
           document.getElementById('samples-tag').textContent = '0 / 10';
           document.getElementById('cap-fill').style.width = '0%';
           document.getElementById('cap-pct').textContent = '0%';
+          // Restart the preview render chain (broke while captureActive).
+          if (viewing) renderFrame();
           showBanner('cam', '采集超时：未能在限时内采集到足够的人脸样本。请确保面部在取景框内且光线充足后重试。', 'error', 8000);
           return;
         }
@@ -1736,6 +1743,8 @@ function onCapture() {
           document.getElementById('samples-tag').textContent = '0 / 10';
           document.getElementById('cap-fill').style.width = '0%';
           document.getElementById('cap-pct').textContent = '0%';
+          // Restart the preview render chain (broke while captureActive).
+          if (viewing) renderFrame();
           showBanner('cam', '采集未完成：未能在限时内采集到足够的人脸样本。请确保面部在取景框内且光线充足后重试。', 'error', 8000);
         }
       }, 200);

@@ -698,7 +698,21 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& image,
     long cy = rect.top() + rect.height() / 2;
     float margin = m_facenoxMode ? 1.5f : 1.1f;
     long halfSize = static_cast<long>(std::max(rect.width(), rect.height()) / 2 * margin);
-    dlib::rectangle cropRect(cx - halfSize, cy - halfSize, cx + halfSize, cy + halfSize);
+
+    // Keep the crop fully inside the frame. dlib's extract_image_chip fills
+    // out-of-bounds areas with BLACK — for a large face near the frame edge
+    // (user close to the camera) that black border can cover a big part of
+    // the 128×128 input, which MiniFAS reads as a spoof cue and the score
+    // collapses (real ≈ +4 → spoof-classified ≈ -3; reproduced on both the
+    // Console and the service). Clamp the half-size to the frame, then shift
+    // the crop center inward so the crop stays square and fully in-bounds.
+    auto cl = [](long v, long lo, long hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    long maxHalf = std::min(image.nr(), image.nc()) / 2 - 1;
+    if (halfSize > maxHalf) halfSize = maxHalf;
+    if (halfSize < 8) halfSize = 8;
+    long cx2 = cl(cx, halfSize, image.nc() - 1 - halfSize);
+    long cy2 = cl(cy, halfSize, image.nr() - 1 - halfSize);
+    dlib::rectangle cropRect(cx2 - halfSize, cy2 - halfSize, cx2 + halfSize, cy2 + halfSize);
     dlib::chip_details chip(cropRect, dlib::chip_dims(m_inputSize, m_inputSize));
     dlib::matrix<dlib::rgb_pixel> crop;
     dlib::extract_image_chip(image, chip, crop);

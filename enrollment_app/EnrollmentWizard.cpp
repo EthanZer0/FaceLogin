@@ -398,26 +398,32 @@ bool EnrollmentWizard::StartPreview() {
             return;
         }
         while (m_frameRunning && m_frameGeneration == myGen) {
-            // ---- Pull mode (during capture) --------------------------------
-            // The capture/liveness thread requests ONE fresh frame per sample;
-            // we deliver exactly that and do zero inference/encoding (the
+            // ---- Pull mode (during the SAMPLING phase only) ---------------
+            // The capture thread requests ONE fresh frame per sample; we
+            // deliver exactly that and do zero inference/encoding (the
             // preview is frozen — renderFrame is gated during capture — and
             // the capture thread detects the delivered frame itself). This
             // replaces the 30fps stream + per-frame NV12→RGB conversion +
             // full-frame copies that previously ran to feed 10 samples.
-            if (m_capturing) {
+            //
+            // Liveness deliberately runs on the PUSH stream (m_phase2Active
+            // false): continuous grabbing keeps auto-exposure stable, which
+            // facenox MiniFAS depends on — on-demand grabbing made frames
+            // fluctuate and anti-spoof scores collapse.
+            if (m_capturing && m_phase2Active) {
                 bool deliver = false;
                 {
                     std::unique_lock<std::mutex> lock(m_frameCacheMutex);
                     if (!m_sampleCv.wait_for(lock, std::chrono::milliseconds(100),
                                              [this, myGen] {
                                                  return !m_frameRunning ||
+                                                        !m_phase2Active ||
                                                         m_frameGeneration != myGen ||
                                                         m_sampleDelivered < m_sampleSeq;
                                              })) {
                         continue;   // nothing requested yet
                     }
-                    if (!m_frameRunning || m_frameGeneration != myGen) break;
+                    if (!m_frameRunning || !m_phase2Active || m_frameGeneration != myGen) break;
                     deliver = true;
                 }
                 dlib::matrix<dlib::rgb_pixel> frame;
@@ -841,6 +847,50 @@ std::string EnrollmentWizard::FacesToJson(
 // Pull-model frame delivery (capture/liveness → frame thread)
 // ============================================================================
 
+void EnrollmentWizard::SaveAntiSpoofFailFrame(const dlib::matrix<dlib::rgb_pixel>& frame,
+                                              float score) {
+    static int s_diagSeq = 0;
+    if (s_diagSeq >= 10) return;   // diagnostic sink: keep at most 10 files
+    if (frame.size() == 0) return;
+
+    std::wstring dir = m_dataDir + L"\\diag";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    wchar_t name[64];
+    swprintf(name, 64, L"\\aspoof_fail_%d_%+.1f.bmp", ++s_diagSeq, score);
+    std::wstring path = dir + name;
+
+    int w = static_cast<int>(frame.nc());
+    int h = static_cast<int>(frame.nr());
+    uint32_t rowSize = (static_cast<uint32_t>(w) * 3 + 3) & ~3u;
+    uint32_t pixelBytes = rowSize * static_cast<uint32_t>(h);
+    uint32_t fileSize = 54 + pixelBytes;
+
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return;
+    uint8_t hdr[54] = {};
+    hdr[0] = 'B'; hdr[1] = 'M';
+    memcpy(hdr + 2, &fileSize, 4);
+    uint32_t off = 54;        memcpy(hdr + 10, &off, 4);
+    uint32_t hdrSize = 40;    memcpy(hdr + 14, &hdrSize, 4);
+    int32_t w32 = w;          memcpy(hdr + 18, &w32, 4);
+    int32_t h32 = h;          memcpy(hdr + 22, &h32, 4);
+    uint16_t planes = 1;      memcpy(hdr + 26, &planes, 2);
+    uint16_t bpp = 24;        memcpy(hdr + 28, &bpp, 2);
+    f.write(reinterpret_cast<const char*>(hdr), 54);
+
+    std::vector<uint8_t> row(rowSize);
+    for (int y = h - 1; y >= 0; y--) {   // BMP is bottom-up
+        for (int x = 0; x < w; x++) {
+            const auto& p = frame(y, x);
+            row[x * 3 + 0] = p.blue;
+            row[x * 3 + 1] = p.green;
+            row[x * 3 + 2] = p.red;
+        }
+        f.write(reinterpret_cast<const char*>(row.data()), rowSize);
+    }
+    FACELOGIN_INFO(L"Saved anti-spoof fail frame: %s (score=%.2f)", path.c_str(), score);
+}
+
 bool EnrollmentWizard::RequestFreshFrame(dlib::matrix<dlib::rgb_pixel>& outFrame,
                                          DWORD budgetMs) {
     std::unique_lock<std::mutex> lock(m_frameCacheMutex);
@@ -910,12 +960,16 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= 8) break;
 
                 dlib::matrix<dlib::rgb_pixel> frame;
-                // Pull one fresh frame on demand (frame thread is in pull mode
-                // during capture — no 30fps streaming, no lock-held sleeps).
-                if (!RequestFreshFrame(frame)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(33));
-                    continue;
+                // Read the latest frame from the frame thread's PUSH stream.
+                // The frame thread stays in push mode during liveness (see
+                // m_phase2Active) so the camera keeps grabbing at 30fps and
+                // auto-exposure stays stable — on-demand grabbing made frames
+                // fluctuate and collapsed anti-spoof scores.
+                {
+                    std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+                    if (m_latestFrame.size() != 0) frame = m_latestFrame;
                 }
+                if (frame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                 // Detect with SCRFD, extract 106-point landmarks.
                 dlib::full_object_detection asLandmarks;
                 auto asDet = m_onnxDetector->DetectLargestFace(frame);
@@ -929,6 +983,28 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 if (asLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
 
                 float score = m_antiSpoof->Predict(frame, asLandmarks);
+                // Diagnostics: log the anti-spoof input geometry + frame
+                // brightness. A collapsed score (normally ≈ +3..+6, spoof-
+                // classified ≈ -1..-4) can then be attributed to a bad crop
+                // (bbox tiny / off-center → upscaled blur, or margin
+                // overflowing the frame edge → black border) vs a bad frame
+                // (dark / blown-out / frozen).
+                {
+                    dlib::rectangle r = asLandmarks.get_rect();
+                    long long lumSum = 0;
+                    long lumSamples = 0;
+                    for (long y = 0; y < frame.nr(); y += 32) {
+                        for (long x = 0; x < frame.nc(); x += 32) {
+                            const auto& p = frame(y, x);
+                            lumSum += (p.red + p.green + p.blue) / 3;
+                            lumSamples++;
+                        }
+                    }
+                    FACELOGIN_INFO(L"Anti-spoof input: bbox=%ldx%ld@(%ld,%ld) frame=%ldx%ld lum=%.1f",
+                                   r.width(), r.height(), r.left(), r.top(),
+                                   frame.nc(), frame.nr(),
+                                   lumSamples ? static_cast<double>(lumSum) / lumSamples : 0.0);
+                }
                 totalChecked++;
                 // Map the config slider onto the current model's score scale
                 // (facenox logit-diff vs OULU pixel-mean) — see
@@ -936,6 +1012,10 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 float effThr = AntiSpoofEffectiveThreshold(m_antiSpoofThreshold,
                                                            m_antiSpoof->IsFacenoxMode());
                 if (score >= effThr) passCount++; // model-mapped threshold
+                if (score < effThr) {
+                    // Diagnostics: keep the exact failing frame for inspection.
+                    SaveAntiSpoofFailFrame(frame, score);
+                }
                 FACELOGIN_INFO(L"Enrollment anti-spoof frame %d: score=%.3f thr=%.2f (pass=%d)",
                               totalChecked, score, effThr, passCount);
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
@@ -955,11 +1035,13 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                     break;
                 }
                 dlib::matrix<dlib::rgb_pixel> frame;
-                // Pull one fresh frame on demand (see antispoof branch above).
-                if (!RequestFreshFrame(frame)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(33));
-                    continue;
+                // Read the latest frame from the PUSH stream (see antispoof
+                // branch above — continuous grabbing keeps exposure stable).
+                {
+                    std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+                    if (m_latestFrame.size() != 0) frame = m_latestFrame;
                 }
+                if (frame.size() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
                 // Detect with SCRFD, extract 106-point landmarks for EAR.
                 dlib::full_object_detection livenessLandmarks;
                 auto livenessDet = m_onnxDetector->DetectLargestFace(frame);
@@ -989,6 +1071,10 @@ bool EnrollmentWizard::CaptureFaceSamples() {
         }
 
         m_livenessPassed = true;
+        // Sampling phase: the frame thread switches to pull mode (on-demand
+        // grabbing, no 30fps churn). Liveness deliberately stays on the push
+        // stream — see m_phase2Active in the header.
+        m_phase2Active = true;
 
         // Phase 2: Collect face samples
         int failCount = 0;
@@ -1094,6 +1180,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
         }
         FACELOGIN_INFO(L"Enrollment sampling loop ended: captured=%d/%d, failCount=%d, m_capturing=%d",
                        m_samplesCollected, TARGET_SAMPLES, failCount, static_cast<int>(m_capturing));
+        m_phase2Active = false;   // frame thread back to push mode
         m_capturing = false;
     });
 
