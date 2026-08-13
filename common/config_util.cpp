@@ -127,6 +127,7 @@ std::string ConfigToJson(const AppConfig& cfg) {
     ss << "  "; jsonWriteString(ss, "low_light_enhance"); ss << ": " << (cfg.low_light_enhance ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "unload_models_after_auth"); ss << ": " << (cfg.unload_models_after_auth ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "camera_rotation"); ss << ": " << cfg.camera_rotation << ",\n";
+    ss << "  "; jsonWriteString(ss, "capture_unknown_faces"); ss << ": " << (cfg.capture_unknown_faces ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "camera_device"); ss << ": "; jsonWriteString(ss, cfg.camera_device); ss << "\n";
     ss << "}\n";
     return ss.str();
@@ -155,6 +156,7 @@ AppConfig ConfigFromJson(const std::string& json) {
         rotation = 0;
     }
     cfg.camera_rotation = rotation;
+    cfg.capture_unknown_faces = (jsonGetString(json, "capture_unknown_faces") == "true");
     auto cam = jsonGetString(json, "camera_device");
     if (!cam.empty()) cfg.camera_device = cam;
     return cfg;

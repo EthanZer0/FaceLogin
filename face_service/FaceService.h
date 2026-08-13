@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <wincodec.h>
 #include <string>
 #include <memory>
 #include <atomic>
@@ -68,6 +69,13 @@ private:
     std::wstring GetModelsDir();
     float GetMatchThreshold();
 
+    // Unknown-face capture (config-gated, opt-in): when a face is detected but
+    // matches no enrolled user, save a full-res JPEG of that frame plus a
+    // JSONL event under <dataDir>\data\unknown\ (rolling 100 max).
+    void SaveUnknownFace(const dlib::matrix<dlib::rgb_pixel>& frame,
+                         float bestDistance = -1.0f);
+    bool EnsureWicFactory();   // lazy CoCreateInstance for JPEG encoding
+
     // Service state
     SERVICE_STATUS_HANDLE m_hStatus = nullptr;
     SERVICE_STATUS m_status = {};
@@ -102,6 +110,8 @@ private:
     std::wstring m_modelsDir;
     float m_matchThreshold = 0.30f;
     int m_authTimeoutSeconds = 15;
+    // WIC imaging factory for unknown-face JPEG encoding (lazy, SYSTEM session).
+    IWICImagingFactory* m_wicFactory = nullptr;
 
     // --- Lazy model loading (1.5.0) ---
     // The 99.7MB dlib shape predictor + 3 ONNX sessions take seconds to load.

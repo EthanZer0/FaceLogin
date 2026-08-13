@@ -33,6 +33,11 @@ struct AppConfig {
     // Use when the camera is physically mounted in a non-standard
     // orientation (e.g., vertical PC mount / sideways webcam).
     int            camera_rotation        = 0;
+    // Save a photo of the frame when a face is detected but matches no
+    // enrolled user (stranger / unrecognized visitor), plus a JSONL event
+    // record. Stored under <dataDir>\data\unknown\ (JPEG, rolling 100 max).
+    // OFF by default — captures non-user biometric data, opt-in only.
+    bool           capture_unknown_faces  = false;
 };
 
 AppConfig LoadConfig(const std::wstring& dataDir);

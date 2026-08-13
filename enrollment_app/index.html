@@ -884,6 +884,16 @@ button{font-family:inherit}
       </label>
     </div>
 
+    <div class="field">
+      <label class="check tip">
+        <input type="checkbox" id="cfg-capture-unknown">
+        <span class="cbx"></span>
+        <span>记录未匹配人脸（陌生人出现在锁屏前时保存照片与记录）</span>
+        <span class="tip-ico">i</span>
+        <span class="tip-box">开启后，锁屏人脸匹配失败（检测到人脸但未匹配任何已录入人脸）时，将失败画面保存为照片并记录事件，存放于安装目录 data\unknown 文件夹（最多保留 100 张，超出自动删除最旧）。照片仅保存在本机，不会上传。涉及非本人的面部影像，请谨慎开启。</span>
+      </label>
+    </div>
+
     <div class="field" id="field-antispoof-threshold" style="display:none">
       <label class="tip"><span>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.30</span></span><span class="tip-ico">i</span><span class="tip-box">阈值越低越宽松（容易通过），越高越严格（更难通过）。默认0.30。</span></label>
       <div class="range-wrap">
@@ -1479,6 +1489,7 @@ function loadSettings() {
     // Custom range tracks/knobs follow the loaded values.
     rngSync(document.getElementById('cfg-threshold'));
     rngSync(document.getElementById('cfg-antispoof-threshold'));
+    document.getElementById('cfg-capture-unknown').checked = !!cfg.capture_unknown_faces;
   } catch(e) { showBanner('settings', '读取设置失败: ' + e.message, 'error'); }
   // Always reconcile the liveness-dependent fields with the current select
   // value, even if loading config failed above — so the glasses / anti-spoof
@@ -1499,6 +1510,7 @@ function onSaveSettings() {
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
     low_light_enhance: document.getElementById('cfg-low-light').checked,
     unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
+    capture_unknown_faces: document.getElementById('cfg-capture-unknown').checked,
     camera_rotation: parseInt(document.getElementById('cfg-rotation').value) || 0,
     camera_device: document.getElementById('cfg-camera').value
   };

@@ -36,7 +36,151 @@ FaceService::FaceService() {
 }
 
 FaceService::~FaceService() {
+    if (m_wicFactory) m_wicFactory->Release();
+    m_wicFactory = nullptr;
     s_pInstance = nullptr;
+}
+
+// ============================================================================
+// Unknown-face capture (opt-in, config-gated)
+// ============================================================================
+
+bool FaceService::EnsureWicFactory() {
+    if (m_wicFactory) return true;
+    CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                     IID_PPV_ARGS(&m_wicFactory));
+    return m_wicFactory != nullptr;
+}
+
+void FaceService::SaveUnknownFace(const dlib::matrix<dlib::rgb_pixel>& frame,
+                                  float bestDistance) {
+    if (frame.size() == 0) return;
+
+    // Storage: <dataDir>\data\unknown\ — dataDir follows the user-chosen
+    // install directory (registry DataPath), not fixed to C:.
+    std::wstring dir = m_dataDir + L"\\data\\unknown";
+    CreateDirectoryW(dir.c_str(), nullptr);
+
+    // Rolling cap: keep at most kMaxUnknownFaces files, delete the oldest.
+    constexpr int kMaxUnknownFaces = 100;
+    {
+        std::vector<std::wstring> files;
+        WIN32_FIND_DATAW fd = {};
+        HANDLE hFind = FindFirstFileW((dir + L"\\*.jpg").c_str(), &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                    files.push_back(fd.cFileName);
+            } while (FindNextFileW(hFind, &fd));
+            FindClose(hFind);
+        }
+        std::sort(files.begin(), files.end());   // chronological by filename
+        while (static_cast<int>(files.size()) >= kMaxUnknownFaces) {
+            std::wstring old = dir + L"\\" + files.front();
+            DeleteFileW(old.c_str());
+            files.erase(files.begin());
+        }
+    }
+
+    // Filename: timestamp + sequence (never user input — no path injection).
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t name[64];
+    swprintf(name, 64, L"%04d%02d%02d-%02d%02d%02d-%03d.jpg",
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    std::wstring jpgPath = dir + L"\\" + name;
+
+    // Encode the full-res frame as JPEG via WIC.
+    if (EnsureWicFactory()) {
+        int w = static_cast<int>(frame.nc());
+        int h = static_cast<int>(frame.nr());
+        std::vector<BYTE> bgra(static_cast<size_t>(w) * h * 4);
+        for (int y = 0; y < h; y++) {
+            BYTE* row = bgra.data() + static_cast<size_t>(y) * w * 4;
+            for (int x = 0; x < w; x++) {
+                const auto& p = frame(y, x);
+                row[x * 4 + 0] = p.blue;
+                row[x * 4 + 1] = p.green;
+                row[x * 4 + 2] = p.red;
+                row[x * 4 + 3] = 255;
+            }
+        }
+
+        IWICBitmap* pBitmap = nullptr;
+        HRESULT hr = m_wicFactory->CreateBitmapFromMemory(
+            w, h, GUID_WICPixelFormat32bppBGR, w * 4,
+            static_cast<UINT>(bgra.size()), bgra.data(), &pBitmap);
+        if (SUCCEEDED(hr)) {
+            IWICBitmapEncoder* pEncoder = nullptr;
+            if (SUCCEEDED(m_wicFactory->CreateEncoder(GUID_ContainerFormatJpeg,
+                                                      nullptr, &pEncoder))) {
+                IStream* pStream = nullptr;
+                if (SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &pStream))) {
+                    if (SUCCEEDED(pEncoder->Initialize(pStream, WICBitmapEncoderNoCache))) {
+                        IWICBitmapFrameEncode* pFrameEncode = nullptr;
+                        IPropertyBag2* pProps = nullptr;
+                        if (SUCCEEDED(pEncoder->CreateNewFrame(&pFrameEncode, &pProps))) {
+                            PROPBAG2 opt = {};
+                            opt.pstrName = const_cast<LPOLESTR>(L"ImageQuality");
+                            VARIANT v;
+                            VariantInit(&v);
+                            v.vt = VT_R4;
+                            v.fltVal = 0.70f;
+                            pProps->Write(1, &opt, &v);
+                            VariantClear(&v);
+                            if (SUCCEEDED(pFrameEncode->Initialize(pProps)) &&
+                                SUCCEEDED(pFrameEncode->SetSize(w, h)) &&
+                                SUCCEEDED(pFrameEncode->WriteSource(pBitmap, nullptr))) {
+                                pFrameEncode->Commit();
+                                pEncoder->Commit();
+
+                                STATSTG stat;
+                                if (SUCCEEDED(pStream->Stat(&stat, STATFLAG_NONAME))) {
+                                    ULONG jpgSize = static_cast<ULONG>(stat.cbSize.QuadPart);
+                                    std::vector<BYTE> jpg(jpgSize);
+                                    LARGE_INTEGER li = {};
+                                    pStream->Seek(li, STREAM_SEEK_SET, nullptr);
+                                    ULONG read = 0;
+                                    if (SUCCEEDED(pStream->Read(jpg.data(), jpgSize, &read))) {
+                                        std::ofstream f(jpgPath, std::ios::binary);
+                                        if (f) {
+                                            f.write(reinterpret_cast<const char*>(jpg.data()), jpgSize);
+                                            f.close();
+                                        }
+                                    }
+                                }
+                            }
+                            pFrameEncode->Release();
+                            pProps->Release();
+                        }
+                    }
+                    pStream->Release();
+                }
+                pEncoder->Release();
+            }
+            pBitmap->Release();
+        }
+    }
+
+    // Append the event record (JSONL): timestamp, reason, best distance, file.
+    {
+        // Filename is ASCII (digits/dashes/dots) — convert for the UTF-8 file.
+        char nameUtf8[64] = {};
+        WideCharToMultiByte(CP_UTF8, 0, name, -1, nameUtf8, 64, nullptr, nullptr);
+        std::ofstream ev(m_dataDir + L"\\data\\unknown\\events.jsonl", std::ios::app);
+        if (ev) {
+            ev << "{";
+            ev << "\"ts\":\"" << st.wYear << "-" << st.wMonth << "-" << st.wDay
+               << " " << st.wHour << ":" << st.wMinute << ":" << st.wSecond << "\",";
+            ev << "\"reason\":\"NO_MATCH\",";
+            ev << "\"bestDistance\":" << bestDistance << ",";
+            ev << "\"file\":\"" << nameUtf8 << "\"";
+            ev << "}\n";
+        }
+    }
+
+    FACELOGIN_WARN(L"Unknown face captured: %s (distance=%.3f)",
+                   jpgPath.c_str(), bestDistance);
 }
 
 void WINAPI FaceService::ServiceMain(DWORD argc, LPWSTR* argv) {
@@ -909,6 +1053,11 @@ bool FaceService::ProcessAuthRequest() {
                 if (++consecutiveNoMatch >= kNoMatchFailFrames) {
                     FACELOGIN_INFO(L"No match for %d consecutive frames — reporting failure to CP",
                                    consecutiveNoMatch);
+                    // Opt-in unknown-face capture: save the failing frame +
+                    // a JSONL event record (see SaveUnknownFace).
+                    if (m_config.capture_unknown_faces) {
+                        SaveUnknownFace(frame);
+                    }
                     // Distinct terminal message (AUTH_NO_MATCH) so the CP can
                     // show "人脸匹配失败" instead of the timeout wording
                     // ("未识别到人脸") — a face WAS seen, it just didn't match.
