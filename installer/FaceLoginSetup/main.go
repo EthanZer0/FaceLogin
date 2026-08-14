@@ -78,19 +78,11 @@ func main() {
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.7.0"
-	internal.NoticeTitle = "FaceLogin 1.7.0 更新说明"
-	internal.NoticeBody = "新功能：\n" +
-		"- 锁屏陌生人即时反馈：人脸匹配失败约 1 秒内提示，不再干等 15 秒；匹配失败与超时提示区分\n" +
-		"- 服务崩溃自动重启，服务未运行时锁屏磁贴即时提示\n" +
-		"- 眼镜佩戴场景识别优化\n" +
-		"解锁提速：\n" +
-		"- 认证总耗时进一步缩短（匹配共识 2 帧、管道轮询 10ms、按键触发门限 300ms）\n" +
-		"修复：\n" +
-		"- 录入卡 80/90% 无响应彻底根治（#11）\n" +
-		"- 反欺诈误拒修复：裁剪越界黑边 + 多帧投票 + 阈值重校准\n" +
-		"- 日志轮转误删修复\n" +
-		"提示：\n" +
+	internal.NoticeVersion = "1.7.1"
+	internal.NoticeTitle = "FaceLogin 1.7.1 更新说明"
+	internal.NoticeBody = "本次为修复更新：\n" +
+		"- 修复从本地账号切换/绑定到微软账号后，Console 仍显示本地账号的问题。此前链接微软账号的本地账户在 Console 中会被误判为本地，现已在打开 Console 时正确识别微软账号\n" +
+		"- 已录入用户：打开 Console 若提示「账号身份已变更」，按提示输入微软账号密码刷新一次，即可继续正常使用人脸登录\n" +
 		"- 已录入的人脸数据不受影响，无需重新录入"
 
 	// Initialize the embedded resource filesystem in the internal package
