@@ -599,7 +599,6 @@ size_t CredentialStore::GetFaceCount(const std::wstring& sid) const {
 
 std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
     const float probeEmbedding[], size_t probeDim, float threshold) {
-
     if (m_users.empty() || probeDim == 0 || probeEmbedding == nullptr) {
         return std::nullopt;
     }
@@ -724,6 +723,25 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
     }
 
     return std::nullopt;
+}
+
+float CredentialStore::FindNearestDistance(const float probeEmbedding[],
+                                           size_t probeDim) const {
+    if (m_users.empty() || probeDim == 0 || probeEmbedding == nullptr) return 1e10f;
+    float bestDist = 1e10f;
+    for (const auto& u : m_users) {
+        for (const auto& face : u.faces) {
+            if (face.embedding.size() != probeDim) continue;
+            float sum = 0.0f;
+            for (size_t j = 0; j < probeDim; j++) {
+                float diff = probeEmbedding[j] - face.embedding[j];
+                sum += diff * diff;
+            }
+            float dist = std::sqrt(sum);
+            if (dist < bestDist) bestDist = dist;
+        }
+    }
+    return bestDist;
 }
 
 } // namespace facelogin

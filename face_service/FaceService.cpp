@@ -55,6 +55,8 @@ bool FaceService::EnsureWicFactory() {
 void FaceService::SaveUnknownFace(const dlib::matrix<dlib::rgb_pixel>& frame,
                                   float bestDistance) {
     if (frame.size() == 0) return;
+    FACELOGIN_INFO(L"SaveUnknownFace: enter (frame=%ldx%ld, dist=%.3f)",
+                   frame.nc(), frame.nr(), bestDistance);
 
     // Storage: <dataDir>\data\unknown\ — dataDir follows the user-chosen
     // install directory (registry DataPath), not fixed to C:.
@@ -81,6 +83,7 @@ void FaceService::SaveUnknownFace(const dlib::matrix<dlib::rgb_pixel>& frame,
             files.erase(files.begin());
         }
     }
+    FACELOGIN_INFO(L"SaveUnknownFace: dir ready, WIC=%d", EnsureWicFactory() ? 1 : 0);
 
     // Filename: timestamp + sequence (never user input — no path injection).
     SYSTEMTIME st;
@@ -90,30 +93,40 @@ void FaceService::SaveUnknownFace(const dlib::matrix<dlib::rgb_pixel>& frame,
              st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
     std::wstring jpgPath = dir + L"\\" + name;
 
-    // Encode the full-res frame as JPEG via WIC.
-    if (EnsureWicFactory()) {
-        int w = static_cast<int>(frame.nc());
-        int h = static_cast<int>(frame.nr());
-        std::vector<BYTE> bgra(static_cast<size_t>(w) * h * 4);
-        for (int y = 0; y < h; y++) {
-            BYTE* row = bgra.data() + static_cast<size_t>(y) * w * 4;
-            for (int x = 0; x < w; x++) {
-                const auto& p = frame(y, x);
-                row[x * 4 + 0] = p.blue;
-                row[x * 4 + 1] = p.green;
-                row[x * 4 + 2] = p.red;
-                row[x * 4 + 3] = 255;
+    // Encode the full-res frame as JPEG via WIC. Create the factory per call
+    // (instead of caching it on the service): a cached WIC factory reused
+    // across consecutive calls crashed with an access violation (0xc0000005)
+    // inside the encoder on this SYSTEM-session machine — creating + releasing
+    // per call sidesteps whatever state the encoder keeps between uses.
+    {
+        IWICImagingFactory* wic = nullptr;
+        HRESULT wicHr = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+                                         CLSCTX_INPROC_SERVER,
+                                         IID_PPV_ARGS(&wic));
+        if (SUCCEEDED(wicHr) && wic) {
+            int w = static_cast<int>(frame.nc());
+            int h = static_cast<int>(frame.nr());
+            FACELOGIN_INFO(L"SaveUnknownFace: encoding %dx%d via WIC", w, h);
+            std::vector<BYTE> bgra(static_cast<size_t>(w) * h * 4);
+            for (int y = 0; y < h; y++) {
+                BYTE* row = bgra.data() + static_cast<size_t>(y) * w * 4;
+                for (int x = 0; x < w; x++) {
+                    const auto& p = frame(y, x);
+                    row[x * 4 + 0] = p.blue;
+                    row[x * 4 + 1] = p.green;
+                    row[x * 4 + 2] = p.red;
+                    row[x * 4 + 3] = 255;
+                }
             }
-        }
 
-        IWICBitmap* pBitmap = nullptr;
-        HRESULT hr = m_wicFactory->CreateBitmapFromMemory(
-            w, h, GUID_WICPixelFormat32bppBGR, w * 4,
-            static_cast<UINT>(bgra.size()), bgra.data(), &pBitmap);
-        if (SUCCEEDED(hr)) {
-            IWICBitmapEncoder* pEncoder = nullptr;
-            if (SUCCEEDED(m_wicFactory->CreateEncoder(GUID_ContainerFormatJpeg,
-                                                      nullptr, &pEncoder))) {
+            IWICBitmap* pBitmap = nullptr;
+            HRESULT hr = wic->CreateBitmapFromMemory(
+                w, h, GUID_WICPixelFormat32bppBGR, w * 4,
+                static_cast<UINT>(bgra.size()), bgra.data(), &pBitmap);
+            if (SUCCEEDED(hr)) {
+                IWICBitmapEncoder* pEncoder = nullptr;
+                if (SUCCEEDED(wic->CreateEncoder(GUID_ContainerFormatJpeg,
+                                                 nullptr, &pEncoder))) {
                 IStream* pStream = nullptr;
                 if (SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &pStream))) {
                     if (SUCCEEDED(pEncoder->Initialize(pStream, WICBitmapEncoderNoCache))) {
@@ -159,9 +172,12 @@ void FaceService::SaveUnknownFace(const dlib::matrix<dlib::rgb_pixel>& frame,
                 pEncoder->Release();
             }
             pBitmap->Release();
+            }
+            wic->Release();
         }
     }
 
+    FACELOGIN_INFO(L"SaveUnknownFace: jpg written, appending event");
     // Append the event record (JSONL): timestamp, reason, best distance, file.
     {
         // Filename is ASCII (digits/dashes/dots) — convert for the UTF-8 file.
@@ -1026,19 +1042,45 @@ bool FaceService::ProcessAuthRequest() {
             continue;
         }
 
-        // Embedding + match: ONNX (the only recognizer).
+        // Embedding + match: ONNX (the only recognizer). Light-robust
+        // fallback chain: if the ORIGINAL embedding misses, re-embed the same
+        // face under photometric corrections (white balance for color
+        // temperature shifts, brightness for exposure) and try again. This
+        // keeps recognition working when the ambient light changes between
+        // enrollment and unlock (dorm vs classroom) WITHOUT re-enrolling.
+        // Variant matches use a STRICTER threshold so the wider search space
+        // cannot loosen the stranger rejection.
+        constexpr float kVariantThreshold = 0.55f;
         auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
+        std::vector<float> emb1, emb2;   // kept for failure diagnostics
+        const char* matchedVariant = nullptr;
         if (!onnxEmb.empty()) {
-            // Pass the true dimensionality (512-D) so FindBestMatch compares
-            // against same-dimension stored embeddings only.
             match = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
+            if (match) matchedVariant = "orig";
+        }
+        if (!match) {
+            emb1 = m_onnxRecognizer->ComputeEmbedding(frame, landmarks,
+                                                      facelogin::LightVariant::WhiteBalance);
+            if (!emb1.empty()) {
+                match = m_store->FindBestMatch(emb1.data(), emb1.size(), kVariantThreshold);
+                if (match) matchedVariant = "wb";
+            }
+        }
+        if (!match) {
+            emb2 = m_onnxRecognizer->ComputeEmbedding(frame, landmarks,
+                                                      facelogin::LightVariant::Brightness);
+            if (!emb2.empty()) {
+                match = m_store->FindBestMatch(emb2.data(), emb2.size(), kVariantThreshold);
+                if (match) matchedVariant = "bright";
+            }
         }
 
         if (match) {
             consecutiveMatches++;
             consecutiveNoMatch = 0;   // a match resets the no-match counter
-            FACELOGIN_INFO(L"Face matched: %s (distance=%.4f) [%d/%d]",
+            FACELOGIN_INFO(L"Face matched: %s (distance=%.4f, variant=%hs) [%d/%d]",
                           match->username.c_str(), match->distance,
+                          matchedVariant ? matchedVariant : "?",
                           consecutiveMatches, CONSENSUS_FRAMES);
 
             if (consecutiveMatches < CONSENSUS_FRAMES) {
@@ -1051,6 +1093,17 @@ bool FaceService::ProcessAuthRequest() {
             // face-less frames or embedding failures.
             if (!onnxEmb.empty()) {
                 if (++consecutiveNoMatch >= kNoMatchFailFrames) {
+                    // Diagnostics: how far was each light variant from the
+                    // nearest enrolled face? Distinguishes "edge drift"
+                    // (0.55–0.9 → tuning may help) from "total mismatch"
+                    // (>1.0 → photometric correction insufficient).
+                    float d0 = m_store->FindNearestDistance(onnxEmb.data(), onnxEmb.size());
+                    float d1 = emb1.empty() ? -1.0f
+                                            : m_store->FindNearestDistance(emb1.data(), emb1.size());
+                    float d2 = emb2.empty() ? -1.0f
+                                            : m_store->FindNearestDistance(emb2.data(), emb2.size());
+                    FACELOGIN_WARN(L"No match for %d frames — nearest distances: orig=%.3f wb=%.3f bright=%.3f",
+                                   consecutiveNoMatch, d0, d1, d2);
                     FACELOGIN_INFO(L"No match for %d consecutive frames — reporting failure to CP",
                                    consecutiveNoMatch);
                     // Opt-in unknown-face capture: save the failing frame +
@@ -1287,6 +1340,22 @@ bool FaceService::ProcessAuthRequest() {
                         auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(verifyFrame, verifyLandmarks);
                         if (!onnxEmb.empty()) {
                             verifyMatch = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
+                        }
+                        // Same light-robust fallback chain as the recognition
+                        // loop (stricter threshold for variants).
+                        if (!verifyMatch) {
+                            auto e1 = m_onnxRecognizer->ComputeEmbedding(
+                                verifyFrame, verifyLandmarks, facelogin::LightVariant::WhiteBalance);
+                            if (!e1.empty()) {
+                                verifyMatch = m_store->FindBestMatch(e1.data(), e1.size(), kVariantThreshold);
+                            }
+                        }
+                        if (!verifyMatch) {
+                            auto e2 = m_onnxRecognizer->ComputeEmbedding(
+                                verifyFrame, verifyLandmarks, facelogin::LightVariant::Brightness);
+                            if (!e2.empty()) {
+                                verifyMatch = m_store->FindBestMatch(e2.data(), e2.size(), kVariantThreshold);
+                            }
                         }
 
                         if (verifyMatch) {

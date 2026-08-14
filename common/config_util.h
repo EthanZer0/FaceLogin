@@ -12,7 +12,13 @@ struct AppConfig {
     std::string    recognition_model      = "onnx";      // retained for compat
     std::string    detector               = "scrfd";     // retained for compat
     LivenessMethod liveness_method        = LivenessMethod::None;
-    float          match_threshold        = 0.65f;        // Euclidean distance; 0.45(strict)…1.15(loose)
+    // Euclidean distance; 0.45(strict)…1.15(loose). Default 0.75 (was 0.65):
+    // the 512-D model's same-person range measures 0.14–0.80, so 0.65 sat too
+    // close to the high end of real-user matches under illumination changes
+    // (dorm vs classroom drifted a user from ~0.3 to ~0.69 — right at 0.65,
+    // causing intermittent unlock failures). 0.75 keeps strangers (>0.94)
+    // comfortably rejected while covering realistic environment drift.
+    float          match_threshold        = 0.75f;
     float          anti_spoof_threshold   = 0.30f;       // DeepPixBiS pixel map threshold
     // Blink-detection mode. false (default) = CLASSIC stable algorithm (averaged
     // EAR + fixed threshold). true = GLASSES mode (adaptive per-eye baseline +

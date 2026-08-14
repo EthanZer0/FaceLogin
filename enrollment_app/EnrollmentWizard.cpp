@@ -18,6 +18,7 @@
 #include <sstream>
 #include <iomanip>
 #include <fstream>
+#include <algorithm>
 #include <chrono>
 
 #pragma comment(lib, "ole32.lib")
@@ -1914,6 +1915,141 @@ void EnrollmentWizard::LogDiagnostic(const std::string& message) {
     // Used to record frontend-side timing/stall events (卡90% 排查) that the
     // C++ logger otherwise can't see.
     FACELOGIN_INFO(L"[JS-DIAG] %hs", message.c_str());
+}
+
+// Minimal JSONL field extractor for the unknown-face events file (fields are
+// written by the service as flat "key":"value" / "key":number entries).
+static std::string JsonlField(const std::string& line, const std::string& key) {
+    std::string needle = "\"" + key + "\"";
+    auto pos = line.find(needle);
+    if (pos == std::string::npos) return "";
+    pos = line.find(':', pos + needle.size());
+    if (pos == std::string::npos) return "";
+    pos++;
+    while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) pos++;
+    if (pos < line.size() && line[pos] == '"') {
+        std::string val;
+        pos++;
+        while (pos < line.size() && line[pos] != '"') {
+            if (line[pos] == '\\' && pos + 1 < line.size()) {
+                val += line[pos + 1];
+                pos += 2;
+            } else {
+                val += line[pos++];
+            }
+        }
+        return val;
+    }
+    std::string val;
+    while (pos < line.size() &&
+           ((line[pos] >= '0' && line[pos] <= '9') || line[pos] == '.' || line[pos] == '-')) {
+        val += line[pos++];
+    }
+    return val;
+}
+
+std::string EnrollmentWizard::GetUnknownFaceEvents() {
+    // Read <dataDir>\data\unknown\events.jsonl and return only records whose
+    // JPEG still exists on disk (the service rolls the directory at 100 files,
+    // so the JSONL may reference deleted photos). Newest first.
+    std::wstring dir = m_dataDir + L"\\data\\unknown";
+
+    std::vector<std::string> jpgs;
+    WIN32_FIND_DATAW fd = {};
+    HANDLE hFind = FindFirstFileW((dir + L"\\*.jpg").c_str(), &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                char mb[MAX_PATH] = {};
+                WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, mb, MAX_PATH, nullptr, nullptr);
+                jpgs.push_back(mb);
+            }
+        } while (FindNextFileW(hFind, &fd));
+        FindClose(hFind);
+    }
+
+    std::ifstream f((dir + L"\\events.jsonl").c_str());
+    std::vector<std::string> records;   // raw lines that still have a photo
+    if (f) {
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.empty()) continue;
+            std::string file = JsonlField(line, "file");
+            if (file.empty()) continue;
+            if (std::find(jpgs.begin(), jpgs.end(), file) == jpgs.end()) continue;
+            records.push_back(line);
+        }
+    }
+
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = records.size(); i-- > 0;) {
+        const std::string& line = records[i];
+        if (i + 1 < records.size()) out << ",";   // not the first emitted (newest)
+        out << "{";
+        out << "\"ts\":\"" << JsonlField(line, "ts") << "\",";
+        out << "\"reason\":\"" << JsonlField(line, "reason") << "\",";
+        std::string dist = JsonlField(line, "bestDistance");
+        out << "\"distance\":" << (dist.empty() ? "-1" : dist) << ",";
+        out << "\"file\":\"" << JsonlField(line, "file") << "\"";
+        out << "}";
+    }
+    out << "]";
+    return out.str();
+}
+
+// Rewrite events.jsonl keeping only lines that do NOT reference the given
+// file (or all lines when file is empty — i.e. keep-everything is not used;
+// empty means "remove nothing" is handled by callers). Returns the lines kept.
+static void RewriteUnknownEvents(const std::wstring& dir,
+                                 const std::string& removeFile) {
+    std::wstring path = dir + L"\\events.jsonl";
+    std::vector<std::string> keep;
+    {
+        std::ifstream f(path.c_str());
+        if (f) {
+            std::string line;
+            while (std::getline(f, line)) {
+                if (line.empty()) continue;
+                std::string file = JsonlField(line, "file");
+                if (!removeFile.empty() && file == removeFile) continue;
+                keep.push_back(line);
+            }
+        }
+    }
+    std::ofstream out(path.c_str(), std::ios::trunc);
+    if (out) {
+        for (const auto& line : keep) out << line << "\n";
+    }
+}
+
+bool EnrollmentWizard::DeleteUnknownFace(const std::string& file) {
+    // Filenames are console-supplied ASCII from the events list — still guard
+    // against path traversal defensively.
+    if (file.empty() || file.find_first_of("/\\:") != std::string::npos) return false;
+
+    std::wstring dir = m_dataDir + L"\\data\\unknown";
+    std::wstring wfile(file.begin(), file.end());
+    if (!DeleteFileW((dir + L"\\" + wfile).c_str())) return false;
+
+    RewriteUnknownEvents(dir, file);
+    return true;
+}
+
+bool EnrollmentWizard::ClearUnknownFaces() {
+    std::wstring dir = m_dataDir + L"\\data\\unknown";
+    WIN32_FIND_DATAW fd = {};
+    HANDLE hFind = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            std::wstring n = fd.cFileName;
+            if (n == L"." || n == L"..") continue;
+            DeleteFileW((dir + L"\\" + n).c_str());
+        } while (FindNextFileW(hFind, &fd));
+        FindClose(hFind);
+    }
+    DeleteFileW((dir + L"\\events.jsonl").c_str());
+    return true;
 }
 
 std::string EnrollmentWizard::GetServiceLogLines() {

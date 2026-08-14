@@ -70,6 +70,23 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
         pf->Release();
     }
 
+    // Map the unknown-face capture folder to a virtual host so the log page
+    // can render photos with plain <img> tags (no base64 copies over COM).
+    // The host name is not exposed anywhere else; only this WebView can reach
+    // it, and only the capture folder (never the whole data dir).
+    if (self->m_wizard) {
+        std::wstring capDir = self->m_wizard->GetDataDir() + L"\\data\\unknown";
+        CreateDirectoryW(capDir.c_str(), nullptr);
+        // SetVirtualHostNameToFolderMapping lives on ICoreWebView2_3+.
+        ICoreWebView2_3* wv3 = nullptr;
+        if (SUCCEEDED(self->m_webview->QueryInterface(IID_PPV_ARGS(&wv3)))) {
+            wv3->SetVirtualHostNameToFolderMapping(
+                L"facelogin-captures", capDir.c_str(),
+                COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+            wv3->Release();
+        }
+    }
+
     // Settings
     ICoreWebView2Settings* settings = nullptr;
     self->m_webview->get_Settings(&settings);
@@ -336,6 +353,9 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"SetConfig")    *ids = 14;
     else if (n == L"GetLogLines")  *ids = 15;
     else if (n == L"GetServiceLogLines") *ids = 16;
+    else if (n == L"GetUnknownFaceEvents") *ids = 43;
+    else if (n == L"DeleteUnknownFace")   *ids = 44;
+    else if (n == L"ClearUnknownFaces")   *ids = 45;
     else if (n == L"ClearLog")     *ids = 17;
     else if (n == L"GetUserSid")   *ids = 18;
     else if (n == L"GetAccountType") *ids = 19;
@@ -374,6 +394,17 @@ static std::wstring OptionalArg(DISPPARAMS* p, UINT argIdx) {
     if (!p || p->cArgs < argIdx + 1) return L"";
     if (p->rgvarg[argIdx].vt != VT_BSTR) return L"";
     return std::wstring(p->rgvarg[argIdx].bstrVal);
+}
+
+// Same as OptionalArg but converted to UTF-8 (for file names).
+static std::string OptionalArgUtf8(DISPPARAMS* p, UINT argIdx) {
+    std::wstring ws = OptionalArg(p, argIdx);
+    if (ws.empty()) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return "";
+    std::string out(len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, &out[0], len, nullptr, nullptr);
+    return out;
 }
 
 static VARIANT MakeStr(const std::string& s) {
@@ -458,6 +489,15 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
         }
         case 15: if (res) *res = MakeStr(m_wizard->GetLogLines()); break;
         case 16: if (res) *res = MakeStr(m_wizard->GetServiceLogLines()); break;
+        case 43: if (res) *res = MakeStr(m_wizard->GetUnknownFaceEvents()); break;
+        case 44: {
+            // DeleteUnknownFace(file) — single unknown-face capture.
+            if (p->cArgs < 1) return DISP_E_BADPARAMCOUNT;
+            std::string file = OptionalArgUtf8(p, 0);
+            if (res) *res = MakeBool(m_wizard->DeleteUnknownFace(file));
+            break;
+        }
+        case 45: if (res) *res = MakeBool(m_wizard->ClearUnknownFaces()); break;
         case 17: m_wizard->ClearLog(); break;
         case 18: if (res) *res = MakeStr(m_wizard->GetUserSid()); break;
         case 19: if (res) *res = MakeStr(m_wizard->GetAccountType()); break;
