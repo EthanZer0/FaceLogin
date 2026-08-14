@@ -1816,6 +1816,10 @@ bool EnrollmentWizard::SetConfig(const std::string& json) {
         FACELOGIN_ERROR(L"Failed to save config.json");
         return false;
     }
+    // Mirror the cold-boot key-trigger choice to the registry — the
+    // credential provider (LogonUI) cannot read config.json reliably, so the
+    // registry is the CP↔Console channel for this behavior.
+    WriteRegDword(REGVAL_COLD_BOOT_KEY_TRIGGER, newConfig.cold_boot_key_trigger ? 1 : 0);
     m_config = newConfig;
     m_livenessMethod = newConfig.liveness_method;
     m_antiSpoofThreshold = newConfig.anti_spoof_threshold;

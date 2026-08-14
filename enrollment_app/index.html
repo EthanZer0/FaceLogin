@@ -930,6 +930,16 @@ button{font-family:inherit}
       </label>
     </div>
 
+    <div class="field">
+      <label class="check tip">
+        <input type="checkbox" id="cfg-coldboot-key">
+        <span class="cbx"></span>
+        <span>开机登录需按键触发人脸识别（默认关闭，开机自动识别）</span>
+        <span class="tip-ico">i</span>
+        <span class="tip-box">开启后，电脑开机进入登录界面时不会自动启动摄像头识别人脸，需按任意键后才开始识别（与锁屏解锁一致）。适合不希望开机时摄像头自动开启的用户。</span>
+      </label>
+    </div>
+
     <div class="field" id="field-antispoof-threshold" style="display:none">
       <label class="tip"><span>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.30</span></span><span class="tip-ico">i</span><span class="tip-box">阈值越低越宽松（容易通过），越高越严格（更难通过）。默认0.30。</span></label>
       <div class="range-wrap">
@@ -1549,6 +1559,7 @@ function loadSettings() {
     rngSync(document.getElementById('cfg-threshold'));
     rngSync(document.getElementById('cfg-antispoof-threshold'));
     document.getElementById('cfg-capture-unknown').checked = !!cfg.capture_unknown_faces;
+    document.getElementById('cfg-coldboot-key').checked = !!cfg.cold_boot_key_trigger;
   } catch(e) { showBanner('settings', '读取设置失败: ' + e.message, 'error'); }
   // Always reconcile the liveness-dependent fields with the current select
   // value, even if loading config failed above — so the glasses / anti-spoof
@@ -1570,6 +1581,7 @@ function onSaveSettings() {
     low_light_enhance: document.getElementById('cfg-low-light').checked,
     unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
     capture_unknown_faces: document.getElementById('cfg-capture-unknown').checked,
+    cold_boot_key_trigger: document.getElementById('cfg-coldboot-key').checked,
     camera_rotation: parseInt(document.getElementById('cfg-rotation').value) || 0,
     camera_device: document.getElementById('cfg-camera').value
   };

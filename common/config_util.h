@@ -44,6 +44,14 @@ struct AppConfig {
     // record. Stored under <dataDir>\data\unknown\ (JPEG, rolling 100 max).
     // OFF by default — captures non-user biometric data, opt-in only.
     bool           capture_unknown_faces  = false;
+    // Cold-boot (power-on login screen) behavior. false (default) = start
+    // face recognition immediately on boot (historical behavior). true =
+    // require a key press first, like the lock-screen unlock flow — for users
+    // who don't want the camera turning on automatically at boot.
+    // Mirrored to HKLM\SOFTWARE\FaceLogin\ColdBootKeyTrigger on SetConfig so
+    // the credential provider (LogonUI) can read it (it cannot reach the
+    // config.json file reliably).
+    bool           cold_boot_key_trigger  = false;
 };
 
 AppConfig LoadConfig(const std::wstring& dataDir);

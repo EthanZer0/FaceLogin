@@ -3,6 +3,7 @@
 #include "resource.h"
 #include "../common/logger.h"
 #include "../common/ipc_protocol.h"
+#include "../common/registry_util.h"
 #include <wincred.h>
 #include <ntstatus.h>
 #include <ntsecapi.h>
@@ -215,6 +216,18 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         return S_OK;
     }
 
+    // Failed (no match / timeout): do NOT auto-restart authentication on
+    // re-enumeration. OnPipeResponse → TriggerReEnumeration → Advise would
+    // otherwise loop forever on the lock screen: the camera keeps turning
+    // on, and every re-enumeration resets the password field the user is
+    // typing into (password box keeps getting cleared/selected). The user
+    // retries explicitly by clicking the FaceLogin tile (SetSelected), or
+    // just uses the password.
+    if (m_state == State::Failed) {
+        FACELOGIN_INFO(L"Advise: failed state — skipping auth restart (user must re-select the tile)");
+        return S_OK;
+    }
+
     // Cold boot: start auth immediately.
     // CredUI (Windows Security dialog, e.g. Settings password change,
     // Edge password viewing): use the same input-polling flow as unlock.
@@ -232,8 +245,24 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     FACELOGIN_INFO(L"Advise: coldBoot=%d, credUI=%d, m_pProvider=%p",
                   coldBoot, credUI, m_pProvider);
     if (coldBoot) {
-        FACELOGIN_INFO(L"Advise: cold boot — starting auth immediately");
-        StartAuth();
+        // Cold boot: normally start auth immediately (no key press). With the
+        // "开机登录需按键触发" setting enabled, behave like the lock-screen
+        // flow instead: wait for a key press (input-detection thread). The
+        // setting reaches us via the registry mirror (Console SetConfig writes
+        // it; LogonUI cannot read config.json reliably).
+        if (ReadRegDword(REGVAL_COLD_BOOT_KEY_TRIGGER, 0) != 0) {
+            FACELOGIN_INFO(L"Advise: cold boot + key-trigger enabled — waiting for key press");
+            m_state = State::Waiting;
+            m_waitingStartTick = GetTickCount();
+            StartInputDetectionThread();
+            if (m_pCredentialEvents) {
+                m_pCredentialEvents->SetFieldString(
+                    this, 1, L"\u6309\u4e0b\u4efb\u610f\u952e\u4ee5\u5f00\u59cb\u4eba\u8138\u8bc6\u522b");
+            }
+        } else {
+            FACELOGIN_INFO(L"Advise: cold boot — starting auth immediately");
+            StartAuth();
+        }
     } else {
         // Unlock / switch user. Probe the service up-front so a down service
         // surfaces immediately ("service not running") instead of showing
@@ -287,6 +316,39 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
     bool coldBoot = m_pProvider ? m_pProvider->IsColdBoot() : true;
     bool credUI = m_pProvider ? m_pProvider->IsCredUI() : false;
 
+    // Failed state + the tile is (re)selected: this only happens on an
+    // explicit user click — unlike Advise, which is invoked by LogonUI's
+    // re-enumeration (where auto-restart would loop forever). Restart auth
+    // as the user's explicit retry intent.
+    if (m_state == State::Failed) {
+        FACELOGIN_INFO(L"SetSelected: failed state — user re-selected the tile, restarting auth");
+        StartAuth();
+    } else if (m_state == State::Waiting && !m_inputThreadRunning) {
+        if (coldBoot && ReadRegDword(REGVAL_COLD_BOOT_KEY_TRIGGER, 0) == 0) {
+            // Cold boot WITHOUT key-trigger: re-selecting the tile on the
+            // login screen is the intent to use face login — restart the
+            // automatic recognition (no input-detection thread exists here).
+            FACELOGIN_INFO(L"SetSelected: cold boot + waiting — restarting automatic auth");
+            StartAuth();
+        } else {
+            // Key-triggered (cold boot with the setting, or lock screen):
+            // user switched BACK to the face tile after SetDeselected stopped
+            // everything — restart the input-detection thread so a key press
+            // starts recognition again.
+            FACELOGIN_INFO(L"SetSelected: user re-selected the tile — restarting input detection");
+            m_waitingStartTick = GetTickCount();
+            StartInputDetectionThread();
+            // LogonUI may still show the stale "识别中..." pushed earlier via
+            // SetFieldString — repush the Waiting text (and clear the residual
+            // status string so nothing else reads it).
+            m_statusText.clear();
+            if (m_pCredentialEvents) {
+                m_pCredentialEvents->SetFieldString(
+                    this, 1, L"\u6309\u4e0b\u4efb\u610f\u952e\u4ee5\u5f00\u59cb\u4eba\u8138\u8bc6\u522b");
+            }
+        }
+    }
+
     if (coldBoot) {
         // Cold boot: always poll GetSerialization for credentials.
         *pbAutoLogon = TRUE;
@@ -307,6 +369,25 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
 
 STDMETHODIMP FaceLoginCredential::SetDeselected() {
     FACELOGIN_INFO(L"=== SetDeselected called (state=%d) ===", static_cast<int>(m_state));
+
+    // The user moved to ANOTHER tile (e.g. the password tile) — stop
+    // everything face-related so recognition can neither fire off a password
+    // keystroke nor keep the camera/pipe busy while the user types elsewhere:
+    //   1. Stop the input-detection thread (a key press while typing the
+    //      password must NOT start recognition).
+    //   2. Cancel any in-flight auth: disconnecting the pipe makes the service
+    //      notice the client went away and abort + release the camera.
+    //   3. Reset to Waiting ONLY when an auth was actually cancelled, so a
+    //      later re-selection (SetSelected) restarts the flow cleanly.
+    //      A FAILED state is left untouched: the failure text stays visible
+    //      and re-selecting the tile (SetSelected) is the explicit retry.
+    StopInputDetectionThread();
+    if (m_state == State::Authenticating && m_pipeClient) {
+        FACELOGIN_INFO(L"SetDeselected: cancelling in-flight auth (user switched tiles)");
+        m_pipeClient->Disconnect();
+        m_pipeClient.reset();
+        m_state = State::Waiting;
+    }
     return S_OK;
 }
 
@@ -896,6 +977,16 @@ void FaceLoginCredential::OnPipeStatus(const std::wstring& message) {
 }
 
 void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& message) {
+    // Ignore LATE results: if the auth was cancelled in the meantime
+    // (SetDeselected — user switched to another tile), the read thread may
+    // still deliver a terminal message after Disconnect. Applying it would
+    // overwrite the Waiting state and make a later tile re-selection auto-
+    // restart auth (camera flashes on/off while the user just browses tiles).
+    if (m_state != State::Authenticating) {
+        FACELOGIN_INFO(L"OnPipeResponse: auth no longer active (state=%d) — ignoring late result",
+                       static_cast<int>(m_state));
+        return;
+    }
     if (success) {
         auto result = facelogin::ipc::ParseAuthMessage(message);
 

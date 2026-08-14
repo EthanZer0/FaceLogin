@@ -11,6 +11,10 @@ const wchar_t REGVAL_DATA_PATH[]   = L"DataPath";
 const wchar_t REGVAL_INSTALL_PATH[] = L"InstallPath";
 const wchar_t REGVAL_USER_LOGGED_IN[] = L"UserLoggedIn";
 const wchar_t REGVAL_SERVICE_START_UPTIME[] = L"ServiceStartUptime";
+// Mirrored from config.cold_boot_key_trigger by the Console's SetConfig so
+// the credential provider (running inside LogonUI, which cannot reach
+// config.json reliably) knows whether cold-boot recognition needs a key press.
+const wchar_t REGVAL_COLD_BOOT_KEY_TRIGGER[] = L"ColdBootKeyTrigger";
 
 // Read a REG_SZ value from HKLM\SOFTWARE\FaceLogin.
 // Returns defaultValue if the key/value is missing or not a string.
