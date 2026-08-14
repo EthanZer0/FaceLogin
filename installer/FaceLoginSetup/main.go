@@ -72,7 +72,11 @@ func main() {
 	// in memory on load, no re-enrollment required.
 	// v1.4.0: no forced config overrides needed. Removed the unused legacy dlib
 	// models (recognizer + HOG detector) — smaller installer, no re-enrollment.
-	internal.ConfigUpgradeEnabled = false
+	//
+	// v1.8.0: match_threshold 0.65 → 0.75 (illumination-drift fix). NOTE: this
+	// assignment OVERRIDES the config.go default — keep the two in sync and
+	// set BOTH back to false in later releases.
+	internal.ConfigUpgradeEnabled = true
 
 	// =========================================================================
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
