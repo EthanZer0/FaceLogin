@@ -19,18 +19,18 @@ import (
 // The switch defaults to OFF. Each release that needs an upgrade action must
 // explicitly turn it on — this is the "custom action area" that can be
 // enabled/disabled per version.
-var ConfigUpgradeEnabled = false
+//
+// v1.8.0: ON — match_threshold 0.65 → 0.75 (the 512-D model's same-person
+// range measures 0.14–0.80; 0.65 sat too close to the high end of real-user
+// matches under illumination changes, causing intermittent unlock failures —
+// 0.75 keeps strangers >0.94 comfortably rejected). Existing installs must be
+// force-synced; new installs get it from the fresh-default below. LATER
+// RELEASES MUST SET THIS BACK TO false.
+var ConfigUpgradeEnabled = true
 
 // ConfigUpgradeForcedDefaults lists the keys force-synced to these values
 // when ConfigUpgradeEnabled is true. Keys NOT listed here are preserved
 // verbatim on upgrade.
-//
-// v1.8.0: match_threshold 0.65 → 0.75 (the 512-D model's same-person range
-// measures 0.14–0.80; 0.65 sat too close to the high end of real-user matches
-// under illumination changes, causing intermittent unlock failures — 0.75
-// keeps strangers >0.94 comfortably rejected). Existing installs must be
-// force-synced; new installs get it from the fresh-default below.
-var ConfigUpgradeEnabled = true
 var ConfigUpgradeForcedDefaults = map[string]any{
 	"match_threshold": 0.75,
 }
