@@ -5,6 +5,7 @@
 #include "../common/registry_util.h"
 #include "../common/config_util.h"
 #include "../common/image_utils.h"
+#include "../common/account_identity.h"
 #include <comdef.h>
 #include <shlobj.h>
 #include <wincodec.h>
@@ -46,38 +47,15 @@ static std::wstring Utf8ToWstr(const std::string& s) {
 // profile, or an MSA that was later converted to local. Adopting one of
 // those emails mislabels the account as MSA and poisons the stored record,
 // which produced bug1's perpetual false "账号身份已变更" prompt. All
-// MSA/local decisions must route through GetSessionUpn().
-// ---------------------------------------------------------------------------
+// MSA/local decisions must route through the shared GetLinkedAccountUpn()
+// (account_identity.cpp): it tries the direct UPN first, then falls back to
+// the MicrosoftAccount shadow SID (S-1-11-96-*) in the token's group list —
+// a local account LINKED to an MSA reports no UPN but still carries the
+// shadow SID, and a UPN-only check would mislabel it as local (the 1.6.1
+// fix that Console must also use).
 static std::wstring GetSessionUpn() {
     std::wstring upn;
-    HMODULE hSecur32 = LoadLibraryW(L"secur32.dll");
-    if (!hSecur32) return upn;
-    typedef BOOLEAN (WINAPI *PFN_GetUserNameExW)(int, LPWSTR, PULONG);
-    auto pfn = reinterpret_cast<PFN_GetUserNameExW>(
-        GetProcAddress(hSecur32, "GetUserNameExW"));
-    if (pfn) {
-        // GetUserNameExW returns ERROR_INSUFFICIENT_BUFFER (122) and writes
-        // the REQUIRED size (in wchar, INCLUDING the terminator) back into
-        // *upnSize when the buffer is too small. A single 256-char probe
-        // would silently drop over-long UPNs (very long domains / AD UPNs),
-        // mislabeling the account as local — the same class of bug as
-        // docs/todo.md bug1, just the symmetric case. Retry once with the
-        // required size; ERROR_NONE_MAPPED (1332, local accounts) leaves
-        // upn empty as intended.
-        ULONG upnSize = 256;
-        std::vector<wchar_t> upnBuf(upnSize);
-        if (!pfn(8 /* NameUserPrincipal */, upnBuf.data(), &upnSize)) {
-            if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && upnSize > 0) {
-                upnBuf.resize(upnSize);
-                if (pfn(8 /* NameUserPrincipal */, upnBuf.data(), &upnSize)) {
-                    upn = upnBuf.data();
-                }
-            }
-        } else {
-            upn = upnBuf.data();
-        }
-    }
-    FreeLibrary(hSecur32);
+    GetLinkedAccountUpn(upn);
     return upn;
 }
 
@@ -1782,7 +1760,7 @@ std::string EnrollmentWizard::GetCameraList() {
 
 // Console version — bump with each release. Used to decide whether to show the
 // About-card star hint again (it reappears on every new version).
-static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.7.0";
+static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.7.1";
 // Registry value holding the version the user last saw the About card at.
 static const wchar_t REGVAL_ABOUT_SEEN_VERSION[] = L"AboutSeenVersion";
 

@@ -2159,7 +2159,7 @@ function clearLogs() {
 // of truth for the version string (no hardcoded duplicates to bump per
 // release). In a browser preview there is no host, so fall back to a fixed
 // default so the layout still renders.
-var CONSOLE_VERSION = '1.7.0';
+var CONSOLE_VERSION = '1.7.1';
 function consoleVersion() {
   try { if (H.GetConsoleVersion) { var v = H.GetConsoleVersion(); if (v) return v; } } catch (e) {}
   return CONSOLE_VERSION;
