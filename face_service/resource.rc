@@ -1,8 +1,8 @@
-// FaceLoginService version resource (1.7.0)
+﻿// FaceLoginService version resource (1.8.0)
 #include <windows.h>
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,7,0,0
-PRODUCTVERSION  1,7,0,0
+FILEVERSION     1,8,0,0
+PRODUCTVERSION  1,8,0,0
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0
 FILEOS          VOS_NT_WINDOWS32

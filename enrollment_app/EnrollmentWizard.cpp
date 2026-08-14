@@ -1,4 +1,4 @@
-#include "EnrollmentWizard.h"
+﻿#include "EnrollmentWizard.h"
 #include "../common/logger.h"
 #include "../common/dpapi_util.h"
 #include "../common/ipc_protocol.h"
@@ -1761,7 +1761,7 @@ std::string EnrollmentWizard::GetCameraList() {
 
 // Console version — bump with each release. Used to decide whether to show the
 // About-card star hint again (it reappears on every new version).
-static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.7.0";
+static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.8.0";
 // Registry value holding the version the user last saw the About card at.
 static const wchar_t REGVAL_ABOUT_SEEN_VERSION[] = L"AboutSeenVersion";
 

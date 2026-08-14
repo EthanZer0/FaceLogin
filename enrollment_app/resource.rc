@@ -1,4 +1,4 @@
-#include <windows.h>
+﻿#include <windows.h>
 #include <commctrl.h>
 #include "resource.h"
 
@@ -7,8 +7,8 @@ IDI_ENROLLMENT_ICON ICON "..\\assets\\facelogin.ico"
 
 // Version info
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,7,0,0
-PRODUCTVERSION  1,7,0,0
+FILEVERSION     1,8,0,0
+PRODUCTVERSION  1,8,0,0
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0
 FILEOS          VOS_NT_WINDOWS32
