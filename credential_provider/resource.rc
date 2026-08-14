@@ -1,4 +1,4 @@
-﻿#include <initguid.h>
+#include <initguid.h>
 #include <credentialprovider.h>
 #include "resource.h"
 
@@ -18,12 +18,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "FaceLogin"
             VALUE "FileDescription", "FaceLogin Credential Provider"
-            VALUE "FileVersion", "1.7.0.0"
+            VALUE "FileVersion", "1.8.0.0"
             VALUE "InternalName", "FaceLoginCredentialProvider.dll"
             VALUE "LegalCopyright", "Copyright (C) 2026"
             VALUE "OriginalFilename", "FaceLoginCredentialProvider.dll"
             VALUE "ProductName", "FaceLogin"
-            VALUE "ProductVersion", "1.7.0.0"
+            VALUE "ProductVersion", "1.8.0.0"
         END
     END
     BLOCK "VarFileInfo"

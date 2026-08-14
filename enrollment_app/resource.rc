@@ -1,4 +1,4 @@
-ï»¿#include <windows.h>
+#include <windows.h>
 #include <commctrl.h>
 #include "resource.h"
 
@@ -21,12 +21,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "FaceLogin"
             VALUE "FileDescription", "FaceLogin Console"
-            VALUE "FileVersion", "1.7.0.0"
+            VALUE "FileVersion", "1.8.0.0"
             VALUE "InternalName", "FaceLoginConsole.exe"
             VALUE "LegalCopyright", "Copyright (C) 2026"
             VALUE "OriginalFilename", "FaceLoginConsole.exe"
             VALUE "ProductName", "FaceLogin"
-            VALUE "ProductVersion", "1.7.0.0"
+            VALUE "ProductVersion", "1.8.0.0"
         END
     END
     BLOCK "VarFileInfo"
@@ -36,7 +36,7 @@ BEGIN
 END
 
 // ============================================================================
-// Page 1: Face Capture â€” 560 x 370
+// Page 1: Face Capture ¡ª 560 x 370
 // ============================================================================
 IDD_PAGE_FACE DIALOGEX 0, 0, 560, 370
 STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
@@ -52,7 +52,7 @@ BEGIN
 END
 
 // ============================================================================
-// Page 2: Password â€” 440 x 220
+// Page 2: Password ¡ª 440 x 220
 // ============================================================================
 IDD_PAGE_PASSWORD DIALOGEX 0, 0, 440, 220
 STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
@@ -71,6 +71,6 @@ BEGIN
 END
 
 // ============================================================================
-// HTML resource â€” embedded index.html
+// HTML resource ¡ª embedded index.html
 // ============================================================================
 IDR_INDEX_HTML RCDATA "index.html"
