@@ -228,48 +228,37 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         return S_OK;
     }
 
-    // Cold boot: start auth immediately.
-    // CredUI (Windows Security dialog, e.g. Settings password change,
-    // Edge password viewing): use the same input-polling flow as unlock.
-    // Auto-triggering would prematurely close the CredUI dialog for
-    // multi-step workflows like PIN change or fingerprint enrollment.
-    // The 2000ms threshold filters out clicks on the dialog's own UI.
-    // Unlock / switch user: start a background thread that polls
-    // GetLastInputInfo() for new keyboard/mouse input. When input
-    // is detected, the thread calls StartAuth() which connects the
-    // pipe asynchronously. The pipe callback stores credentials and
-    // triggers CredentialsChanged(), causing LogonUI to re-enumerate
-    // and call GetSerialization() to retrieve ready credentials.
+    // Camera/auth activation is deferred entirely to SetSelected() — the
+    // tile only starts recognition (or the input-detection thread) when
+    // LogonUI actually SELECTS our tile.
+    //
+    // Why: Advise is invoked for EVERY credential enumeration, including
+    // flows that never intend to use our tile:
+    //   - MSA PIN-reset wizard reuses the LogonUI CP enumeration: any key
+    //     press / click inside the wizard was treated as "new input" by the
+    //     input-detection thread → StartAuth → the camera kept turning on,
+    //     the wizard got interrupted and PIN setup failed ("PIN 不可用").
+    //   - Typing on the password/PIN tile: SetDeselected stops the thread,
+    //     but there was a race window after LogonUI switched tiles where
+    //     the camera could still fire once.
+    // SetSelected is only called for OUR tile, so deferring activation is
+    // exact — no guessing about which UI flow loaded us.
     bool coldBoot = m_pProvider ? m_pProvider->IsColdBoot() : true;
     bool credUI = m_pProvider ? m_pProvider->IsCredUI() : false;
     FACELOGIN_INFO(L"Advise: coldBoot=%d, credUI=%d, m_pProvider=%p",
                   coldBoot, credUI, m_pProvider);
-    if (coldBoot) {
-        // Cold boot: normally start auth immediately (no key press). With the
-        // "开机登录需按键触发" setting enabled, behave like the lock-screen
-        // flow instead: wait for a key press (input-detection thread). The
-        // setting reaches us via the registry mirror (Console SetConfig writes
-        // it; LogonUI cannot read config.json reliably).
-        if (ReadRegDword(REGVAL_COLD_BOOT_KEY_TRIGGER, 0) != 0) {
-            FACELOGIN_INFO(L"Advise: cold boot + key-trigger enabled — waiting for key press");
-            m_state = State::Waiting;
-            m_waitingStartTick = GetTickCount();
-            StartInputDetectionThread();
-            if (m_pCredentialEvents) {
-                m_pCredentialEvents->SetFieldString(
-                    this, 1, L"\u6309\u4e0b\u4efb\u610f\u952e\u4ee5\u5f00\u59cb\u4eba\u8138\u8bc6\u522b");
-            }
-        } else {
-            FACELOGIN_INFO(L"Advise: cold boot — starting auth immediately");
-            StartAuth();
-        }
-    } else {
-        // Unlock / switch user. Probe the service up-front so a down service
-        // surfaces immediately ("service not running") instead of showing
-        // "press any key" and only revealing the failure after the user presses
-        // (and the connect retry times out ~5s later).
+
+    m_state = State::Waiting;
+    m_waitingStartTick = GetTickCount();
+    FACELOGIN_INFO(L"Advise: baseline tick = %lu", m_waitingStartTick);
+
+    if (!coldBoot) {
+        // Unlock / switch user / PIN wizard: probe the service up-front so a
+        // down service surfaces immediately ("service not running") instead
+        // of revealing the failure only after the user presses a key. This
+        // only tests the pipe — it never touches the camera.
         if (!facelogin::PipeClient::ProbeServiceAvailable()) {
-            FACELOGIN_WARN(L"Advise: service pipe missing at lock time — showing service-not-running notice");
+            FACELOGIN_WARN(L"Advise: service pipe missing — showing service-not-running notice");
             m_statusText = L"人脸识别服务未运行，请检查 FaceLoginService";
             m_state = State::Error;
             if (m_pCredentialEvents) {
@@ -277,12 +266,6 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
             }
             return S_OK;
         }
-
-        FACELOGIN_INFO(L"Advise: unlock scenario — starting input detection thread");
-        m_state = State::Waiting;
-        m_waitingStartTick = GetTickCount();
-        FACELOGIN_INFO(L"Advise: baseline tick = %lu", m_waitingStartTick);
-        StartInputDetectionThread();
     }
 
     FACELOGIN_INFO(L"=== Advise EXIT (state=%d) ===", static_cast<int>(m_state));
