@@ -249,7 +249,7 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
     IMFMediaType* pBestNative = nullptr;
     UINT32 bestW = 0, bestH = 0;
     bool bestIsNV12 = false;
-    UINT32 mjpgW = 0, mjpgH = 0;   // last-resort MJPEG size
+    UINT32 mjpgW = 0, mjpgH = 0;   // best (largest) MJPEG size
 
     for (DWORD i = 0; ; ++i) {
         IMFMediaType* pNative = nullptr;
@@ -268,33 +268,27 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
             bestW = w; bestH = h; bestIsNV12 = true;
             break;                   // NV12 is the best possible outcome
         }
+        // MJPEG is preferred over uncompressed YUY2 on USB 2.0 cameras:
+        // 720p YUY2 needs ~54MB/s — above the ~40MB/s USB 2.0 budget — so
+        // many built-in webcams drop to ~5fps. MJPEG streams the same frame
+        // compressed (~0.2MB), the SourceReader decodes it to YUY2 for us,
+        // and 720p30 is comfortably reached. Track the largest MJPG size.
+        if (subtype == MFVideoFormat_MJPG && w * h > mjpgW * mjpgH) {
+            mjpgW = w; mjpgH = h;
+            pNative->Release();
+            continue;
+        }
         if (subtype == MFVideoFormat_YUY2 && !pBestNative) {
             pBestNative = pNative;   // transfer ownership; keep scanning for NV12
             bestW = w; bestH = h; bestIsNV12 = false;
             continue;
         }
-        if (subtype == MFVideoFormat_MJPG && !mjpgW) {
-            mjpgW = w; mjpgH = h;
-        }
         pNative->Release();
     }
 
-    if (pBestNative) {
-        hr = m_pReader->SetCurrentMediaType(
-            MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, pBestNative);
-        if (SUCCEEDED(hr)) {
-            m_isNV12 = bestIsNV12;
-            m_width = static_cast<int>(bestW);
-            m_height = static_cast<int>(bestH);
-            pBestNative->Release();
-            FACELOGIN_INFO(L"Camera configured for %s %dx%d",
-                           m_isNV12 ? L"NV12" : L"YUY2", m_width, m_height);
-            return true;
-        }
-        pBestNative->Release();
-    }
-
-    // Camera only offers compressed MJPEG: ask the reader to decode it to YUY2.
+    // Camera offers MJPEG: ask the reader to decode it to YUY2. Doing this
+    // BEFORE the uncompressed-YUY2 fallback keeps the USB transfer compressed
+    // and the effective frame rate at 30fps.
     if (mjpgW) {
         IMFMediaType* pYuy2 = nullptr;
         hr = MFCreateMediaType(&pYuy2);
@@ -313,8 +307,22 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
             FACELOGIN_INFO(L"MJPEG camera decoding to YUY2 %dx%d", m_width, m_height);
             return true;
         }
-        FACELOGIN_ERROR(L"MJPEG camera: failed to configure YUY2 decode output (0x%08X)", hr);
-        return false;
+        FACELOGIN_WARN(L"MJPEG camera: YUY2 decode output failed (0x%08X), falling back", hr);
+    }
+
+    if (pBestNative) {
+        hr = m_pReader->SetCurrentMediaType(
+            MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, pBestNative);
+        if (SUCCEEDED(hr)) {
+            m_isNV12 = bestIsNV12;
+            m_width = static_cast<int>(bestW);
+            m_height = static_cast<int>(bestH);
+            pBestNative->Release();
+            FACELOGIN_INFO(L"Camera configured for %s %dx%d",
+                           m_isNV12 ? L"NV12" : L"YUY2", m_width, m_height);
+            return true;
+        }
+        pBestNative->Release();
     }
 
     FACELOGIN_ERROR(L"No supported camera format (NV12/YUY2/MJPEG)");
