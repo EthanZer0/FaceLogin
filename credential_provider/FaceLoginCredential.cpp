@@ -220,11 +220,14 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // re-enumeration. OnPipeResponse → TriggerReEnumeration → Advise would
     // otherwise loop forever on the lock screen: the camera keeps turning
     // on, and every re-enumeration resets the password field the user is
-    // typing into (password box keeps getting cleared/selected). The user
-    // retries explicitly by clicking the FaceLogin tile (SetSelected), or
-    // just uses the password.
+    // typing into (password box keeps getting cleared/selected). Instead,
+    // restart the input-detection thread so the NEXT key press retries —
+    // that is the user's expected retry path (clicking the tile also
+    // retries via SetSelected).
     if (m_state == State::Failed) {
-        FACELOGIN_INFO(L"Advise: failed state — skipping auth restart (user must re-select the tile)");
+        FACELOGIN_INFO(L"Advise: failed state — restarting input detection (key press retries)");
+        m_waitingStartTick = GetTickCount();
+        StartInputDetectionThread();
         return S_OK;
     }
 
