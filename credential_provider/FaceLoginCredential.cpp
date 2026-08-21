@@ -323,41 +323,43 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
     bool coldBoot = m_pProvider ? m_pProvider->IsColdBoot() : true;
     bool credUI = m_pProvider ? m_pProvider->IsCredUI() : false;
 
-    // Failed state + the tile is (re)selected: this only happens on an
-    // explicit user click — unlike Advise, which is invoked by LogonUI's
-    // re-enumeration (where auto-restart would loop forever). Restart auth
-    // as the user's explicit retry intent.
+    // Activation model (user-specified):
+    //   - ONLY the cold-boot entry triggers auth automatically — and that is
+    //     done in Advise() (autoLogon=TRUE means LogonUI never calls
+    //     SetSelected for it). The "开机启动需按键触发" setting only governs
+    //     that FIRST automatic trigger.
+    //   - Every later activation — re-selecting the tile after switching away,
+    //     or retrying after a failure/timeout — must wait for a key press.
+    //     So SetSelected NEVER starts auth directly; it only (re)starts the
+    //     input-detection thread. This matches the lock-screen behavior the
+    //     user already relies on (switch back → press any key).
     if (m_state == State::Failed) {
-        FACELOGIN_INFO(L"SetSelected: failed state — user re-selected the tile, restarting auth");
-        StartAuth();
+        // Failed (no match / timeout) + tile re-selected: start waiting for a
+        // key press to retry. Never auto-restart — the failed text stays
+        // visible and the next key press is the explicit retry.
+        FACELOGIN_INFO(L"SetSelected: failed state — restarting input detection (key press retries)");
+        m_waitingStartTick = GetTickCount();
+        StartInputDetectionThread();
     } else if (m_state == State::Waiting && !m_inputThreadRunning) {
-        if (coldBoot && ReadRegDword(REGVAL_COLD_BOOT_KEY_TRIGGER, 0) == 0) {
-            // Cold boot WITHOUT key-trigger: re-selecting the tile on the
-            // login screen is the intent to use face login — restart the
-            // automatic recognition (no input-detection thread exists here).
-            FACELOGIN_INFO(L"SetSelected: cold boot + waiting — restarting automatic auth");
-            StartAuth();
-        } else {
-            // Key-triggered (cold boot with the setting, or lock screen):
-            // user switched BACK to the face tile after SetDeselected stopped
-            // everything — restart the input-detection thread so a key press
-            // starts recognition again.
-            FACELOGIN_INFO(L"SetSelected: user re-selected the tile — restarting input detection");
-            m_waitingStartTick = GetTickCount();
-            StartInputDetectionThread();
-            // LogonUI may still show the stale "识别中..." pushed earlier via
-            // SetFieldString — repush the Waiting text (and clear the residual
-            // status string so nothing else reads it).
-            m_statusText.clear();
-            if (m_pCredentialEvents) {
-                m_pCredentialEvents->SetFieldString(
-                    this, 1, L"\u6309\u4e0b\u4efb\u610f\u952e\u4ee5\u5f00\u59cb\u4eba\u8138\u8bc6\u522b");
-            }
+        // Waiting + (re)selected — either the initial selection after a cold
+        // boot that did NOT auto-start (key-trigger on), or the user switched
+        // back to the face tile after SetDeselected stopped everything.
+        // Either way: start the input-detection thread and require a key press.
+        FACELOGIN_INFO(L"SetSelected: tile selected — starting input detection (key press starts auth)");
+        m_waitingStartTick = GetTickCount();
+        StartInputDetectionThread();
+        // Repush the Waiting text (clears any residual "识别中..." / stale text)
+        m_statusText.clear();
+        if (m_pCredentialEvents) {
+            m_pCredentialEvents->SetFieldString(
+                this, 1, L"\u6309\u4e0b\u4efb\u610f\u952e\u4ee5\u5f00\u59cb\u4eba\u8138\u8bc6\u522b");
         }
     }
 
     if (coldBoot) {
         // Cold boot: always poll GetSerialization for credentials.
+        // (Advise already started auth; if the tile is re-selected while
+        // Waiting, GetSerialization returns S_OK until a key press starts it.)
         *pbAutoLogon = TRUE;
     } else if (m_state == State::Ready) {
         // Unlock / CredUI + credentials ready (bg thread finished auth):
