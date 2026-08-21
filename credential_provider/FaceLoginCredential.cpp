@@ -252,11 +252,32 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     m_waitingStartTick = GetTickCount();
     FACELOGIN_INFO(L"Advise: baseline tick = %lu", m_waitingStartTick);
 
-    if (!coldBoot) {
-        // Unlock / switch user / PIN wizard: probe the service up-front so a
-        // down service surfaces immediately ("service not running") instead
-        // of revealing the failure only after the user presses a key. This
-        // only tests the pipe — it never touches the camera.
+    if (coldBoot) {
+        // Cold boot: start auth HERE, not in SetSelected. With autoLogon=TRUE
+        // (GetCredentialCount), LogonUI polls GetSerialization directly and
+        // does NOT call SetSelected — deferring cold-boot activation to
+        // SetSelected left the login screen stuck at "press any key" with no
+        // input-detection thread running (1.8.0 regression, user report).
+        // StartAuth is idempotent (skips if already connected) and the
+        // input-detection thread guards on m_inputThreadRunning, so a
+        // concurrent SetSelected is harmless.
+        if (ReadRegDword(REGVAL_COLD_BOOT_KEY_TRIGGER, 0) != 0) {
+            FACELOGIN_INFO(L"Advise: cold boot + key-trigger enabled — waiting for key press");
+            StartInputDetectionThread();
+            if (m_pCredentialEvents) {
+                m_pCredentialEvents->SetFieldString(
+                    this, 1, L"\u6309\u4e0b\u4efb\u610f\u952e\u4ee5\u5f00\u59cb\u4eba\u8138\u8bc6\u522b");
+            }
+        } else {
+            FACELOGIN_INFO(L"Advise: cold boot — starting auth immediately");
+            StartAuth();
+        }
+    } else {
+        // Non-cold-boot (unlock / switch user / PIN-reset wizard): keep
+        // activation deferred to SetSelected. LogonUI calls SetSelected for
+        // the default-selected tile here, while flows that never select our
+        // tile (MSA PIN-reset wizard, typing on the PIN/password tile) never
+        // start the camera — that was the PIN-unavailable fix.
         if (!facelogin::PipeClient::ProbeServiceAvailable()) {
             FACELOGIN_WARN(L"Advise: service pipe missing — showing service-not-running notice");
             m_statusText = L"人脸识别服务未运行，请检查 FaceLoginService";
