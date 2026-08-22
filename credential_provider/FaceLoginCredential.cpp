@@ -721,6 +721,14 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
             // "人脸识别成功" and a resubmission loop otherwise. ReportResult
             // drives the real outcome (success → done; failure → Failed).
             m_state = State::Submitted;
+            // Push the status text NOW so the stale "人脸识别成功，正在解锁..."
+            // (pulled by LogonUI while Ready) is replaced before the LSA
+            // rejection error page hides the shell — LogonUI does not re-pull
+            // the string once the error page is up.
+            if (m_pCredentialEvents) {
+                m_pCredentialEvents->SetFieldString(
+                    this, 1, L"\u6b63\u5728\u9a8c\u8bc1\u767b\u5f55\uff0c\u7b49\u5f85 Windows \u786e\u8ba4...");
+            }
             FACELOGIN_INFO(L"PackCred SUCCESS: cbSerialization=%lu, ulAuthPackage=%lu",
                           pcpcs->cbSerialization, pcpcs->ulAuthenticationPackage);
         } else {
@@ -769,6 +777,10 @@ STDMETHODIMP FaceLoginCredential::ReportResult(
         m_state = State::Failed;
         m_statusText = L"登录被拒绝（密码或策略原因），请使用 PIN/密码登录";
         m_password.clear();
+
+        if (m_pCredentialEvents) {
+            m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
+        }
 
         if (m_pipeClient) {
             m_pipeClient.reset();
