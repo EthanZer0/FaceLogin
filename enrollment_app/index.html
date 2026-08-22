@@ -281,8 +281,8 @@ button{font-family:inherit}
   background:#FFFFFF;position:relative;transition:border-color .15s,background .15s}
 .check:hover .cbx{border-color:var(--live)}
 .check input:focus-visible ~ .cbx{box-shadow:0 0 0 3px rgba(14,159,110,.18)}
-.cbx::after{content:'';position:absolute;left:3.5px;top:0.5px;width:4px;height:7px;
-  border-color:#0E9F6E;border-width:0 2px 2px 0;transform:rotate(45deg) scale(0);opacity:0;
+.cbx::after{content:'';position:absolute;left:3px;top:1px;width:5px;height:8px;
+  border:#fff;border-width:0 2.5px 2.5px 0;border-style:solid;transform:rotate(45deg) scale(0);opacity:0;
   transition:transform .12s ease,opacity .12s}
 .check input:checked ~ .cbx{background-color:var(--live);border-color:var(--live)}
 .check input:checked ~ .cbx::after{transform:rotate(45deg) scale(1);opacity:1}
@@ -916,7 +916,7 @@ button{font-family:inherit}
         <span class="cbx"></span>
         <span>内存优化（识别后释放模型，降低后台内存占用）</span>
         <span class="tip-ico">i</span>
-        <span class="tip-box">识别完成后释放人脸模型，服务后台内存占用从约 60MB 降至约 20MB。下次解锁时模型自动重新加载（约 0.2-0.5 秒）。对内存敏感的设备可开启。</span>
+        <span class="tip-box">识别完成后释放人脸模型并清空进程工作集，服务后台内存占用从约 60MB 降至 1MB 以内（实测约 0.6MB）。下次解锁时模型自动重新加载（约 0.2-0.5 秒），对识别速度影响很小。适合内存敏感的设备，或希望服务常驻内存极低的用户。</span>
       </label>
     </div>
 
