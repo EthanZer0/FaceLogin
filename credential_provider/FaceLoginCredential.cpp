@@ -724,8 +724,16 @@ STDMETHODIMP FaceLoginCredential::ReportResult(
         FACELOGIN_WARN(L"Authentication failed: status=0x%08X, substatus=0x%08X",
                       ntsStatus, ntsSubstatus);
 
-        // Reset for retry
-        m_state = State::Waiting;
+        // Turn this into a FAILED state, NOT Waiting: a failed submission
+        // (e.g. blank-password credential rejected because the account has a
+        // real password, or the policy forbids blank logon) triggers
+        // re-enumeration → Advise. The cold-boot Advise branch auto-starts
+        // auth when state is Waiting — looping it forever (recognize →
+        // submit → reject → re-enumerate → recognize…). Failed instead makes
+        // Advise restart the input-detection thread: a key press is the
+        // explicit retry, matching the no-match behavior.
+        m_state = State::Failed;
+        m_statusText = L"登录被拒绝（密码或策略原因），请使用 PIN/密码登录";
         m_password.clear();
 
         if (m_pipeClient) {
