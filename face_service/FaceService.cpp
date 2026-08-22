@@ -385,24 +385,16 @@ bool FaceService::Initialize() {
 
     m_detector = nullptr;  // loaded by the background thread — see StartBackgroundModelLoad()
 
-    // Load SCRFD ONNX detector (the only detector, and the lightest model —
-    // 2.5MB). This is loaded SYNCHRONOUSLY in Initialize() because the pipe
-    // listener must be up as soon as possible: SCRFD is needed for the very
-    // first frame of auth, and it loads in a few hundred ms even on a cold
-    // mechanical disk. Everything heavier (2d106det landmark detector,
-    // InsightFace recognizer, anti-spoof) is deferred to a background thread —
-    // see StartBackgroundModelLoad(). The lock screen therefore connects to
-    // the pipe the moment it appears instead of waiting out the model loads.
-    m_onnxDetector = std::make_unique<OnnxDetector>();
-    std::wstring onnxDetPath = m_modelsDir + L"\\det_500m.onnx";
-    if (m_onnxDetector->Initialize(onnxDetPath)) {
-        FACELOGIN_INFO(L"SCRFD detector loaded");
-    } else {
-        FACELOGIN_ERROR(L"SCRFD detector failed to load — face detection unavailable");
-        return false;
-    }
+    // SCRFD (m_onnxDetector) is now also loaded by the background thread
+    // (see LoadHeavyModels step 0) and is unloaded alongside the other models
+    // when unload_models_after_auth is on. The pipe listener can still be up
+    // as fast as before: auth waits on EnsureModelsLoaded() (which blocks
+    // until the background loader finishes, or loads synchronously if models
+    // were unloaded after a prior auth).
+    // NOTE: this keeps the idle service at zero model memory when the
+    // "内存优化" setting is enabled (previously SCRFD stayed resident).
 
-    // Heavy models (2d106det + recognizer + anti-spoof) load in a
+    // Heavy models (2d106det + recognizer + anti-spoof + SCRFD) load in a
     // background thread. See StartBackgroundModelLoad().
     StartBackgroundModelLoad();
 
@@ -456,6 +448,22 @@ bool FaceService::Initialize() {
 
 bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
     FACELOGIN_INFO(L"Loading heavy models in background...");
+
+    // 0. SCRFD face detector (det_500m, ~22MB? — actually ~2.5MB). Moved into
+    // the background loader so the idle service holds ZERO model memory when
+    // unload_models_after_auth is on. Auth waits for all of these via
+    // EnsureModelsLoaded().
+    {
+        auto detector = std::make_unique<OnnxDetector>();
+        std::wstring path = m_modelsDir + L"\\det_500m.onnx";
+        if (!detector->Initialize(path)) {
+            FACELOGIN_ERROR(L"SCRFD detector failed to load — face detection unavailable");
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(m_modelMutex);
+        m_onnxDetector = std::move(detector);
+    }
+    FACELOGIN_INFO(L"SCRFD detector loaded");
 
     // 1. 106-point landmark detector (2d106det.onnx, ~5MB — replaces the
     // 99.7MB dlib shape predictor).
@@ -519,15 +527,17 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
     return true;
 }
 
-// Release all heavy-model memory (2d106det + recognizer + anti-spoof sessions)
-// after an auth completes, so the idle service's RSS drops back to ~baseline.
+// Release all heavy-model memory (SCRFD + 2d106det + recognizer + anti-spoof
+// sessions) after an auth completes, so the idle service's RSS drops back to
+// ~baseline (zero model memory — 1.9.0: SCRFD is included now; previously it
+// stayed resident for the first frame, keeping ~22MB peak-ish resident).
 // The next auth's EnsureModelsLoaded() reloads them synchronously (~200-500ms
 // of startup latency, a deliberate trade for a low idle footprint — 1.6.0).
-// SCRFD (m_onnxDetector) stays resident: it is needed for the very first frame
-// and is the lightest model. Only called from the main pipe thread after the
-// auth pipeline has fully unwound, so no inference is in flight.
+// Only called from the main pipe thread after the auth pipeline has fully
+// unwound, so no inference is in flight.
 void FaceService::UnloadHeavyModels() {
     std::lock_guard<std::mutex> lock(m_modelMutex);
+    if (m_onnxDetector)     { m_onnxDetector.reset(); }
     if (m_detector)         { m_detector.reset(); }
     if (m_onnxRecognizer)   { m_onnxRecognizer.reset(); }
     if (m_antiSpoof)        { m_antiSpoof.reset(); }
