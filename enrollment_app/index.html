@@ -281,7 +281,7 @@ button{font-family:inherit}
   background:#FFFFFF;position:relative;transition:border-color .15s,background .15s}
 .check:hover .cbx{border-color:var(--live)}
 .check input:focus-visible ~ .cbx{box-shadow:0 0 0 3px rgba(14,159,110,.18)}
-.cbx::after{content:'';position:absolute;left:3px;top:1px;width:5px;height:8px;
+.cbx::after{content:'';position:absolute;left:3.25px;top:1px;width:5px;height:8px;
   border:#fff;border-width:0 2.5px 2.5px 0;border-style:solid;transform:rotate(45deg) scale(0);opacity:0;
   transition:transform .12s ease,opacity .12s}
 .check input:checked ~ .cbx{background-color:var(--live);border-color:var(--live)}
@@ -407,8 +407,8 @@ button{font-family:inherit}
 .face-card-dist{font-size:10px;color:#8A919E;font-family:var(--font-data)}
 .face-viewer-card{
   width:min(90vw,900px);display:flex;flex-direction:column;gap:14px;align-items:center;
-  background:var(--face);border-radius:var(--radius);padding:18px;
-  box-shadow:0 18px 50px rgba(15,17,21,.35);
+  background:var(--face);border-radius:8px;padding:18px;
+  box-shadow:0 18px 60px rgba(22,26,34,.2);
 }
 .face-viewer-card img{max-width:100%;max-height:70vh;border-radius:6px;background:#0F1115}
 .face-ctx-menu{
@@ -453,27 +453,45 @@ button{font-family:inherit}
    Modals (camera picker, refresh)
    ================================================================ */
 .cam-picker-overlay{
-  position:fixed;inset:0;z-index:100;display:none;
+  position:fixed;inset:0;z-index:110;
   align-items:center;justify-content:center;
-  background:rgba(22,26,34,.5);backdrop-filter:blur(2px);
+  background:rgba(22,26,34,.45);backdrop-filter:blur(2px);
+  display:flex;
+  visibility:hidden;opacity:0;pointer-events:none;
+  /* visibility swaps with a delay so the fade-out is actually visible —
+     closing: opacity animates first, then visibility flips to hidden. */
+  transition:opacity .22s ease,visibility 0s .22s;
 }
-.cam-picker-overlay.active{display:flex}
+.cam-picker-overlay.active{
+  visibility:visible;opacity:1;pointer-events:auto;
+  /* opening: visibility goes visible immediately, no delay. */
+  transition:opacity .22s ease,visibility 0s;
+}
+/* All modal cards (cam-picker / face-viewer-card) share the same entrance:
+   rise from below with a gentle overshoot + fade (matches About card). */
+.cam-picker-overlay > div{
+  opacity:0;transform:translateY(20px) scale(.96);
+  transition:opacity .24s ease,transform .30s cubic-bezier(.34,1.45,.5,1);
+}
+.cam-picker-overlay.active > div{
+  opacity:1;transform:translateY(0) scale(1);
+}
 .cam-picker{
   width:90%;max-width:420px;background:var(--face);
   border:1px solid var(--hair);border-radius:8px;
-  box-shadow:0 18px 60px rgba(22,26,34,.18);padding:24px;
+  box-shadow:0 18px 60px rgba(22,26,34,.2);padding:24px;
 }
 .cam-picker h2{
   font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
   margin-bottom:8px;text-transform:uppercase;
 }
-.cam-picker p.dim{font-size:12px;color:var(--fog);line-height:1.6;margin-bottom:18px}
-.cam-picker select{
+.cam-picker p.dim{font-size:11px;color:#8A919E;line-height:1.6;margin-bottom:18px}
+.cam-picker input{
   width:100%;border:1px solid var(--hair);border-radius:var(--radius);
   padding:9px 12px;font-size:13px;outline:none;background:var(--face);color:var(--ink);
   margin-bottom:8px;
 }
-.cam-picker select:focus{border-color:#B9C0CC;box-shadow:0 0 0 3px rgba(14,159,110,.12)}
+.cam-picker input:focus{border-color:var(--live);box-shadow:0 0 0 3px rgba(14,159,110,.12)}
 .cam-picker .btn{margin-top:0}
 .cam-picker .btn-secondary{margin-top:10px}
 
@@ -724,6 +742,7 @@ button{font-family:inherit}
     <div class="field" id="field-skip-pass" style="display:none">
       <label class="check">
         <input type="checkbox" id="fld-skip-pass">
+        <span class="cbx"></span>
         <span id="fld-skip-pass-label">该账号没有密码（仅使用 PIN/Hello），跳过密码录入</span>
       </label>
       <p class="dim">无密码账号无法用于人脸解锁，人脸识别只能完成录入。</p>
@@ -1044,11 +1063,18 @@ button{font-family:inherit}
 <!-- ================================================================== -->
 <!-- First-run Camera Picker Modal                                        -->
 <!-- ================================================================== -->
-<div class="cam-picker-overlay" id="cam-picker-overlay">
+<div class="cam-picker-overlay" id="cam-picker-overlay" onclick="if(event.target===this)onCamPickerSkip()">
   <div class="cam-picker">
     <h2>选择摄像头</h2>
     <p class="dim">检测到多台摄像头。请选择用于人脸录入与登录的摄像头。</p>
-    <select id="cam-picker-select"></select>
+    <div class="cs-wrap">
+      <select id="cam-picker-select" class="cs-native"></select>
+      <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false">
+        <span class="cs-val">选择摄像头…</span>
+        <span class="cs-arrow"></span>
+      </button>
+      <div class="cs-list" role="listbox"></div>
+    </div>
     <button class="btn btn-primary" id="cam-picker-confirm" onclick="onCamPickerConfirm()">
       使用此摄像头
     </button>
@@ -1061,7 +1087,7 @@ button{font-family:inherit}
 <!-- ================================================================== -->
 <!-- Stale MSA→local Account Refresh Modal                               -->
 <!-- ================================================================== -->
-<div class="cam-picker-overlay" id="refresh-overlay">
+<div class="cam-picker-overlay" id="refresh-overlay" onclick="if(event.target===this)onRefreshDismiss()">
   <div class="cam-picker">
     <h2 id="refresh-title">账号身份已变更</h2>
     <p class="dim" id="refresh-info">
@@ -1069,8 +1095,7 @@ button{font-family:inherit}
       为使人脸登录继续生效，需要刷新已保存的账号信息（人脸数据将保留），
       并更新本地密码。请输入当前 Windows 登录密码。
     </p>
-    <input type="password" id="refresh-pass" placeholder="输入当前 Windows 登录密码"
-           style="width:100%;border:1px solid var(--hair);border-radius:4px;padding:9px 12px;font-size:13px;outline:none;background:#FFFFFF;color:var(--ink);margin-bottom:10px">
+    <input type="password" id="refresh-pass" placeholder="输入当前 Windows 登录密码">
     <button class="btn btn-primary" id="refresh-confirm" onclick="onRefreshConfirm()">
       <span class="spinner" id="refresh-spinner"></span>
       刷新并保留人脸
@@ -2389,11 +2414,15 @@ function openExternal(url) {
   } catch (e) {}
   window.open(url, '_blank', 'noopener');
 }
-// ESC closes the about card too (matches other modals).
+// ESC closes every open modal consistently (about / refresh / cam-picker /
+// face-viewer: same behavior as clicking the backdrop).
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
-    var a = document.getElementById('about-overlay');
-    if (a) a.classList.remove('active');
+    var ids = ['about-overlay', 'refresh-overlay', 'cam-picker-overlay', 'face-viewer-overlay'];
+    for (var i = 0; i < ids.length; i++) {
+      var el = document.getElementById(ids[i]);
+      if (el) el.classList.remove('active');
+    }
   }
 });
 
@@ -2556,6 +2585,9 @@ function showCamPicker() {
     opt.textContent = camList[i].name || ('摄像头 ' + (i + 1));
     sel.appendChild(opt);
   }
+  // Sync the custom-select label with the first (default-selected) camera.
+  var wrap = sel.closest('.cs-wrap');
+  if (wrap) csSync(wrap, sel);
   document.getElementById('cam-picker-overlay').classList.add('active');
 }
 
