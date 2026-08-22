@@ -234,8 +234,16 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // restart the input-detection thread so the NEXT key press retries —
     // that is the user's expected retry path (clicking the tile also
     // retries via SetSelected).
-    if (m_state == State::Failed) {
-        FACELOGIN_INFO(L"Advise: failed state — restarting input detection (key press retries)");
+    if (m_state == State::Failed || m_state == State::Error) {
+        // Failed (no match / timeout / submission rejected) and Error
+        // (service-side rejection: anti-spoof attack, blink liveness failed,
+        // service unavailable) both keep their specific status text — the
+        // unconditional Waiting reset below would otherwise show "按下任意键"
+        // and drop the real reason. Never auto-restart auth; restart the
+        // input-detection thread so the NEXT key press retries (or the user
+        // clicks the tile — SetSelected handles that).
+        FACELOGIN_INFO(L"Advise: %s state — restarting input detection (key press retries)",
+                       m_state == State::Failed ? L"failed" : L"error");
         m_waitingStartTick = GetTickCount();
         StartInputDetectionThread();
         return S_OK;
@@ -343,11 +351,13 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
     //     So SetSelected NEVER starts auth directly; it only (re)starts the
     //     input-detection thread. This matches the lock-screen behavior the
     //     user already relies on (switch back → press any key).
-    if (m_state == State::Failed) {
-        // Failed (no match / timeout) + tile re-selected: start waiting for a
-        // key press to retry. Never auto-restart — the failed text stays
+    if (m_state == State::Failed || m_state == State::Error) {
+        // Failed (no match / timeout / submission rejected) / Error (anti-spoof,
+        // blink liveness, service unavailable) + tile re-selected: start waiting
+        // for a key press to retry. Never auto-restart — the failure text stays
         // visible and the next key press is the explicit retry.
-        FACELOGIN_INFO(L"SetSelected: failed state — restarting input detection (key press retries)");
+        FACELOGIN_INFO(L"SetSelected: %s state — restarting input detection (key press retries)",
+                       m_state == State::Failed ? L"failed" : L"error");
         m_waitingStartTick = GetTickCount();
         StartInputDetectionThread();
     } else if (m_state == State::Waiting && !m_inputThreadRunning) {
