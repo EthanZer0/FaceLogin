@@ -1318,9 +1318,11 @@ std::wstring EnrollmentWizard::GetCurrentProcessUserSid() {
 // Detect whether the enrolled account is passwordless (no password — PIN/Hello
 // only). Layered, conservative:
 //   1. The current session identity must be the enrolled account.
-//   2. Empty-password LogonUser succeeds → definitely passwordless.
-//   3. NetUserGetInfo(23) shows an empty SAM password → passwordless.
-//   4. MSA that we can't auto-confirm → 2 (UI checkbox lets the user confirm).
+//   2. MSA/Xbox: SAM never reflects the online password → 2 (UI checkbox lets
+//      the user confirm). Never derive it from SAM/LogonUser.
+//   3. Local accounts: empty-password LogonUser succeeds → 1 (passwordless).
+//   4. NetUserGetInfo(1003) shows an empty SAM password → 1 (passwordless).
+//   5. Anything else → 0 (has a password).
 int EnrollmentWizard::GetPasswordlessState() const {
     // 1) Session identity must be the account being enrolled.
     std::wstring tokenSid = GetCurrentProcessUserSid();
@@ -1328,18 +1330,21 @@ int EnrollmentWizard::GetPasswordlessState() const {
         return 0;
     }
 
-    // 2) Empty-password LogonUser probe.
+    // 2) MSA accounts: the SAM password field / empty LogonUser probe is NEVER
+    // authoritative — the real credential is online (or a local cache of the
+    // online password), so a SAM probe can falsely report "no password" for an
+    // MSA account whose local cache was never written. Ask the user instead.
+    if (m_accountType == "msa") {
+        return 2;
+    }
+
+    // 3) Local accounts only: empty-password LogonUser probe.
     HANDLE hToken = nullptr;
     BOOL okEmpty = LogonUserW(m_username.c_str(), L".", L"",
                               LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &hToken);
     if (okEmpty && hToken) { CloseHandle(hToken); return 1; }
-    if (!m_upn.empty() && m_upn.find(L'@') != std::wstring::npos) {
-        okEmpty = LogonUserW(m_upn.c_str(), L".", L"",
-                             LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &hToken);
-        if (okEmpty && hToken) { CloseHandle(hToken); return 1; }
-    }
 
-    // 3) NetUserGetInfo(1003): SAM password field empty → passwordless.
+    // 4) NetUserGetInfo(1003): SAM password field empty → passwordless.
     // (USER_INFO_1003 exposes the SAM password; 23 does not include it.)
     USER_INFO_1003* ui1003 = nullptr;
     if (NetUserGetInfo(nullptr, m_username.c_str(), 1003,
@@ -1349,11 +1354,9 @@ int EnrollmentWizard::GetPasswordlessState() const {
         NetApiBufferFree(ui1003);
         if (noPw) return 1;
     }
-    // Local accounts: SAM password non-empty → has a password.
-    if (m_accountType != "msa") return 0;
 
-    // 4) MSA: SAM doesn't reflect the online password; can't auto-confirm.
-    return 2;
+    // 5) Local account with a non-empty SAM password → has a password.
+    return 0;
 }
 
 bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool passwordless,
