@@ -363,6 +363,7 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"LogDiagnostic") *ids = 42;
     else if (n == L"GetCameraList") *ids = 21;
     else if (n == L"IsPasswordlessState") *ids = 22;
+    else if (n == L"GetPasswordlessState") *ids = 22; // alias (1.9.0 frontend)
     else if (n == L"SaveEnrollmentNoPassword") *ids = 23;
     else if (n == L"GetFaceCount") *ids = 24;
     else if (n == L"GetFacesJson") *ids = 25;

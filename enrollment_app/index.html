@@ -1811,7 +1811,7 @@ function onCapture() {
           // state 2 = MSA that can't auto-confirm (user confirms via checkbox),
           // state 0 = has a password (normal flow).
           try {
-            var st = H.GetPasswordlessState();
+            var st = H.IsPasswordlessState();
             if (typeof st !== 'number') st = parseInt(st, 10);
             if (isNaN(st)) st = 0;
             console.log('GetPasswordlessState -> ' + st);
