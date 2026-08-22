@@ -2497,7 +2497,7 @@ document.addEventListener('keydown', function(e) {
     if (!running) { running = true; rafId = requestAnimationFrame(tick); }
   }
 
-  function tick() {
+  function tick(now) {
     var w = canvas.clientWidth, h = canvas.clientHeight;
     ctx.clearRect(0, 0, w, h);
 
@@ -2509,7 +2509,15 @@ document.addEventListener('keydown', function(e) {
       ctx.clip();
     }
 
-    var dt = 1 / 60;
+    // REAL delta time (was hard-coded 1/60): motion is expressed per-frame
+    // below (p.y += vy), so a fixed 1/60 made the drift speed proportional
+    // to the actual frame rate — 30fps ultra/low-power laptops drifted ~2×
+    // slower, 144fps gaming rigs ~2.4× faster. dt in seconds, clamped so
+    // a backgrounded rAF resume doesn't teleport all motes.
+    var dt = Math.min(0.05, Math.max(0.001, (now - (lastT || now)) / 1000));
+    lastT = now;
+    // Keep the original (1/60-designed) visual pacing across frame rates.
+    var k = dt * 60;
 
     // Continually top up with a gentle trickle so the motes appear to rise
     // and scatter gradually (no initial pile-up). ~8/s — sparse and calm.
@@ -2530,10 +2538,10 @@ document.addEventListener('keydown', function(e) {
       else a = 1;
       if (a <= 0) return false;
 
-      p.y += p.vy;
-      p.x = p.x + Math.sin(p.swayPhase) * p.swayAmp * 0.02;  // sway
-      p.swayPhase += p.swayFreq;
-      p.rot += p.vr;
+      p.y += p.vy * k;
+      p.x = p.x + Math.sin(p.swayPhase) * p.swayAmp * 0.02 * k;  // sway
+      p.swayPhase += p.swayFreq * k;
+      p.rot += p.vr * k;
 
       ctx.save();
       ctx.globalAlpha = Math.min(1, a);
@@ -2558,6 +2566,7 @@ document.addEventListener('keydown', function(e) {
 
   var animT = 0;
   var stopAt = 5.0;
+  var lastT = 0;
 
   var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var origOpen = openAbout;
