@@ -197,7 +197,10 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // auth round, don't restart the flow.  This prevents an infinite
     // loop where OnPipeResponse → CredentialsChanged → Advise()
     // overwrites Ready back to Authenticating.
-    if (m_state == State::Ready && !m_password.empty()) {
+    // NOTE: m_password may legitimately be EMPTY here (passwordless
+    // record — blank-credential unlock). The check is on the Ready
+    // state only.
+    if (m_state == State::Ready) {
         FACELOGIN_INFO(L"Advise: credentials already ready, skipping auth restart");
         return S_OK;
     }
@@ -460,12 +463,14 @@ STDMETHODIMP FaceLoginCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) 
         case State::Ready:
             return SHStrDupW(L"人脸识别成功，正在解锁...", ppwsz);
         case State::Failed:
-            // AUTH_NO_MATCH carries its own wording ("人脸匹配失败...");
-            // plain timeouts keep the generic text.
+            // A specific failure text (e.g. submission rejected by LSA —
+            // ReportResult) takes precedence; AUTH_NO_MATCH carries its own
+            // wording ("人脸匹配失败..."); plain timeouts keep the generic.
+            if (!m_statusText.empty()) {
+                return SHStrDupW(m_statusText.c_str(), ppwsz);
+            }
             if (m_noMatchFailed) {
-                return SHStrDupW(m_statusText.empty() ?
-                                 L"人脸匹配失败，请重试或使用密码登录" :
-                                 m_statusText.c_str(), ppwsz);
+                return SHStrDupW(L"人脸匹配失败，请重试或使用密码登录", ppwsz);
             }
             return SHStrDupW(L"未识别到人脸，请重试或使用密码登录", ppwsz);
         case State::Blocked:
