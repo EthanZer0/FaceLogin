@@ -694,9 +694,12 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
 
         if (IsPasswordlessRecord(m_users[bestIdx].encryptedPassword)) {
             // Passwordless account: no password to decrypt. Return the match
-            // with passwordless=true so the caller (FaceService) knows not to
-            // submit LSA credentials and instead shows a degraded notice.
+            // with passwordless=true AND an explicit empty password — the
+            // caller (FaceService) submits a blank MSV1_0 credential so a
+            // true blank-password local account can still console-unlock
+            // (Windows allows blank-password console logon by default).
             best.passwordless = true;
+            best.password.clear();
             return best;
         }
 

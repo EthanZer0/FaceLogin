@@ -1189,17 +1189,16 @@ bool FaceService::ProcessAuthRequest() {
         }
 
         {
-            // Passwordless account: face login cannot unlock it (no password to
-            // submit to LSA). Degrade gracefully with a notice instead of
-            // attempting liveness and submitting nothing. Do NOT mark the user
-            // as logged in.
+            // Passwordless account: no stored password. Submit a BLANK
+            // credential — Windows allows blank-password accounts to
+            // console-logon (lock-screen unlock included) by default policy,
+            // so a genuinely passwordless account unlocks via face login.
+            // If the policy forbids it or the account actually has a password,
+            // LSA rejects at submission time and the user falls back to PIN.
             if (match->passwordless) {
-                FACELOGIN_WARN(L"Matched passwordless account '%s' — face login cannot unlock; notifying CP",
+                match->password.clear();  // defensive; store already returns empty
+                FACELOGIN_INFO(L"Matched passwordless account '%s' — issuing blank-password unlock",
                                match->username.c_str());
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::MSG_PASSWORDLESS_NOTICE));
-                FlushFileBuffers(m_pipeServer->GetHandle());
-                m_pipeServer->DrainOutput(5000);
-                return false;
             }
 
             std::wstring domain = L".";

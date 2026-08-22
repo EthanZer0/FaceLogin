@@ -747,7 +747,7 @@ button{font-family:inherit}
       </label>
       <p class="dim">无密码账号无法用于人脸解锁，人脸识别只能完成录入。</p>
     </div>
-    <p class="dim">你的密码将使用 DPAPI 加密，仅存储在本机。</p>
+      <p class="dim">你的密码将使用 DPAPI 加密，仅存储在本机。无密码账户（空密码本地账号）人脸解锁将尝试空密码登录——Windows 默认允许空密码控制台登录（锁屏解锁），失败时请改用 PIN/Hello。</p>
     <button class="btn btn-primary" id="btn-save" onclick="onSave()" style="margin-top:8px">
       <span class="spinner" id="save-spinner"></span>
       保存并录入

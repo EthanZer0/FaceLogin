@@ -678,8 +678,11 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
         }
     }
 
-    // If we have credentials ready, pack and return them
-    if (m_state == State::Ready && !m_password.empty()) {
+    // If we have credentials ready, pack and return them. A still-empty
+    // password is VALID here: it means the record is passwordless (blank
+    // password account) and we pack a blank MSV1_0 credential — Windows
+    // allows blank-password console logon by default, so face unlock works.
+    if (m_state == State::Ready) {
         // NOTE: never log the password or any part of it — it is a credential.
         HRESULT hr = PackCredentials(pcpcs);
         if (SUCCEEDED(hr)) {
