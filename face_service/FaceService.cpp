@@ -1107,9 +1107,12 @@ bool FaceService::ProcessAuthRequest() {
                     FACELOGIN_INFO(L"No match for %d consecutive frames — reporting failure to CP",
                                    consecutiveNoMatch);
                     // Opt-in unknown-face capture: save the failing frame +
-                    // a JSONL event record (see SaveUnknownFace).
+                    // a JSONL event record (see SaveUnknownFace). Pass the
+                    // original-image nearest distance — the variants were
+                    // computed for diagnostics, the original is the distance
+                    // the user actually failed at.
                     if (m_config.capture_unknown_faces) {
-                        SaveUnknownFace(frame);
+                        SaveUnknownFace(frame, d0);
                     }
                     // Distinct terminal message (AUTH_NO_MATCH) so the CP can
                     // show "人脸匹配失败" instead of the timeout wording
