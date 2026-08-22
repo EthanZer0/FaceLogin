@@ -26,7 +26,9 @@ import (
 // 0.75 keeps strangers >0.94 comfortably rejected). Existing installs must be
 // force-synced; new installs get it from the fresh-default below. LATER
 // RELEASES MUST SET THIS BACK TO false.
-var ConfigUpgradeEnabled = true
+// v1.9.0: OFF — back to default; release shipped with 1.8.0, later releases
+// preserve user-tuned values.
+var ConfigUpgradeEnabled = false
 
 // ConfigUpgradeForcedDefaults lists the keys force-synced to these values
 // when ConfigUpgradeEnabled is true. Keys NOT listed here are preserved

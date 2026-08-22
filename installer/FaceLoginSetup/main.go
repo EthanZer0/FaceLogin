@@ -76,7 +76,9 @@ func main() {
 	// v1.8.0: match_threshold 0.65 → 0.75 (illumination-drift fix). NOTE: this
 	// assignment OVERRIDES the config.go default — keep the two in sync and
 	// set BOTH back to false in later releases.
-	internal.ConfigUpgradeEnabled = true
+	// v1.9.0: no forced config overrides needed — reverted to OFF (threshold
+	// ship-in with 1.8.0; later releases preserve user-tuned values).
+	internal.ConfigUpgradeEnabled = false
 
 	// =========================================================================
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
