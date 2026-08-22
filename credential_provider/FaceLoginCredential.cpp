@@ -205,6 +205,13 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         return S_OK;
     }
 
+    // Submitted: the credential is with LogonUI/LSA now — never restart auth
+    // while the outcome is pending (would re-recognize and re-submit).
+    if (m_state == State::Submitted) {
+        FACELOGIN_INFO(L"Advise: credential submitted, skipping auth restart");
+        return S_OK;
+    }
+
     // Blocked (passwordless notice shown): keep showing the notice — do not
     // auto-restart authentication on re-enumeration (would loop forever).
     if (m_state == State::Blocked) {
@@ -462,6 +469,10 @@ STDMETHODIMP FaceLoginCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) 
             return SHStrDupW(L"识别中...", ppwsz);
         case State::Ready:
             return SHStrDupW(L"人脸识别成功，正在解锁...", ppwsz);
+        case State::Submitted:
+            // Credential handed to LogonUI — outcome is decided by LSA. Avoid
+            // the misleading "成功" text on the rejection error page.
+            return SHStrDupW(L"正在验证登录，等待 Windows 确认...", ppwsz);
         case State::Failed:
             // A specific failure text (e.g. submission rejected by LSA —
             // ReportResult) takes precedence; AUTH_NO_MATCH carries its own
@@ -580,6 +591,17 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
 
     ZeroMemory(pcpcs, sizeof(*pcpcs));
 
+    // Submitted: the credential was already handed over ("finished") and no
+    // re-submission is allowed — LSA already judged it (LogonUI error page
+    // after a blank-password rejection, or success). Ending without a new
+    // credential lets LogonUI settle on its own error/success UI instead of
+    // starting another auth round.
+    if (m_state == State::Submitted) {
+        FACELOGIN_INFO(L"GetSerialization: credential already submitted — ending without re-submit");
+        *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
+        return S_OK;
+    }
+
     // Unlock scenario: if we're in Waiting state, the background input-
     // detection thread is still waiting for user input. Return "not
     // finished" — no credentials yet.
@@ -692,6 +714,13 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
         HRESULT hr = PackCredentials(pcpcs);
         if (SUCCEEDED(hr)) {
             *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+            // Move to Submitted: the credential was handed to LogonUI. If LSA
+            // rejects it (wrong password / blank not allowed), the error page
+            // and any re-poll must NOT pack the same credential again — the
+            // user returns to the tile after the error page and would see
+            // "人脸识别成功" and a resubmission loop otherwise. ReportResult
+            // drives the real outcome (success → done; failure → Failed).
+            m_state = State::Submitted;
             FACELOGIN_INFO(L"PackCred SUCCESS: cbSerialization=%lu, ulAuthPackage=%lu",
                           pcpcs->cbSerialization, pcpcs->ulAuthenticationPackage);
         } else {

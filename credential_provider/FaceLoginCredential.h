@@ -81,6 +81,7 @@ private:
         Waiting,
         Authenticating,
         Ready,
+        Submitted,  // credential packed & handed to LogonUI — no re-submit
         Failed,
         Error,
         Blocked  // Passwordless account: show notice, never submit creds
