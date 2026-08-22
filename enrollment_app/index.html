@@ -1812,6 +1812,9 @@ function onCapture() {
           // state 0 = has a password (normal flow).
           try {
             var st = H.GetPasswordlessState();
+            if (typeof st !== 'number') st = parseInt(st, 10);
+            if (isNaN(st)) st = 0;
+            console.log('GetPasswordlessState -> ' + st);
             var skipField = document.getElementById('field-skip-pass');
             var skipChk = document.getElementById('fld-skip-pass');
             var passField = document.getElementById('pwd-pass-field');
@@ -1829,7 +1832,7 @@ function onCapture() {
               skipField.style.display = 'none';
               skipChk.checked = false;
             }
-          } catch(e) {}
+          } catch(e) { console.log('GetPasswordlessState threw: ' + e); }
           document.getElementById('fld-pass').focus();
         } else if (H.IsCapturing && !H.IsCapturing()) {
           // Backend stopped early without reaching 10 samples — the capture

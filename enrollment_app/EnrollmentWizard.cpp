@@ -1327,6 +1327,8 @@ int EnrollmentWizard::GetPasswordlessState() const {
     // 1) Session identity must be the account being enrolled.
     std::wstring tokenSid = GetCurrentProcessUserSid();
     if (tokenSid.empty() || tokenSid != m_sid) {
+        FACELOGIN_WARN(L"GetPasswordlessState: identity mismatch — tokenSid='%s' vs m_sid='%s' (upn='%s' acct='%s') → state=0",
+                       tokenSid.c_str(), m_sid.c_str(), m_upn.c_str(), m_accountType.c_str());
         return 0;
     }
 
@@ -1335,6 +1337,8 @@ int EnrollmentWizard::GetPasswordlessState() const {
     // online password), so a SAM probe can falsely report "no password" for an
     // MSA account whose local cache was never written. Ask the user instead.
     if (m_accountType == "msa") {
+        FACELOGIN_INFO(L"GetPasswordlessState: MSA account (upn='%s') → state=2 (user confirm)",
+                       m_upn.c_str());
         return 2;
     }
 
@@ -1352,10 +1356,11 @@ int EnrollmentWizard::GetPasswordlessState() const {
         bool noPw = (ui1003->usri1003_password == nullptr ||
                      ui1003->usri1003_password[0] == L'\0');
         NetApiBufferFree(ui1003);
-        if (noPw) return 1;
+        if (noPw) { FACELOGIN_INFO(L"GetPasswordlessState: SAM password empty → state=1"); return 1; }
     }
 
     // 5) Local account with a non-empty SAM password → has a password.
+    FACELOGIN_INFO(L"GetPasswordlessState: local account with password → state=0");
     return 0;
 }
 
