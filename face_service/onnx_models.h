@@ -36,6 +36,16 @@ void ApplyLowLightEnhance(dlib::matrix<dlib::rgb_pixel>& chip);
 //   with EyeCenter must be re-enrolled under the same mode.
 enum class AlignMode { OuterEye, EyeCenter };
 
+// Photometric variants tried when the original embedding fails to match.
+// They re-embed the SAME aligned chip after a light correction, expanding the
+// search space across illumination changes (warm dorm light vs cool classroom
+// light) without re-enrolling. Enrollment always stores the ORIGINAL variant.
+enum class LightVariant {
+    Original,      // untouched chip (baseline, enrolled templates live here)
+    WhiteBalance,  // Gray-World: scale R/G/B means to be equal (color temperature)
+    Brightness     // map mean luma to a reference (exposure)
+};
+
 // ONNX-based face recognition using InsightFace buffalo_s (w600k_mbf).
 // Replaces dlib ResNet-34 with the more accurate MobileFaceNet @ WebFace600K.
 // Embedding dimension: 128 (compatible with existing users.dat storage).
@@ -63,6 +73,15 @@ public:
         const dlib::matrix<dlib::rgb_pixel>& image,
         const dlib::full_object_detection& landmarks,
         AlignMode mode);
+
+    // Photometric-variant overload: aligns the face, applies the light
+    // correction (WhiteBalance / Brightness), then embeds. Used by the
+    // recognition fallback chain when the ORIGINAL embedding fails to match —
+    // see LightVariant in onnx_models.h.
+    std::vector<float> ComputeEmbedding(
+        const dlib::matrix<dlib::rgb_pixel>& image,
+        const dlib::full_object_detection& landmarks,
+        LightVariant variant);
 
     // Euclidean distance between two embeddings.
     static float Distance(const std::vector<float>& a, const std::vector<float>& b);

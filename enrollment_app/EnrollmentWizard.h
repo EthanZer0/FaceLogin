@@ -127,6 +127,15 @@ public:
     // Log viewer
     std::string GetLogLines();
     std::string GetServiceLogLines();
+    // Unknown-face capture events (JSON array): [{ts, reason, distance, file}]
+    // read from <dataDir>\data\unknown\events.jsonl, filtered to records whose
+    // JPEG still exists. Photos are served to the frontend via the WebView2
+    // virtual host mapping (facelogin-captures), not through this string.
+    std::string GetUnknownFaceEvents();
+    // Delete one unknown-face capture (JPEG + its events.jsonl record).
+    bool DeleteUnknownFace(const std::string& file);
+    // Delete ALL unknown-face captures (JPEGs + events.jsonl).
+    bool ClearUnknownFaces();
     void ClearLog();
 
     // Frontend diagnostic hook: the JS layer calls this to write a line into

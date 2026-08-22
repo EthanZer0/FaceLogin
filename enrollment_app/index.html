@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -386,6 +386,42 @@ button{font-family:inherit}
 .log-viewer .log-info{color:#3A4150}
 .log-viewer .log-warn{color:var(--warn)}
 .log-viewer .log-error{color:var(--err);font-weight:500}
+
+/* Unknown-face capture gallery (log page source) */
+.faces-grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));
+  gap:10px;padding:2px;white-space:normal;
+}
+.face-card{
+  display:flex;flex-direction:column;overflow:hidden;
+  border:1px solid var(--hair);border-radius:var(--radius);
+  background:var(--face);cursor:pointer;transition:border-color .15s,transform .15s;
+}
+.face-card:hover{border-color:var(--live);transform:translateY(-1px)}
+.face-card img{
+  width:100%;aspect-ratio:16/9;object-fit:cover;display:block;
+  background:#0F1115;
+}
+.face-card-info{display:flex;flex-direction:column;gap:2px;padding:8px 10px}
+.face-card-ts{font-size:11px;color:var(--ink);font-family:var(--font-data)}
+.face-card-dist{font-size:10px;color:#8A919E;font-family:var(--font-data)}
+.face-viewer-card{
+  width:min(90vw,900px);display:flex;flex-direction:column;gap:14px;align-items:center;
+  background:var(--face);border-radius:var(--radius);padding:18px;
+  box-shadow:0 18px 50px rgba(15,17,21,.35);
+}
+.face-viewer-card img{max-width:100%;max-height:70vh;border-radius:6px;background:#0F1115}
+.face-ctx-menu{
+  position:fixed;z-index:60;display:none;min-width:140px;
+  background:var(--face);border:1px solid var(--hair);border-radius:8px;
+  box-shadow:0 8px 24px rgba(15,17,21,.18);overflow:hidden;
+}
+.face-ctx-menu.active{display:block}
+.face-ctx-item{
+  display:block;width:100%;padding:9px 14px;text-align:left;
+  font-size:12px;color:var(--err);background:none;border:none;cursor:pointer;
+}
+.face-ctx-item:hover{background:var(--lite)}
 
 /* ================================================================
    Faces
@@ -884,6 +920,26 @@ button{font-family:inherit}
       </label>
     </div>
 
+    <div class="field">
+      <label class="check tip">
+        <input type="checkbox" id="cfg-capture-unknown">
+        <span class="cbx"></span>
+        <span>记录未匹配人脸（陌生人出现在锁屏前时保存照片与记录）</span>
+        <span class="tip-ico">i</span>
+        <span class="tip-box">开启后，锁屏人脸匹配失败（检测到人脸但未匹配任何已录入人脸）时，将失败画面保存为照片并记录事件，存放于安装目录 data\unknown 文件夹（最多保留 100 张，超出自动删除最旧）。照片仅保存在本机，不会上传。涉及非本人的面部影像，请谨慎开启。</span>
+      </label>
+    </div>
+
+    <div class="field">
+      <label class="check tip">
+        <input type="checkbox" id="cfg-coldboot-key">
+        <span class="cbx"></span>
+        <span>开机登录需按键触发人脸识别（默认关闭，开机自动识别）</span>
+        <span class="tip-ico">i</span>
+        <span class="tip-box">开启后，电脑开机进入登录界面时不会自动启动摄像头识别人脸，需按任意键后才开始识别（与锁屏解锁一致）。适合不希望开机时摄像头自动开启的用户。</span>
+      </label>
+    </div>
+
     <div class="field" id="field-antispoof-threshold" style="display:none">
       <label class="tip"><span>反欺诈阈值 (Anti-Spoof Threshold): <span id="cfg-asthr-val">0.30</span></span><span class="tip-ico">i</span><span class="tip-box">阈值越低越宽松（容易通过），越高越严格（更难通过）。默认0.30。</span></label>
       <div class="range-wrap">
@@ -900,10 +956,10 @@ button{font-family:inherit}
     </div>
 
     <div class="field">
-      <label class="tip"><span>匹配严格度 (Match Strictness): <span id="cfg-threshold-val">70</span></span><span class="tip-ico">i</span><span class="tip-box">值越高越严格（人脸需更相似才能通过）。默认70。</span></label>
+      <label class="tip"><span>匹配严格度 (Match Strictness): <span id="cfg-threshold-val">60</span></span><span class="tip-ico">i</span><span class="tip-box">值越高越严格（人脸需更相似才能通过）。默认60。</span></label>
       <div class="range-wrap">
         <div class="rng">
-          <input type="range" id="cfg-threshold" min="20" max="90" value="70" step="1"
+          <input type="range" id="cfg-threshold" min="20" max="90" value="60" step="1"
                  oninput="rngSync(this)">
           <div class="rng-rail">
             <div class="rng-track"></div>
@@ -952,11 +1008,13 @@ button{font-family:inherit}
           <select id="log-source" class="cs-native" onchange="refreshLogs()">
             <option value="console">Console</option>
             <option value="service">Service</option>
+            <option value="unknown">识别失败记录</option>
           </select>
           <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false"><span class="cs-val"></span><span class="cs-arrow"></span></button>
           <div class="cs-list" role="listbox"></div>
         </div>
-        <button class="btn btn-secondary" onclick="clearLogs()">清空日志</button>
+        <button class="btn btn-secondary" id="btn-clear-logs" onclick="clearLogs()">清空日志</button>
+        <button class="btn btn-secondary" id="btn-clear-faces" onclick="onClearUnknownFaces()" style="display:none">清空记录</button>
       </div>
     </div>
     <div class="log-viewer" id="log-viewer"></div>
@@ -965,6 +1023,22 @@ button{font-family:inherit}
     <div class="ft-l"><i></i>FACELOGIN · ENROLLMENT</div>
     <div class="ft-r" id="about-trigger" role="button" tabindex="0" onclick="openAbout()" onkeydown="if(event.key==='Enter'||event.key===' ')openAbout()"><span class="ft-star">⭐</span><span class="ft-ver"></span></div>
   </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- Unknown-face photo viewer (log page, "识别失败记录" source)          -->
+<!-- ================================================================== -->
+<div class="cam-picker-overlay" id="face-viewer-overlay" onclick="closeFaceViewer()">
+  <div class="face-viewer-card" onclick="event.stopPropagation()">
+    <img id="face-viewer-img" alt="未匹配人脸">
+    <button class="btn btn-secondary" onclick="closeFaceViewer()">关闭</button>
+  </div>
+</div>
+
+<!-- Right-click context menu for face cards (delete single record) -->
+<div id="face-ctx-menu" class="face-ctx-menu">
+  <input type="hidden" id="face-ctx-file" value="">
+  <button type="button" class="face-ctx-item face-ctx-del" id="face-ctx-del">删除这条记录</button>
 </div>
 
 <!-- ================================================================== -->
@@ -1332,6 +1406,11 @@ function csKey(e, wrap) {
     for (var i = 0; i < all.length; i++) {
       if (!all[i].closest('.cs-wrap').contains(e.target)) all[i].classList.remove('open');
     }
+    // Also dismiss the face-card context menu.
+    var ctx = document.getElementById('face-ctx-menu');
+    if (ctx && ctx.classList.contains('active') && !ctx.contains(e.target)) {
+      ctx.classList.remove('active');
+    }
   });
 })();
 
@@ -1466,10 +1545,10 @@ function loadSettings() {
 
     // match_threshold is stored as Euclidean distance (lower = stricter).
     // New slider mapping (1.6.0): threshold = 0.45 + (90 - strictness)/100,
-    // so strictness 90 → 0.45 (strictest, tolerates slight motion), 70 → 0.65
+    // so strictness 90 → 0.45 (strictest, tolerates slight motion), 60 → 0.75
     // (default), 20 → 1.15 (loosest, still rejects strangers). Invert:
     // strictness = 90 - (threshold - 0.45) * 100.
-    var thr = Math.round(90 - ((cfg.match_threshold || 0.65) - 0.45) * 100);
+    var thr = Math.round(90 - ((cfg.match_threshold || 0.75) - 0.45) * 100);
     thr = Math.max(20, Math.min(90, thr));  // clamp to slider range
     document.getElementById('cfg-threshold').value = thr;
     document.getElementById('cfg-threshold-val').textContent = thr;
@@ -1479,6 +1558,8 @@ function loadSettings() {
     // Custom range tracks/knobs follow the loaded values.
     rngSync(document.getElementById('cfg-threshold'));
     rngSync(document.getElementById('cfg-antispoof-threshold'));
+    document.getElementById('cfg-capture-unknown').checked = !!cfg.capture_unknown_faces;
+    document.getElementById('cfg-coldboot-key').checked = !!cfg.cold_boot_key_trigger;
   } catch(e) { showBanner('settings', '读取设置失败: ' + e.message, 'error'); }
   // Always reconcile the liveness-dependent fields with the current select
   // value, even if loading config failed above — so the glasses / anti-spoof
@@ -1499,6 +1580,8 @@ function onSaveSettings() {
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
     low_light_enhance: document.getElementById('cfg-low-light').checked,
     unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
+    capture_unknown_faces: document.getElementById('cfg-capture-unknown').checked,
+    cold_boot_key_trigger: document.getElementById('cfg-coldboot-key').checked,
     camera_rotation: parseInt(document.getElementById('cfg-rotation').value) || 0,
     camera_device: document.getElementById('cfg-camera').value
   };
@@ -2099,6 +2182,17 @@ function onSave() {
 }
 
 function refreshLogs() {
+  var src = document.getElementById('log-source').value;
+  // "清空日志" only applies to text logs — swap it for the capture gallery's
+  // "清空记录" button.
+  document.getElementById('btn-clear-logs').style.display =
+    (src === 'unknown') ? 'none' : 'inline-block';
+  document.getElementById('btn-clear-faces').style.display =
+    (src === 'unknown') ? 'inline-block' : 'none';
+  if (src === 'unknown') {
+    renderUnknownFaces();
+    return;
+  }
   try {
     var src = document.getElementById('log-source').value;
     var json;
@@ -2152,6 +2246,90 @@ function clearLogs() {
 }
 
 // ==================================================================
+// Unknown-face capture gallery ("识别失败记录" log source)
+// ==================================================================
+// Photos are served by the WebView2 virtual host mapping set up on the C++
+// side ("facelogin-captures" → <dataDir>\data\unknown), so cards use plain
+// <img> tags and no bytes cross the COM boundary.
+var FACES_BASE = 'https://facelogin-captures/';
+
+function renderUnknownFaces() {
+  var viewer = document.getElementById('log-viewer');
+  try {
+    var events = JSON.parse(H.GetUnknownFaceEvents());
+    if (!events.length) {
+      viewer.innerHTML = '<div class="log-warn">暂无识别失败记录（锁屏出现未匹配人脸且已在设置中开启「记录未匹配人脸」时才会产生）</div>';
+      return;
+    }
+    var html = '<div class="faces-grid">';
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i];
+      var file = String(e.file).replace(/["'<>\\]/g, '');
+      var dist = (typeof e.distance === 'number' && e.distance >= 0)
+        ? '距离 ' + e.distance.toFixed(3) : '距离 -';
+      html += '<div class="face-card" onclick="viewUnknownFace(\'' + file + '\')" '
+        + 'oncontextmenu="return onFaceCardCtx(event,\'' + file + '\')">'
+        + '<img src="' + FACES_BASE + file + '" alt="未匹配人脸" loading="lazy">'
+        + '<div class="face-card-info">'
+        + '<span class="face-card-ts">' + escapeHtml(String(e.ts || '')) + '</span>'
+        + '<span class="face-card-dist">' + dist + '</span>'
+        + '</div>'
+        + '</div>';
+    }
+    html += '</div>';
+    viewer.innerHTML = html;
+  } catch(e) {
+    viewer.innerHTML = '<div class="log-error">读取失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+// Right-click a card → small context menu with a single "删除" action.
+function onFaceCardCtx(ev, file) {
+  ev.preventDefault();
+  var menu = document.getElementById('face-ctx-menu');
+  var fileInput = document.getElementById('face-ctx-file');
+  fileInput.value = file;
+  var el = document.getElementById('face-ctx-del');
+  el.onclick = function() {
+    closeFaceCtx();
+    if (!confirm('确定删除这条识别失败记录吗？')) return;
+    try {
+      if (H.DeleteUnknownFace(fileInput.value)) {
+        renderUnknownFaces();
+      } else {
+        alert('删除失败，请重试。');
+      }
+    } catch(e) { alert('删除失败: ' + e.message); }
+  };
+  // Position near the cursor, keep inside the window.
+  var x = Math.min(ev.clientX, window.innerWidth - 120);
+  var y = Math.min(ev.clientY, window.innerHeight - 60);
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  menu.classList.add('active');
+  return false;
+}
+function closeFaceCtx() {
+  document.getElementById('face-ctx-menu').classList.remove('active');
+}
+function onClearUnknownFaces() {
+  if (!confirm('确定清空全部识别失败记录吗？照片与记录将全部删除，不可恢复。')) return;
+  try {
+    H.ClearUnknownFaces();
+    renderUnknownFaces();
+  } catch(e) { alert('清空失败: ' + e.message); }
+}
+
+function viewUnknownFace(file) {
+  var ov = document.getElementById('face-viewer-overlay');
+  document.getElementById('face-viewer-img').src = FACES_BASE + file;
+  ov.classList.add('active');
+}
+function closeFaceViewer() {
+  document.getElementById('face-viewer-overlay').classList.remove('active');
+}
+
+// ==================================================================
 // About modal — opened by clicking the footer version tag
 // ==================================================================
 // Version tags (footer + About card) are populated from the C++ side's
@@ -2159,7 +2337,7 @@ function clearLogs() {
 // of truth for the version string (no hardcoded duplicates to bump per
 // release). In a browser preview there is no host, so fall back to a fixed
 // default so the layout still renders.
-var CONSOLE_VERSION = '1.7.1';
+var CONSOLE_VERSION = '1.8.0';
 function consoleVersion() {
   try { if (H.GetConsoleVersion) { var v = H.GetConsoleVersion(); if (v) return v; } } catch (e) {}
   return CONSOLE_VERSION;

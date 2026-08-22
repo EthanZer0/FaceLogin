@@ -3,6 +3,7 @@
 #include "resource.h"
 #include "../common/logger.h"
 #include "../common/ipc_protocol.h"
+#include "../common/registry_util.h"
 #include <wincred.h>
 #include <ntstatus.h>
 #include <ntsecapi.h>
@@ -215,32 +216,73 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         return S_OK;
     }
 
-    // Cold boot: start auth immediately.
-    // CredUI (Windows Security dialog, e.g. Settings password change,
-    // Edge password viewing): use the same input-polling flow as unlock.
-    // Auto-triggering would prematurely close the CredUI dialog for
-    // multi-step workflows like PIN change or fingerprint enrollment.
-    // The 2000ms threshold filters out clicks on the dialog's own UI.
-    // Unlock / switch user: start a background thread that polls
-    // GetLastInputInfo() for new keyboard/mouse input. When input
-    // is detected, the thread calls StartAuth() which connects the
-    // pipe asynchronously. The pipe callback stores credentials and
-    // triggers CredentialsChanged(), causing LogonUI to re-enumerate
-    // and call GetSerialization() to retrieve ready credentials.
+    // Failed (no match / timeout): do NOT auto-restart authentication on
+    // re-enumeration. OnPipeResponse → TriggerReEnumeration → Advise would
+    // otherwise loop forever on the lock screen: the camera keeps turning
+    // on, and every re-enumeration resets the password field the user is
+    // typing into (password box keeps getting cleared/selected). Instead,
+    // restart the input-detection thread so the NEXT key press retries —
+    // that is the user's expected retry path (clicking the tile also
+    // retries via SetSelected).
+    if (m_state == State::Failed) {
+        FACELOGIN_INFO(L"Advise: failed state — restarting input detection (key press retries)");
+        m_waitingStartTick = GetTickCount();
+        StartInputDetectionThread();
+        return S_OK;
+    }
+
+    // Camera/auth activation is deferred entirely to SetSelected() — the
+    // tile only starts recognition (or the input-detection thread) when
+    // LogonUI actually SELECTS our tile.
+    //
+    // Why: Advise is invoked for EVERY credential enumeration, including
+    // flows that never intend to use our tile:
+    //   - MSA PIN-reset wizard reuses the LogonUI CP enumeration: any key
+    //     press / click inside the wizard was treated as "new input" by the
+    //     input-detection thread → StartAuth → the camera kept turning on,
+    //     the wizard got interrupted and PIN setup failed ("PIN 不可用").
+    //   - Typing on the password/PIN tile: SetDeselected stops the thread,
+    //     but there was a race window after LogonUI switched tiles where
+    //     the camera could still fire once.
+    // SetSelected is only called for OUR tile, so deferring activation is
+    // exact — no guessing about which UI flow loaded us.
     bool coldBoot = m_pProvider ? m_pProvider->IsColdBoot() : true;
     bool credUI = m_pProvider ? m_pProvider->IsCredUI() : false;
     FACELOGIN_INFO(L"Advise: coldBoot=%d, credUI=%d, m_pProvider=%p",
                   coldBoot, credUI, m_pProvider);
+
+    m_state = State::Waiting;
+    m_waitingStartTick = GetTickCount();
+    FACELOGIN_INFO(L"Advise: baseline tick = %lu", m_waitingStartTick);
+
     if (coldBoot) {
-        FACELOGIN_INFO(L"Advise: cold boot — starting auth immediately");
-        StartAuth();
+        // Cold boot: start auth HERE, not in SetSelected. With autoLogon=TRUE
+        // (GetCredentialCount), LogonUI polls GetSerialization directly and
+        // does NOT call SetSelected — deferring cold-boot activation to
+        // SetSelected left the login screen stuck at "press any key" with no
+        // input-detection thread running (1.8.0 regression, user report).
+        // StartAuth is idempotent (skips if already connected) and the
+        // input-detection thread guards on m_inputThreadRunning, so a
+        // concurrent SetSelected is harmless.
+        if (ReadRegDword(REGVAL_COLD_BOOT_KEY_TRIGGER, 0) != 0) {
+            FACELOGIN_INFO(L"Advise: cold boot + key-trigger enabled — waiting for key press");
+            StartInputDetectionThread();
+            if (m_pCredentialEvents) {
+                m_pCredentialEvents->SetFieldString(
+                    this, 1, L"\u6309\u4e0b\u4efb\u610f\u952e\u4ee5\u5f00\u59cb\u4eba\u8138\u8bc6\u522b");
+            }
+        } else {
+            FACELOGIN_INFO(L"Advise: cold boot — starting auth immediately");
+            StartAuth();
+        }
     } else {
-        // Unlock / switch user. Probe the service up-front so a down service
-        // surfaces immediately ("service not running") instead of showing
-        // "press any key" and only revealing the failure after the user presses
-        // (and the connect retry times out ~5s later).
+        // Non-cold-boot (unlock / switch user / PIN-reset wizard): keep
+        // activation deferred to SetSelected. LogonUI calls SetSelected for
+        // the default-selected tile here, while flows that never select our
+        // tile (MSA PIN-reset wizard, typing on the PIN/password tile) never
+        // start the camera — that was the PIN-unavailable fix.
         if (!facelogin::PipeClient::ProbeServiceAvailable()) {
-            FACELOGIN_WARN(L"Advise: service pipe missing at lock time — showing service-not-running notice");
+            FACELOGIN_WARN(L"Advise: service pipe missing — showing service-not-running notice");
             m_statusText = L"人脸识别服务未运行，请检查 FaceLoginService";
             m_state = State::Error;
             if (m_pCredentialEvents) {
@@ -248,12 +290,6 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
             }
             return S_OK;
         }
-
-        FACELOGIN_INFO(L"Advise: unlock scenario — starting input detection thread");
-        m_state = State::Waiting;
-        m_waitingStartTick = GetTickCount();
-        FACELOGIN_INFO(L"Advise: baseline tick = %lu", m_waitingStartTick);
-        StartInputDetectionThread();
     }
 
     FACELOGIN_INFO(L"=== Advise EXIT (state=%d) ===", static_cast<int>(m_state));
@@ -287,8 +323,43 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
     bool coldBoot = m_pProvider ? m_pProvider->IsColdBoot() : true;
     bool credUI = m_pProvider ? m_pProvider->IsCredUI() : false;
 
+    // Activation model (user-specified):
+    //   - ONLY the cold-boot entry triggers auth automatically — and that is
+    //     done in Advise() (autoLogon=TRUE means LogonUI never calls
+    //     SetSelected for it). The "开机启动需按键触发" setting only governs
+    //     that FIRST automatic trigger.
+    //   - Every later activation — re-selecting the tile after switching away,
+    //     or retrying after a failure/timeout — must wait for a key press.
+    //     So SetSelected NEVER starts auth directly; it only (re)starts the
+    //     input-detection thread. This matches the lock-screen behavior the
+    //     user already relies on (switch back → press any key).
+    if (m_state == State::Failed) {
+        // Failed (no match / timeout) + tile re-selected: start waiting for a
+        // key press to retry. Never auto-restart — the failed text stays
+        // visible and the next key press is the explicit retry.
+        FACELOGIN_INFO(L"SetSelected: failed state — restarting input detection (key press retries)");
+        m_waitingStartTick = GetTickCount();
+        StartInputDetectionThread();
+    } else if (m_state == State::Waiting && !m_inputThreadRunning) {
+        // Waiting + (re)selected — either the initial selection after a cold
+        // boot that did NOT auto-start (key-trigger on), or the user switched
+        // back to the face tile after SetDeselected stopped everything.
+        // Either way: start the input-detection thread and require a key press.
+        FACELOGIN_INFO(L"SetSelected: tile selected — starting input detection (key press starts auth)");
+        m_waitingStartTick = GetTickCount();
+        StartInputDetectionThread();
+        // Repush the Waiting text (clears any residual "识别中..." / stale text)
+        m_statusText.clear();
+        if (m_pCredentialEvents) {
+            m_pCredentialEvents->SetFieldString(
+                this, 1, L"\u6309\u4e0b\u4efb\u610f\u952e\u4ee5\u5f00\u59cb\u4eba\u8138\u8bc6\u522b");
+        }
+    }
+
     if (coldBoot) {
         // Cold boot: always poll GetSerialization for credentials.
+        // (Advise already started auth; if the tile is re-selected while
+        // Waiting, GetSerialization returns S_OK until a key press starts it.)
         *pbAutoLogon = TRUE;
     } else if (m_state == State::Ready) {
         // Unlock / CredUI + credentials ready (bg thread finished auth):
@@ -307,6 +378,25 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
 
 STDMETHODIMP FaceLoginCredential::SetDeselected() {
     FACELOGIN_INFO(L"=== SetDeselected called (state=%d) ===", static_cast<int>(m_state));
+
+    // The user moved to ANOTHER tile (e.g. the password tile) — stop
+    // everything face-related so recognition can neither fire off a password
+    // keystroke nor keep the camera/pipe busy while the user types elsewhere:
+    //   1. Stop the input-detection thread (a key press while typing the
+    //      password must NOT start recognition).
+    //   2. Cancel any in-flight auth: disconnecting the pipe makes the service
+    //      notice the client went away and abort + release the camera.
+    //   3. Reset to Waiting ONLY when an auth was actually cancelled, so a
+    //      later re-selection (SetSelected) restarts the flow cleanly.
+    //      A FAILED state is left untouched: the failure text stays visible
+    //      and re-selecting the tile (SetSelected) is the explicit retry.
+    StopInputDetectionThread();
+    if (m_state == State::Authenticating && m_pipeClient) {
+        FACELOGIN_INFO(L"SetDeselected: cancelling in-flight auth (user switched tiles)");
+        m_pipeClient->Disconnect();
+        m_pipeClient.reset();
+        m_state = State::Waiting;
+    }
     return S_OK;
 }
 
@@ -896,6 +986,16 @@ void FaceLoginCredential::OnPipeStatus(const std::wstring& message) {
 }
 
 void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& message) {
+    // Ignore LATE results: if the auth was cancelled in the meantime
+    // (SetDeselected — user switched to another tile), the read thread may
+    // still deliver a terminal message after Disconnect. Applying it would
+    // overwrite the Waiting state and make a later tile re-selection auto-
+    // restart auth (camera flashes on/off while the user just browses tiles).
+    if (m_state != State::Authenticating) {
+        FACELOGIN_INFO(L"OnPipeResponse: auth no longer active (state=%d) — ignoring late result",
+                       static_cast<int>(m_state));
+        return;
+    }
     if (success) {
         auto result = facelogin::ipc::ParseAuthMessage(message);
 

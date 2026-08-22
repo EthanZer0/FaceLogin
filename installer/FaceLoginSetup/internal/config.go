@@ -19,15 +19,20 @@ import (
 // The switch defaults to OFF. Each release that needs an upgrade action must
 // explicitly turn it on — this is the "custom action area" that can be
 // enabled/disabled per version.
-var ConfigUpgradeEnabled = false
+//
+// v1.8.0: ON — match_threshold 0.65 → 0.75 (the 512-D model's same-person
+// range measures 0.14–0.80; 0.65 sat too close to the high end of real-user
+// matches under illumination changes, causing intermittent unlock failures —
+// 0.75 keeps strangers >0.94 comfortably rejected). Existing installs must be
+// force-synced; new installs get it from the fresh-default below. LATER
+// RELEASES MUST SET THIS BACK TO false.
+var ConfigUpgradeEnabled = true
 
 // ConfigUpgradeForcedDefaults lists the keys force-synced to these values
 // when ConfigUpgradeEnabled is true. Keys NOT listed here are preserved
-// verbatim on upgrade. Declared per-release; this release enforces the
-// threshold defaults that changed in v1.0.1.
+// verbatim on upgrade.
 var ConfigUpgradeForcedDefaults = map[string]any{
-	"match_threshold":      0.65,
-	"anti_spoof_threshold": 0.30,
+	"match_threshold": 0.75,
 }
 
 // EnsureConfigDefaults ensures config.json exists and — when the per-release
@@ -49,15 +54,17 @@ func EnsureConfigDefaults(configPath string) error {
 		// No config yet — start from a full default so the app loads sane
 		// values on first run (the app's own defaults mirror these).
 		cfg = map[string]any{
-			"recognition_model":     "onnx",
-			"detector":              "scrfd",
-			"liveness_method":       "none",
-			"match_threshold":       0.65,
-			"anti_spoof_threshold":  0.30,
-			"blink_glasses_mode":    false,
-			"low_light_enhance":     false,
+			"recognition_model":       "onnx",
+			"detector":                "scrfd",
+			"liveness_method":         "none",
+			"match_threshold":         0.75,
+			"anti_spoof_threshold":    0.30,
+			"blink_glasses_mode":      false,
+			"low_light_enhance":       false,
 			"unload_models_after_auth": false,
-			"camera_rotation":       0,
+			"camera_rotation":         0,
+			"capture_unknown_faces":   false,
+			"cold_boot_key_trigger":   false,
 		}
 	}
 

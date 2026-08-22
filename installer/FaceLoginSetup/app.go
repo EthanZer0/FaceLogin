@@ -131,6 +131,13 @@ func (a *App) Install(installDir string) map[string]interface{} {
 	// none exists. Other user settings are preserved.
 	if err := internal.EnsureConfigDefaults(configPath); err != nil {
 		a.emit(60, "写入默认设置", "warn", err.Error())
+		// Persist the failure so a silent config miss (e.g. match_threshold
+		// not force-synced) can be diagnosed from the install dir.
+		logErr := os.WriteFile(filepath.Join(installDir, "data", "install.log"),
+			[]byte("EnsureConfigDefaults failed: "+err.Error()+"\n"), 0644)
+		if logErr != nil {
+			a.emit(60, "写入默认设置", "warn", "install.log 写入失败: "+logErr.Error())
+		}
 	} else {
 		a.emit(60, "写入默认设置", "done", "")
 	}

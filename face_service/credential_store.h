@@ -223,6 +223,11 @@ public:
                                               size_t probeDim,
                                               float threshold = 0.30f);
 
+    // Distance to the NEAREST enrolled embedding regardless of threshold
+    // (1e10f when nothing comparable exists). Diagnostics only — lets the
+    // service's light-variant fallback report how far the probe actually was.
+    float FindNearestDistance(const float probeEmbedding[], size_t probeDim) const;
+
     // Get the number of registered users
     size_t GetUserCount() const { return m_users.size(); }
 

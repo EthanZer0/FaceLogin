@@ -72,17 +72,32 @@ func main() {
 	// in memory on load, no re-enrollment required.
 	// v1.4.0: no forced config overrides needed. Removed the unused legacy dlib
 	// models (recognizer + HOG detector) — smaller installer, no re-enrollment.
-	internal.ConfigUpgradeEnabled = false
+	//
+	// v1.8.0: match_threshold 0.65 → 0.75 (illumination-drift fix). NOTE: this
+	// assignment OVERRIDES the config.go default — keep the two in sync and
+	// set BOTH back to false in later releases.
+	internal.ConfigUpgradeEnabled = true
 
 	// =========================================================================
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.7.1"
-	internal.NoticeTitle = "FaceLogin 1.7.1 更新说明"
-	internal.NoticeBody = "本次为修复更新：\n" +
-		"- 修复从本地账号切换/绑定到微软账号后，Console 仍显示本地账号的问题。此前链接微软账号的本地账户在 Console 中会被误判为本地，现已在打开 Console 时正确识别微软账号\n" +
-		"- 已录入用户：打开 Console 若提示「账号身份已变更」，按提示输入微软账号密码刷新一次，即可继续正常使用人脸登录\n" +
+	internal.NoticeVersion = "1.8.0"
+	internal.NoticeTitle = "FaceLogin 1.8.0 更新说明"
+	internal.NoticeBody = "新功能：\n" +
+		"- 陌生人未匹配人脸记录（可选开启）：锁屏出现未匹配人脸时保存照片与记录，可在 Console 日志页浏览/删除（仅本机存储）\n" +
+		"- 开机登录按键触发可选：默认开机自动识别，可在设置中改为按任意键开始（与锁屏一致）\n" +
+		"识别可靠性：\n" +
+		"- 匹配阈值重校准 0.65 → 0.75：环境光照变化（如换教室/宿舍）导致解锁失败的问题显著改善，陌生人拦截不受影响\n" +
+		"- 内置 USB 摄像头帧率修复：优先压缩格式取流，720p 下稳定 30fps，人脸录入不再卡住\n" +
+		"交互完善：\n" +
+		"- 冷启动仅首次自动识别：识别失败/超时、或切换到其他登录磁贴再切回后，按任意键才重新识别\n" +
+		"- 锁屏识别失败不再循环启动摄像头，切换密码磁贴时识别立即停止，密码输入不再被打断\n" +
+		"修复：\n" +
+		"- 修复微软账户重置 PIN 时摄像头反复调用、PIN 显示不可用的问题\n" +
+		"- 修复从本地账号切换/绑定到微软账户后 Console 仍显示本地账号的问题\n" +
+		"- 修复升级安装后匹配阈值未同步为新默认值的问题\n" +
+		"提示：\n" +
 		"- 已录入的人脸数据不受影响，无需重新录入"
 
 	// Initialize the embedded resource filesystem in the internal package

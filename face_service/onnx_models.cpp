@@ -212,6 +212,97 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
     return ComputeEmbedding(faceChip);
 }
 
+// ---------------------------------------------------------------------------
+// Photometric variants (light-robust recognition fallback)
+// ---------------------------------------------------------------------------
+
+// Gray-World white balance: scale the R/G/B channel means to be equal so a
+// warm (dorm) vs cool (classroom) light source no longer tints the chip.
+// Gains are clamped to [0.5, 2.0] so a pathological single-color frame cannot
+// blow the correction out of proportion.
+static void ApplyWhiteBalance(dlib::matrix<dlib::rgb_pixel>& chip) {
+    long n = static_cast<long>(chip.size());
+    if (n == 0) return;
+    double sumR = 0, sumG = 0, sumB = 0;
+    for (long i = 0; i < n; i++) {
+        const auto& p = chip(i);
+        sumR += p.red; sumG += p.green; sumB += p.blue;
+    }
+    double meanR = sumR / n, meanG = sumG / n, meanB = sumB / n;
+    if (meanR < 1e-6 || meanG < 1e-6 || meanB < 1e-6) return;
+    double avg = (meanR + meanG + meanB) / 3.0;
+    double gr = avg / meanR, gg = avg / meanG, gb = avg / meanB;
+    auto clampGain = [](double g) { return g < 0.5 ? 0.5 : (g > 2.0 ? 2.0 : g); };
+    gr = clampGain(gr); gg = clampGain(gg); gb = clampGain(gb);
+    for (long i = 0; i < n; i++) {
+        auto& p = chip(i);
+        int r = static_cast<int>(p.red   * gr);
+        int g = static_cast<int>(p.green * gg);
+        int b = static_cast<int>(p.blue  * gb);
+        p.red   = static_cast<unsigned char>(r < 0 ? 0 : (r > 255 ? 255 : r));
+        p.green = static_cast<unsigned char>(g < 0 ? 0 : (g > 255 ? 255 : g));
+        p.blue  = static_cast<unsigned char>(b < 0 ? 0 : (b > 255 ? 255 : b));
+    }
+}
+
+// Brightness normalization: map the chip's mean luma to 128 so exposure
+// differences (dark vs bright rooms) no longer shift the embedding. Gain is
+// clamped to [0.5, 2.0].
+static void ApplyBrightnessNorm(dlib::matrix<dlib::rgb_pixel>& chip) {
+    long n = static_cast<long>(chip.size());
+    if (n == 0) return;
+    double sum = 0;
+    for (long i = 0; i < n; i++) {
+        const auto& p = chip(i);
+        sum += (p.red + p.green + p.blue) / 3.0;
+    }
+    double mean = sum / n;
+    if (mean < 1e-6) return;
+    double gain = 128.0 / mean;
+    if (gain < 0.5) gain = 0.5;
+    if (gain > 2.0) gain = 2.0;
+    for (long i = 0; i < n; i++) {
+        auto& p = chip(i);
+        int r = static_cast<int>(p.red   * gain);
+        int g = static_cast<int>(p.green * gain);
+        int b = static_cast<int>(p.blue  * gain);
+        p.red   = static_cast<unsigned char>(r > 255 ? 255 : r);
+        p.green = static_cast<unsigned char>(g > 255 ? 255 : g);
+        p.blue  = static_cast<unsigned char>(b > 255 ? 255 : b);
+    }
+}
+
+std::vector<float> OnnxRecognizer::ComputeEmbedding(
+    const dlib::matrix<dlib::rgb_pixel>& image,
+    const dlib::full_object_detection& landmarks,
+    LightVariant variant) {
+    if (variant == LightVariant::Original) {
+        return ComputeEmbedding(image, landmarks);
+    }
+    // Align exactly like the baseline path (OuterEye anchors), then correct
+    // the light on the 112×112 chip.
+    dlib::matrix<dlib::rgb_pixel> faceChip(112, 112);
+    {
+        const int kArc[5] = {39, 93, 80, 52, 69};
+        std::vector<dlib::vector<double, 2>> src, dst;
+        src.reserve(5); dst.reserve(5);
+        const double arcface_dst[5][2] = {
+            {38.2946, 51.6963}, {73.5318, 51.5014}, {56.0252, 71.7366},
+            {41.5493, 92.3655}, {70.7299, 92.2041}
+        };
+        for (int i = 0; i < 5; i++) {
+            auto& p = landmarks.part(kArc[i]);
+            src.emplace_back(static_cast<double>(p.x()), static_cast<double>(p.y()));
+            dst.emplace_back(arcface_dst[i][0], arcface_dst[i][1]);
+        }
+        dlib::point_transform_affine tform = dlib::find_similarity_transform(src, dst);
+        dlib::transform_image(image, faceChip, dlib::interpolate_bilinear(), dlib::inv(tform));
+    }
+    if (variant == LightVariant::WhiteBalance) ApplyWhiteBalance(faceChip);
+    else if (variant == LightVariant::Brightness) ApplyBrightnessNorm(faceChip);
+    return ComputeEmbedding(faceChip);
+}
+
 float OnnxRecognizer::Distance(const std::vector<float>& a, const std::vector<float>& b) {
     if (a.size() != b.size() || a.empty()) return 1e10f;
     float sum = 0.0f;
