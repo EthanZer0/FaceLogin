@@ -12,8 +12,10 @@
 #include <algorithm>
 #include <cmath>
 #include <wtsapi32.h>
+#include <psapi.h>
 
 #pragma comment(lib, "wtsapi32.lib")
+#pragma comment(lib, "psapi.lib")
 
 namespace facelogin {
 
@@ -547,6 +549,33 @@ void FaceService::UnloadHeavyModels() {
     FACELOGIN_INFO(L"Heavy models unloaded after auth");
 }
 
+// Empty the process working set so freed model pages leave the RESIDENT set
+// (heap free returns the memory to the allocator but Windows keeps the pages
+// resident until they're trimmed or evicted — observable as high RSS while
+// "idle"). Pages are paged out to the standby list and re-faulted on next
+// access; combined with UnloadHeavyModels() the service's idle footprint after
+// auth drops to the true baseline. Called only on the auth-completion path.
+void FaceService::TrimWorkingSet() {
+    // Log RSS before/after so the benefit is measurable from service.log.
+    PROCESS_MEMORY_COUNTERS pmc = {};
+    pmc.cb = sizeof(PROCESS_MEMORY_COUNTERS);
+    SIZE_T beforeWs = 0, afterWs = 0;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        beforeWs = pmc.WorkingSetSize;
+    }
+
+    BOOL ok = SetProcessWorkingSetSizeEx(
+        GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1, 0);
+
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        afterWs = pmc.WorkingSetSize;
+    }
+    FACELOGIN_INFO(L"TrimWorkingSet: %s (WS %llu KB -> %llu KB)",
+                   ok ? L"ok" : L"FAILED",
+                   static_cast<unsigned long long>(beforeWs / 1024),
+                   static_cast<unsigned long long>(afterWs / 1024));
+}
+
 void FaceService::StartBackgroundModelLoad() {
     // Capture the config values the loader needs NOW. The main thread can
     // rewrite m_config via CONFIG_RELOAD while the loader is running; reading
@@ -783,6 +812,12 @@ void FaceService::Run() {
             // models resident for the fastest auth).
             if (m_config.unload_models_after_auth) {
                 UnloadHeavyModels();
+                // Empty the working set so the freed model pages actually leave
+                // the resident set (heap free ≠ physical-page return on
+                // Windows). Pages are paged out and re-faulted in on demand —
+                // the next auth must reload the models from disk anyway, so
+                // this only costs a few extra page faults.
+                TrimWorkingSet();
             }
             m_pipeServer->Disconnect();
         }

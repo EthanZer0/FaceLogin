@@ -62,6 +62,7 @@ private:
     bool EnsureModelsLoaded();         // block until heavy models are ready
     bool LoadHeavyModels(bool lowLightEnhance);  // shape pred + recognizer + anti-spoof
     void UnloadHeavyModels();          // release model memory after auth (1.6.0)
+    void TrimWorkingSet();             // empty process working set after unload (1.9.0)
     void ValidateLivenessMethod();     // anti-spoof → blink fallback (main thread only)
     void AbortModelLoadWait();         // release anyone blocked in EnsureModelsLoaded
 
