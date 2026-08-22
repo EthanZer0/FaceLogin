@@ -84,8 +84,8 @@ func main() {
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.8.0"
-	internal.NoticeTitle = "FaceLogin 1.8.0 更新说明"
+	internal.NoticeVersion = "1.9.0"
+	internal.NoticeTitle = "FaceLogin 1.9.0 更新说明"
 	internal.NoticeBody = "新功能：\n" +
 		"- 陌生人未匹配人脸记录（可选开启）：锁屏出现未匹配人脸时保存照片与记录，可在 Console 日志页浏览/删除（仅本机存储）\n" +
 		"- 开机登录按键触发可选：默认开机自动识别，可在设置中改为按任意键开始（与锁屏一致）\n" +

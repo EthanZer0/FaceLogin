@@ -7,8 +7,8 @@ IDI_ENROLLMENT_ICON ICON "..\\assets\\facelogin.ico"
 
 // Version info
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,8,0,0
-PRODUCTVERSION  1,8,0,0
+FILEVERSION     1,9,0,0
+PRODUCTVERSION  1,9,0,0
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0
 FILEOS          VOS_NT_WINDOWS32
@@ -21,12 +21,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "FaceLogin"
             VALUE "FileDescription", "FaceLogin Console"
-            VALUE "FileVersion", "1.8.0.0"
+            VALUE "FileVersion", "1.9.0.0"
             VALUE "InternalName", "FaceLoginConsole.exe"
             VALUE "LegalCopyright", "Copyright (C) 2026"
             VALUE "OriginalFilename", "FaceLoginConsole.exe"
             VALUE "ProductName", "FaceLogin"
-            VALUE "ProductVersion", "1.8.0.0"
+            VALUE "ProductVersion", "1.9.0.0"
         END
     END
     BLOCK "VarFileInfo"
