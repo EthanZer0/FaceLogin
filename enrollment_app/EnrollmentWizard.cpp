@@ -362,6 +362,16 @@ bool EnrollmentWizard::StartPreview() {
     m_previewRunning = true;
     m_frameRunning = true;
     m_frameReinitCount = 0;
+    m_exposureIter = 0;
+
+    // Face-exposure auto-control (1.9.0, config-gated): attach to this
+    // camera. The frame thread steers toward the target and applies the
+    // session gain to every cached frame, so preview/capture/anti-spoof all
+    // see one normalized brightness domain — matching the service side at
+    // unlock time.
+    m_exposure.Attach(m_webcam->GetVideoProcAmp(), m_webcam->GetCameraControl());
+    m_exposure.Configure(m_config.face_exposure_control, m_config.face_exposure_target,
+                         m_config.face_exposure_band);
 
     // Single background thread: load models (if needed) → GrabFrame → JPEG
     // encode → detect → update caches. The UI thread stays completely free;
@@ -407,7 +417,14 @@ bool EnrollmentWizard::StartPreview() {
                 }
                 dlib::matrix<dlib::rgb_pixel> frame;
                 bool ok = m_webcam->GrabFrame(frame);
-                if (ok) RotateFrame(frame, m_config.camera_rotation);
+                if (ok) {
+                    RotateFrame(frame, m_config.camera_rotation);
+                    // Keep the exposure session gain (converged during
+                    // preview) on captured samples — same brightness domain
+                    // as every preview/unlock frame. Gain is constant during
+                    // capture; re-steering here would make samples fluctuate.
+                    m_exposure.ApplySessionGain(frame);
+                }
                 {
                     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
                     if (ok) {
@@ -440,10 +457,16 @@ bool EnrollmentWizard::StartPreview() {
                         break;
                     }
                     FACELOGIN_WARN(L"Preview camera stalled — re-initializing (%d/3)", m_frameReinitCount);
+                    m_exposure.Reset();   // drop the stale camera's control handles
                     m_webcam->Shutdown();
                     if (m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
                         FACELOGIN_INFO(L"Preview camera re-initialized");
                         m_frameReinitCount = 0;   // a successful re-init resets the budget
+                        m_exposure.Attach(m_webcam->GetVideoProcAmp(),
+                                          m_webcam->GetCameraControl());
+                        m_exposure.Configure(m_config.face_exposure_control,
+                                             m_config.face_exposure_target,
+                                             m_config.face_exposure_band);
                     } else {
                         FACELOGIN_ERROR(L"Preview camera re-init failed — giving up until next start");
                         break;   // exit frame loop; next StartPreview retries
@@ -472,6 +495,11 @@ bool EnrollmentWizard::StartPreview() {
                                                static_cast<long>(det->y2));
                     m_detector->DetectLandmarks(frame, fwl.rect, fwl.landmarks);
                     auto tLand = std::chrono::steady_clock::now();
+                    // Face-exposure control (1.9.0): steer toward the target —
+                    // camera first, digital gain tops up, and this frame gets
+                    // the gain applied in place so preview + cache stay in the
+                    // normalized domain. Logs only on actual corrections.
+                    m_exposure.SteerFrame(frame, fwl.rect, ++m_exposureIter);
                     faces.push_back(std::move(fwl));
                     faceJson = FacesToJson(faces);
                     // Diagnostics: frame-thread pipeline stage timing. Each
@@ -489,6 +517,9 @@ bool EnrollmentWizard::StartPreview() {
                                        grabUs, jpegUs, detUs, landUs);
                     }
                 } else {
+                    // No face this frame — keep the session gain applied so
+                    // the cached frame stays in the same brightness domain.
+                    m_exposure.ApplySessionGain(frame);
                     long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tJpeg).count();
                     long long grabUs = std::chrono::duration_cast<std::chrono::microseconds>(tGrab - itT0).count();
                     long long jpegUs = std::chrono::duration_cast<std::chrono::microseconds>(tJpeg - tGrab).count();
@@ -626,6 +657,10 @@ void EnrollmentWizard::StopPreview() {
     // from a wedged driver call sees the mismatch and exits instead of
     // touching the (possibly re-initialized) camera next to the fresh thread.
     ++m_frameGeneration;
+
+    // Restore the camera's auto controls FIRST — the borrowed control
+    // interfaces must be touched while the capture object is still alive.
+    m_exposure.Reset();
 
     // Shut down the camera FIRST so a synchronous ReadSample that is blocked
     // (camera taken over by the credential provider at lock) returns an error.

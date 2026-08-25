@@ -125,6 +125,9 @@ std::string ConfigToJson(const AppConfig& cfg) {
     ss << "  "; jsonWriteString(ss, "anti_spoof_threshold"); ss << ": " << cfg.anti_spoof_threshold << ",\n";
     ss << "  "; jsonWriteString(ss, "blink_glasses_mode"); ss << ": " << (cfg.blink_glasses_mode ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "low_light_enhance"); ss << ": " << (cfg.low_light_enhance ? "true" : "false") << ",\n";
+    ss << "  "; jsonWriteString(ss, "face_exposure_control"); ss << ": " << (cfg.face_exposure_control ? "true" : "false") << ",\n";
+    ss << "  "; jsonWriteString(ss, "face_exposure_target"); ss << ": " << cfg.face_exposure_target << ",\n";
+    ss << "  "; jsonWriteString(ss, "face_exposure_band"); ss << ": " << cfg.face_exposure_band << ",\n";
     ss << "  "; jsonWriteString(ss, "unload_models_after_auth"); ss << ": " << (cfg.unload_models_after_auth ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "camera_rotation"); ss << ": " << cfg.camera_rotation << ",\n";
     ss << "  "; jsonWriteString(ss, "capture_unknown_faces"); ss << ": " << (cfg.capture_unknown_faces ? "true" : "false") << ",\n";
@@ -146,6 +149,9 @@ AppConfig ConfigFromJson(const std::string& json) {
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
     cfg.blink_glasses_mode = (jsonGetString(json, "blink_glasses_mode") == "true");
     cfg.low_light_enhance = (jsonGetString(json, "low_light_enhance") == "true");
+    cfg.face_exposure_control = (jsonGetString(json, "face_exposure_control") == "true");
+    cfg.face_exposure_target = jsonGetFloat(json, "face_exposure_target", 110.0f);
+    cfg.face_exposure_band = jsonGetFloat(json, "face_exposure_band", 15.0f);
     cfg.unload_models_after_auth = (jsonGetString(json, "unload_models_after_auth") == "true");
     int rotation = jsonGetInt(json, "camera_rotation", 0);
     // Only accept 0/90/180/270; anything else silently does nothing in

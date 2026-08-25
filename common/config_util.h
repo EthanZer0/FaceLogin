@@ -28,6 +28,18 @@ struct AppConfig {
     // brightness normalization to dark face chips before recognition AND
     // anti-spoof, so matches/scores don't degrade in dark scenes.
     bool           low_light_enhance      = false;
+    // Face-region exposure auto-control. false (default) = camera as-is.
+    // true = a feedback loop keeps the face's brightness in
+    // [face_exposure_target ± face_exposure_band] by steering the camera's
+    // manual exposure/gain (when supported) and topping up with a frame-level
+    // digital gain. Enrollment (console) and unlock (service) converge to the
+    // same target, so anchors and probes share one brightness domain across
+    // rooms — an over/under-exposed face no longer shifts the embedding.
+    // NOTE: enabling this changes the input domain of enrolled embeddings —
+    // re-enroll faces afterwards (same rule as the V5 alignment change).
+    bool           face_exposure_control  = false;
+    float          face_exposure_target   = 110.0f;   // face mean luma target
+    float          face_exposure_band     = 15.0f;    // ± tolerance band
     // Release heavy model sessions after an auth completes (2d106det +
     // recognizer + anti-spoof), dropping idle RSS from ~77MB to ~44MB. The
     // next auth reloads them synchronously (~200-500ms). Off (default) keeps

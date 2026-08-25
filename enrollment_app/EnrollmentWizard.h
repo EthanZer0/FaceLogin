@@ -18,6 +18,7 @@
 #include "../face_service/webcam_capture.h"
 #include "../face_service/credential_store.h"
 #include "../common/config_util.h"
+#include "../common/exposure_control.h"
 
 namespace facelogin {
 
@@ -194,6 +195,10 @@ private:
 
     // Camera & face processing
     std::unique_ptr<WebcamCapture>  m_webcam;
+    // Face exposure auto-control (1.9.0). Declared after m_webcam so it is
+    // destroyed FIRST — its Reset() must run while the camera handles live.
+    FaceExposureController m_exposure;
+    int m_exposureIter = 0;   // steer-log iteration counter (frame thread)
     std::unique_ptr<OnnxLandmarkDetector> m_detector;   // 106-point landmarks (2d106det)
     std::unique_ptr<OnnxDetector>   m_onnxDetector;   // SCRFD detection
     std::unique_ptr<OnnxRecognizer> m_onnxRecognizer; // InsightFace recognition
