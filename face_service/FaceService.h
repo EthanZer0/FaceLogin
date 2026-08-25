@@ -15,6 +15,7 @@
 #include "onnx_models.h"
 #include "webcam_capture.h"
 #include "webcam_capture_dshow.h"
+#include "../common/exposure_control.h"
 #include "pipe_server.h"
 #include "credential_store.h"
 #include "../common/config_util.h"
@@ -70,6 +71,9 @@ private:
     // MF preferred, DS fallback; standalone: MF) and release it afterwards.
     bool EnsureCameraForAuth();
     void ReleaseCamera();
+    // Attach the exposure controller to the active camera + apply config
+    // (called after every camera (re)init).
+    void AttachExposureControl();
 
     // Lazy model loading (1.5.0)
     void StartBackgroundModelLoad();   // spawn the async loader thread
@@ -106,6 +110,10 @@ private:
     std::unique_ptr<WebcamCapture>   m_webcamMF;   // Media Foundation (standalone / service MF-first)
     std::unique_ptr<WebcamCaptureDS> m_webcamDS;   // DirectShow (service fallback)
     CameraPipeline m_cameraPipeline = CameraPipeline::None;  // active backend
+    // Face exposure auto-control; declared after the cameras so it is
+    // destroyed FIRST (its Reset() must run while the camera handles are
+    // still valid).
+    FaceExposureController m_exposure;
     std::unique_ptr<CredentialStore> m_store;
 
     // Configuration

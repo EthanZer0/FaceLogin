@@ -407,14 +407,24 @@ bool FaceService::Initialize() {
         // enrollment console uses (DirectShow colour/gain output differs →
         // systematic ~0.4 embedding offset). DS remains the Session 0
         // fallback when MF cannot initialize.
-        FACELOGIN_INFO(L"Camera pipeline: MF preferred, DirectShow fallback — initialized on demand%s",
+FACELOGIN_INFO(L"Camera pipeline: MF preferred, DirectShow fallback — initialized on demand%s",
                        m_config.camera_device.empty() ? L"" : L" (configured device)");
     } else {
         // Media Foundation camera is also initialized on demand — keeping
         // it open across auth sessions causes the source reader to stall
         // (especially when FaceLoginConsole is running concurrently).
-        FACELOGIN_INFO(L"MF webcam will be initialized on demand%s",
+        FACELOGIN_INFO(L"MF camera will be initialized on demand%s",
                        m_config.camera_device.empty() ? L"" : L" (configured device)");
+    }
+
+    if (m_config.face_exposure_control) {
+        // Enrolled embeddings live in the pre-gain brightness domain;
+        // switching the input domain on requires fresh anchors (same rule as
+        // the V5 alignment change).
+        FACELOGIN_WARN(L"Face exposure control ENABLED (target=%.0f band=%.0f) — "
+                       L"re-enroll faces afterwards: old embeddings are in the "
+                       L"pre-normalization brightness domain",
+                       m_config.face_exposure_target, m_config.face_exposure_band);
     }
 
     m_pipeServer = std::make_unique<PipeServer>();
@@ -804,6 +814,7 @@ void FaceService::Run() {
 
 void FaceService::Stop() {
     m_running = false;
+    m_exposure.Reset();   // restore camera auto controls while they're alive
     if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
         m_webcamMF->Shutdown();
         m_webcamMF.reset();
@@ -850,6 +861,7 @@ bool FaceService::EnsureCameraForAuth() {
         if (m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
             m_cameraPipeline = CameraPipeline::MF;
             FACELOGIN_INFO(L"MF camera initialized on demand for auth (preferred pipeline)");
+            AttachExposureControl();
             return true;
         }
         FACELOGIN_WARN(L"MF camera init failed in service mode — falling back to DirectShow");
@@ -860,6 +872,7 @@ bool FaceService::EnsureCameraForAuth() {
         if (m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
             m_cameraPipeline = CameraPipeline::DS;
             FACELOGIN_INFO(L"DS camera initialized on demand for auth (fallback pipeline)");
+            AttachExposureControl();
             return true;
         }
         FACELOGIN_ERROR(L"Both MF and DS camera init failed in service mode");
@@ -888,10 +901,26 @@ bool FaceService::EnsureCameraForAuth() {
         FACELOGIN_INFO(L"MF camera initialized on demand for auth (standalone)");
     }
     m_cameraPipeline = CameraPipeline::MF;
+    AttachExposureControl();
     return true;
 }
 
+void FaceService::AttachExposureControl() {
+    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
+        m_exposure.Attach(m_webcamMF->GetVideoProcAmp(), m_webcamMF->GetCameraControl());
+    } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
+        m_exposure.Attach(m_webcamDS->GetVideoProcAmp(), m_webcamDS->GetCameraControl());
+    } else {
+        m_exposure.Attach(nullptr, nullptr);
+    }
+    m_exposure.Configure(m_config.face_exposure_control, m_config.face_exposure_target,
+                         m_config.face_exposure_band);
+}
+
 void FaceService::ReleaseCamera() {
+    // Restore the camera's auto controls FIRST — the borrowed control
+    // interfaces must be touched while the capture object is still alive.
+    m_exposure.Reset();
     if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
         m_webcamMF->Shutdown();
         m_webcamMF.reset();
@@ -915,7 +944,11 @@ bool FaceService::ProcessAuthRequest() {
     // applied in the match loop, leaving the liveness/verify stages to process
     // unrotated frames — with 90/270 rotation the face was sideways there and
     // detection/landmarks/EAR failed, blocking unlock.
-    auto grabFrame = [this](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
+    // grabRaw: one frame straight from the active camera + rotation, WITHOUT
+    // the exposure session gain — the steer loop must measure the camera's
+    // true output. grabFrame wraps it with the session gain so every auth
+    // stage (match/liveness/verify) sees the normalized domain.
+    auto grabRaw = [this](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
         bool ok = false;
         if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
             ok = m_webcamMF->GrabFrame(f);
@@ -924,6 +957,11 @@ bool FaceService::ProcessAuthRequest() {
         }
         if (ok) RotateFrame(f, m_config.camera_rotation);
         return ok;
+    };
+    auto grabFrame = [this, &grabRaw](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
+        if (!grabRaw(f)) return false;
+        m_exposure.ApplySessionGain(f);
+        return true;
     };
 
     if (m_store->GetUserCount() == 0) {
@@ -1056,6 +1094,42 @@ bool FaceService::ProcessAuthRequest() {
         }
     }
 
+    // Face-exposure convergence (1.9.0, config-gated): after the whole-frame
+    // AE warmup, steer the FACE's own brightness to the configured target —
+    // whole-frame luma hides a blown-out face in a dark scene (the observed
+    // failure mode: face region 12-25% clipped at 255 while the frame reads
+    // "dim"). Camera manual exposure/gain is preferred (physical exposure
+    // reduction prevents clipping that no digital gain can undo); the digital
+    // session gain always tops up the residual, so the match loop runs in a
+    // fixed brightness domain regardless of the camera's settling.
+    if (m_exposure.Enabled()) {
+        // Iterations are paced by the camera-step interval (400ms) — 9
+        // iterations ≈ 1.4-2s gives a responsive camera ~4 steps to converge
+        // while a camera that ignores manual mode demotes after 3 no-response
+        // steps and the digital gain carries the normalization.
+        constexpr int kMaxSteerIters = 9;
+        int steerIters = 0;
+        for (; steerIters < kMaxSteerIters; steerIters++) {
+            dlib::matrix<dlib::rgb_pixel> steerFrame;
+            if (!grabRaw(steerFrame)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                continue;
+            }
+            auto steerDet = m_onnxDetector->DetectLargestFace(steerFrame);
+            if (!steerDet) break;   // no face in view — nothing to steer
+            dlib::rectangle steerRect(static_cast<long>(steerDet->x1),
+                                      static_cast<long>(steerDet->y1),
+                                      static_cast<long>(steerDet->x2),
+                                      static_cast<long>(steerDet->y2));
+            if (m_exposure.SteerFrame(steerFrame, steerRect, steerIters + 1)) {
+                break;   // face luma in band — camera settled
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        FACELOGIN_INFO(L"Exposure control: face convergence phase done (%d iteration(s))",
+                       steerIters);
+    }
+
     // STATUS: Notify credential provider that recognition has started.
     // L"\u8bc6\u522b\u4e2d..." = L"识别中..."
     {
@@ -1109,6 +1183,7 @@ bool FaceService::ProcessAuthRequest() {
             // spinning on a dead SourceReader until timeout.
             if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF &&
                 !m_webcamMF->IsInitialized()) {
+                m_exposure.Reset();   // drop the stale camera's control handles
                 FACELOGIN_INFO(L"MF camera stalled — re-initializing");
                 m_webcamMF->Shutdown();
                 m_webcamMF.reset();
@@ -1121,8 +1196,10 @@ bool FaceService::ProcessAuthRequest() {
                     // the unlock — fall back to the DirectShow pipeline.
                     if (m_isServiceMode) EnsureCameraForAuth();
                 }
+                AttachExposureControl();   // re-attach to the fresh camera (or the DS fallback)
             } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS &&
                        !m_webcamDS->IsInitialized()) {
+                m_exposure.Reset();
                 FACELOGIN_INFO(L"DS camera stalled — re-initializing");
                 m_webcamDS->Shutdown();
                 m_webcamDS.reset();
@@ -1132,6 +1209,7 @@ bool FaceService::ProcessAuthRequest() {
                     m_webcamDS.reset();
                     m_cameraPipeline = CameraPipeline::None;
                 }
+                AttachExposureControl();
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;

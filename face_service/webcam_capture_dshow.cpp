@@ -495,6 +495,12 @@ bool WebcamCaptureDS::Initialize(int preferredWidth, int preferredHeight,
         return false;
     }
 
+    // Camera control interfaces for face-exposure auto-tuning (1.9.0): QI the
+    // legacy UVC control interfaces off the capture filter. Best effort —
+    // null just means the exposure loop runs on digital gain alone.
+    m_pCapture->QueryInterface(IID_IAMVideoProcAmp, reinterpret_cast<void**>(&m_vpa));
+    m_pCapture->QueryInterface(IID_IAMCameraControl, reinterpret_cast<void**>(&m_cc));
+
     if (!BuildGraph(m_pCapture, m_width, m_height)) {
         FACELOGIN_ERROR(L"DS: failed to build capture graph");
         if (m_pCapture) { m_pCapture->Release(); m_pCapture = nullptr; }
@@ -598,6 +604,11 @@ void WebcamCaptureDS::Shutdown() {
         m_pCapture->Release();
         m_pCapture = nullptr;
     }
+    // Camera-control interfaces are independent refs — release them after the
+    // filter they were QI'd from (the exposure controller must have been
+    // Reset() before this point).
+    if (m_vpa) { m_vpa->Release(); m_vpa = nullptr; }
+    if (m_cc)  { m_cc->Release();  m_cc = nullptr; }
     if (m_pGraph) {
         m_pGraph->Release();
         m_pGraph = nullptr;

@@ -931,6 +931,16 @@ button{font-family:inherit}
 
     <div class="field">
       <label class="check tip">
+        <input type="checkbox" id="cfg-exposure">
+        <span class="cbx"></span>
+        <span>人脸曝光自动控制（过曝/欠曝导致识别不稳定时开启）</span>
+        <span class="tip-ico">i</span>
+        <span class="tip-box">自动把脸部亮度调节到目标区间：优先调用摄像头硬件曝光/增益，不支持时用数字增益兜底。录入与解锁使用同一目标，换环境/换光线不再明显影响识别。开启后请重新录入人脸。</span>
+      </label>
+    </div>
+
+    <div class="field">
+      <label class="check tip">
         <input type="checkbox" id="cfg-unload-models">
         <span class="cbx"></span>
         <span>内存优化（识别后释放模型，降低后台内存占用）</span>
@@ -1528,6 +1538,7 @@ function loadSettings() {
     document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
     document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
+    document.getElementById('cfg-exposure').checked = !!cfg.face_exposure_control;
     document.getElementById('cfg-unload-models').checked = !!cfg.unload_models_after_auth;
 
     // Populate the camera dropdown from the enumerated devices.
@@ -1604,6 +1615,7 @@ function onSaveSettings() {
     anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
     low_light_enhance: document.getElementById('cfg-low-light').checked,
+    face_exposure_control: document.getElementById('cfg-exposure').checked,
     unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
     capture_unknown_faces: document.getElementById('cfg-capture-unknown').checked,
     cold_boot_key_trigger: document.getElementById('cfg-coldboot-key').checked,

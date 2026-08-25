@@ -63,3 +63,6 @@ docs/
 
 # 本地辅助脚本（MSA/日志诊断等临时工具），不发布到仓库
 scripts/
+
+# ZCode CLI session data
+.zcode/
