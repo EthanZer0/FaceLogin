@@ -403,7 +403,11 @@ bool FaceService::Initialize() {
     if (m_isServiceMode) {
         // Camera is initialized lazily per auth request to avoid
         // device contention with the console app. See Run().
-        FACELOGIN_INFO(L"DirectShow webcam will be initialized on demand%s",
+        // MF is preferred so unlock images come from the SAME pipeline the
+        // enrollment console uses (DirectShow colour/gain output differs →
+        // systematic ~0.4 embedding offset). DS remains the Session 0
+        // fallback when MF cannot initialize.
+        FACELOGIN_INFO(L"Camera pipeline: MF preferred, DirectShow fallback — initialized on demand%s",
                        m_config.camera_device.empty() ? L"" : L" (configured device)");
     } else {
         // Media Foundation camera is also initialized on demand — keeping
@@ -756,54 +760,15 @@ void FaceService::Run() {
         else if (request == ipc::MSG_AUTH_REQUEST) {
             // Lazy-init camera: create + start on demand, then fully shutdown
             // after auth to free the device for other processes.
-            if (m_isServiceMode) {
-                if (!m_webcamDS) {
-                    m_webcamDS = std::make_unique<WebcamCaptureDS>();
-                    if (!m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
-                        FACELOGIN_ERROR(L"DS camera init failed on demand");
-                        m_webcamDS.reset();
-                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
-                        FlushFileBuffers(m_pipeServer->GetHandle());
-                        m_pipeServer->DrainOutput(5000);
-                        m_pipeServer->Disconnect();
-                        continue;
-                    }
-                    FACELOGIN_INFO(L"DS camera initialized on demand for auth");
-                }
-            } else {
-                // After a system resume the camera may still be in low-power
-                // recovery. Drop the stale instance so Initialize() rebuilds a
-                // fresh SourceReader instead of reusing the one that stalled.
-                if (m_resumedFlag.exchange(false) && m_webcamMF) {
-                    FACELOGIN_INFO(L"Resume detected — rebuilding MF camera");
-                    m_webcamMF->Shutdown();
-                    m_webcamMF.reset();
-                }
-                if (!m_webcamMF) {
-                    m_webcamMF = std::make_unique<WebcamCapture>();
-                    if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
-                        FACELOGIN_ERROR(L"MF camera init failed on demand");
-                        m_webcamMF.reset();
-                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
-                        FlushFileBuffers(m_pipeServer->GetHandle());
-                        m_pipeServer->DrainOutput(5000);
-                        m_pipeServer->Disconnect();
-                        continue;
-                    }
-                    FACELOGIN_INFO(L"MF camera initialized on demand for auth");
-                }
+            if (!EnsureCameraForAuth()) {
+                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
+                FlushFileBuffers(m_pipeServer->GetHandle());
+                m_pipeServer->DrainOutput(5000);
+                m_pipeServer->Disconnect();
+                continue;
             }
             ProcessAuthRequest();
-            if (m_isServiceMode && m_webcamDS) {
-                m_webcamDS->Shutdown();
-                m_webcamDS.reset();
-                FACELOGIN_INFO(L"DS camera released after auth");
-            }
-            if (!m_isServiceMode && m_webcamMF) {
-                m_webcamMF->Shutdown();
-                m_webcamMF.reset();
-                FACELOGIN_INFO(L"MF camera released after auth");
-            }
+            ReleaseCamera();
             // Free the heavy model sessions now that the auth pipeline has fully
             // unwound, dropping idle RSS back to baseline. Reload happens on the
             // next auth (see EnsureModelsLoaded). Note: this intentionally does
@@ -839,13 +804,15 @@ void FaceService::Run() {
 
 void FaceService::Stop() {
     m_running = false;
-    if (m_isServiceMode && m_webcamDS) {
+    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
+        m_webcamMF->Shutdown();
+        m_webcamMF.reset();
+    }
+    if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
         m_webcamDS->Shutdown();
         m_webcamDS.reset();
     }
-    if (!m_isServiceMode && m_webcamMF) {
-        m_webcamMF->Shutdown();
-    }
+    m_cameraPipeline = CameraPipeline::None;
     // Signal the model loader to stop and join it. If an auth request was
     // blocked in EnsureModelsLoaded(), the abort flag releases it so it can
     // exit cleanly (m_running is false → ProcessAuthRequest returns false).
@@ -855,8 +822,92 @@ void FaceService::Stop() {
     }
 }
 
+// ============================================================================
+// Camera lifecycle — MF preferred, DirectShow fallback
+// ============================================================================
+
+bool FaceService::EnsureCameraForAuth() {
+    if (m_isServiceMode) {
+        // The camera is released after every auth, so normally nothing is up
+        // when we get here — these two checks only cover a mid-auth fallback
+        // where the pipeline already switched.
+        if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF &&
+            m_webcamMF->IsInitialized()) {
+            return true;
+        }
+        if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS &&
+            m_webcamDS->IsInitialized()) {
+            return true;
+        }
+
+        // Prefer Media Foundation: it is the SAME pipeline the enrollment
+        // console uses. Matching requires enrollment and unlock images from
+        // ONE pipeline — DirectShow's colour/gain output differs enough to
+        // shift same-person embeddings by ~0.4 (observed 0.66-0.75 against a
+        // 0.75 threshold), the systematic offset behind cross-environment
+        // recognition failures. DS stays as the Session 0 fallback.
+        m_webcamMF = std::make_unique<WebcamCapture>();
+        if (m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+            m_cameraPipeline = CameraPipeline::MF;
+            FACELOGIN_INFO(L"MF camera initialized on demand for auth (preferred pipeline)");
+            return true;
+        }
+        FACELOGIN_WARN(L"MF camera init failed in service mode — falling back to DirectShow");
+        m_webcamMF.reset();
+        m_cameraPipeline = CameraPipeline::None;
+
+        m_webcamDS = std::make_unique<WebcamCaptureDS>();
+        if (m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+            m_cameraPipeline = CameraPipeline::DS;
+            FACELOGIN_INFO(L"DS camera initialized on demand for auth (fallback pipeline)");
+            return true;
+        }
+        FACELOGIN_ERROR(L"Both MF and DS camera init failed in service mode");
+        m_webcamDS.reset();
+        m_cameraPipeline = CameraPipeline::None;
+        return false;
+    }
+
+    // Standalone: Media Foundation only.
+    // After a system resume the camera may still be in low-power recovery.
+    // Drop the stale instance so Initialize() rebuilds a fresh SourceReader
+    // instead of reusing the one that stalled.
+    if (m_resumedFlag.exchange(false) && m_webcamMF) {
+        FACELOGIN_INFO(L"Resume detected — rebuilding MF camera");
+        m_webcamMF->Shutdown();
+        m_webcamMF.reset();
+    }
+    if (!m_webcamMF) {
+        m_webcamMF = std::make_unique<WebcamCapture>();
+        if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+            FACELOGIN_ERROR(L"MF camera init failed on demand");
+            m_webcamMF.reset();
+            m_cameraPipeline = CameraPipeline::None;
+            return false;
+        }
+        FACELOGIN_INFO(L"MF camera initialized on demand for auth (standalone)");
+    }
+    m_cameraPipeline = CameraPipeline::MF;
+    return true;
+}
+
+void FaceService::ReleaseCamera() {
+    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
+        m_webcamMF->Shutdown();
+        m_webcamMF.reset();
+        FACELOGIN_INFO(L"MF camera released after auth");
+    } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
+        m_webcamDS->Shutdown();
+        m_webcamDS.reset();
+        FACELOGIN_INFO(L"DS camera released after auth");
+    }
+    m_cameraPipeline = CameraPipeline::None;
+}
+
 bool FaceService::ProcessAuthRequest() {
-    FACELOGIN_INFO(L"Starting face authentication...");
+    const char* camName = m_cameraPipeline == CameraPipeline::MF ? "MF" :
+                          m_cameraPipeline == CameraPipeline::DS ? "DS" : "none";
+    FACELOGIN_INFO(L"Starting face authentication... (camera=%hs)", camName);
 
     // Single grab helper used by ALL auth stages (match, anti-spoof, blink,
     // final verify): it applies the configured camera rotation so every stage
@@ -865,8 +916,12 @@ bool FaceService::ProcessAuthRequest() {
     // unrotated frames — with 90/270 rotation the face was sideways there and
     // detection/landmarks/EAR failed, blocking unlock.
     auto grabFrame = [this](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
-        bool ok = m_isServiceMode ? m_webcamDS->GrabFrame(f)
-                                  : (m_webcamMF ? m_webcamMF->GrabFrame(f) : false);
+        bool ok = false;
+        if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
+            ok = m_webcamMF->GrabFrame(f);
+        } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
+            ok = m_webcamDS->GrabFrame(f);
+        }
         if (ok) RotateFrame(f, m_config.camera_rotation);
         return ok;
     };
@@ -1052,7 +1107,8 @@ bool FaceService::ProcessAuthRequest() {
             // A stalled camera (e.g. after resume) self-shut-down in
             // GrabFrame. Rebuild it here so auth can continue instead of
             // spinning on a dead SourceReader until timeout.
-            if (m_webcamMF && !m_webcamMF->IsInitialized()) {
+            if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF &&
+                !m_webcamMF->IsInitialized()) {
                 FACELOGIN_INFO(L"MF camera stalled — re-initializing");
                 m_webcamMF->Shutdown();
                 m_webcamMF.reset();
@@ -1060,6 +1116,21 @@ bool FaceService::ProcessAuthRequest() {
                 if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
                     FACELOGIN_ERROR(L"MF camera re-init failed");
                     m_webcamMF.reset();
+                    m_cameraPipeline = CameraPipeline::None;
+                    // Service mode: a resume-stalled MF reader shouldn't kill
+                    // the unlock — fall back to the DirectShow pipeline.
+                    if (m_isServiceMode) EnsureCameraForAuth();
+                }
+            } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS &&
+                       !m_webcamDS->IsInitialized()) {
+                FACELOGIN_INFO(L"DS camera stalled — re-initializing");
+                m_webcamDS->Shutdown();
+                m_webcamDS.reset();
+                m_webcamDS = std::make_unique<WebcamCaptureDS>();
+                if (!m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+                    FACELOGIN_ERROR(L"DS camera re-init failed");
+                    m_webcamDS.reset();
+                    m_cameraPipeline = CameraPipeline::None;
                 }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -1448,9 +1519,9 @@ bool FaceService::ProcessAuthRequest() {
             // pipe drain below. The graph keeps streaming during auth; pausing
             // it immediately after success frees the camera without waiting for
             // the full teardown.
-            if (m_isServiceMode && m_webcamDS) {
+            if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
                 m_webcamDS->Pause();
-            } else if (!m_isServiceMode && m_webcamMF) {
+            } else if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
                 m_webcamMF->Shutdown();
             }
 
