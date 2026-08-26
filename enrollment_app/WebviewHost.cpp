@@ -2,6 +2,8 @@
 #include "EnrollmentWizard.h"
 #include "../common/logger.h"
 #include "resource.h"
+#include "../common/config_util.h"
+#include "../common/locale_util.h"
 #include <shellapi.h>
 #include <wtsapi32.h>
 
@@ -119,6 +121,28 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
     if (htmlContent.empty()) {
         htmlContent = self->m_html; // fallback
         FACELOGIN_WARN(L"Failed to load HTML from resource, using fallback");
+    }
+
+    // Inject the selected locale pack before any application script runs.
+    // Locale JSON remains a separate installed file, so translations can be
+    // updated independently without rebuilding the enrollment console.
+    if (self->m_wizard) {
+        const std::wstring installDir = self->m_wizard->GetDataDir();
+        const facelogin::AppConfig config = facelogin::LoadConfig(installDir);
+        facelogin::LocaleCatalog locale;
+        if (locale.Load(installDir, config.ui_language)) {
+            std::string safeJson = locale.json();
+            size_t pos = 0;
+            while ((pos = safeJson.find('<', pos)) != std::string::npos) {
+                safeJson.replace(pos, 1, "\\u003c");
+                pos += 6;
+            }
+            const std::string bootstrap =
+                "<script>window.__FACELOGIN_LOCALE__=" + safeJson +
+                ";window.__FACELOGIN_LOCALE_CODE__='" + locale.locale() + "';</script>";
+            const size_t head = htmlContent.find("<head>");
+            htmlContent.insert(head == std::string::npos ? 0 : head + 6, bootstrap);
+        }
     }
 
     int wlen = MultiByteToWideChar(CP_UTF8, 0, htmlContent.c_str(), -1, nullptr, 0);

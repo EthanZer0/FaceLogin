@@ -113,7 +113,7 @@ func StopAndDeleteService() error {
 					return nil // service removed — the marked-for-delete was transient
 				}
 			}
-			return fmt.Errorf("服务已被标记为待删除，但未能完成移除。请重启系统后重试卸载。")
+			return fmt.Errorf("service is marked for deletion but removal did not finish; restart Windows and retry")
 		}
 		if stopErr != nil {
 			return fmt.Errorf("delete service (after stop failed: %v): %w", stopErr, err)
@@ -157,8 +157,8 @@ func InstallService(exePath string) error {
 		mgr.Config{
 			StartType:    mgr.StartAutomatic,
 			ErrorControl: mgr.ErrorNormal,
-			DisplayName:  "FaceLogin 人脸认证服务",
-			Description:  "FaceLogin — 基于人脸识别的 Windows 登录认证服务",
+			DisplayName:  "FaceLogin Face Authentication Service",
+			Description:  "FaceLogin service for local face-authenticated Windows sign-in",
 			ServiceType:  windows.SERVICE_WIN32_OWN_PROCESS,
 		},
 	)
@@ -181,8 +181,8 @@ func InstallService(exePath string) error {
 				mgr.Config{
 					StartType:    mgr.StartAutomatic,
 					ErrorControl: mgr.ErrorNormal,
-					DisplayName:  "FaceLogin 人脸认证服务",
-					Description:  "FaceLogin — 基于人脸识别的 Windows 登录认证服务",
+					DisplayName:  "FaceLogin Face Authentication Service",
+					Description:  "FaceLogin service for local face-authenticated Windows sign-in",
 					ServiceType:  windows.SERVICE_WIN32_OWN_PROCESS,
 				},
 			)
@@ -249,7 +249,7 @@ func configureServiceRecovery(s *mgr.Service) error {
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 	}
-	if err := s.SetRecoveryActions(actions, /*resetPeriod=*/86400); err != nil {
+	if err := s.SetRecoveryActions(actions /*resetPeriod=*/, 86400); err != nil {
 		return err
 	}
 	return s.SetRecoveryActionsOnNonCrashFailures(true)
