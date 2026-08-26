@@ -23,6 +23,7 @@ target_link_libraries(FaceLoginConsole PRIVATE
     advapi32
     ole32
     gdi32
+    wtsapi32
     crypt32
     windowscodecs
     netapi32
