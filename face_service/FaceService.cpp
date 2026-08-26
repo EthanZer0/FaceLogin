@@ -349,6 +349,7 @@ bool FaceService::Initialize() {
     // Load configuration from config.json (falls back to registry). Must happen
     // before camera init — the configured camera_device is used below.
     m_config = LoadConfig(m_dataDir);
+    m_locale.Load(m_dataDir, m_config.ui_language);
     m_matchThreshold = m_config.match_threshold;
     m_livenessMethod = m_config.liveness_method;
     m_antiSpoofThreshold = m_config.anti_spoof_threshold;
@@ -665,7 +666,8 @@ void FaceService::Run() {
             // configure, so fail the reload with a descriptive error.
             if (!EnsureModelsLoaded()) {
                 FACELOGIN_ERROR(L"CONFIG_RELOAD: required models failed to load");
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"服务模型加载失败"));
+                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
+                    m_locale.GetWide("service.modelLoadFailed", L"服务模型加载失败")));
                 FlushFileBuffers(m_pipeServer->GetHandle());
                 m_pipeServer->DrainOutput(5000);
                 m_pipeServer->Disconnect();
@@ -723,7 +725,8 @@ void FaceService::Run() {
                     if (!m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
                         FACELOGIN_ERROR(L"DS camera init failed on demand");
                         m_webcamDS.reset();
-                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
+                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
+                            m_locale.GetWide("service.cameraUnavailable", L"摄像头不可用")));
                         FlushFileBuffers(m_pipeServer->GetHandle());
                         m_pipeServer->DrainOutput(5000);
                         m_pipeServer->Disconnect();
@@ -745,7 +748,8 @@ void FaceService::Run() {
                     if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
                         FACELOGIN_ERROR(L"MF camera init failed on demand");
                         m_webcamMF.reset();
-                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
+                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
+                            m_locale.GetWide("service.cameraUnavailable", L"摄像头不可用")));
                         FlushFileBuffers(m_pipeServer->GetHandle());
                         m_pipeServer->DrainOutput(5000);
                         m_pipeServer->Disconnect();

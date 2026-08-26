@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../common/secure_buffer.h"
+#include "../common/locale_util.h"
 #include "pipe_client.h"
 
 // Forward declarations
@@ -95,6 +96,11 @@ private:
     // Pack credentials into the serialization format
     HRESULT PackCredentials(CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs);
 
+    std::wstring Text(const char* key, const wchar_t* fallback) const {
+        return m_locale.GetWide(key, fallback);
+    }
+    std::wstring LocalizeServiceMessage(const std::wstring& message) const;
+
     // Trigger re-enumeration of credentials (via CredentialsChanged)
     void TriggerReEnumeration();
 
@@ -133,6 +139,7 @@ private:
 
     // Live status text pushed from service (updated from background thread)
     std::wstring m_statusText;
+    facelogin::LocaleCatalog m_locale;
 
     // Auth timeout tracking (so we don't block LogonUI forever)
     LONGLONG m_authStartTime = 0;  // 100ns units, 0 = not yet started

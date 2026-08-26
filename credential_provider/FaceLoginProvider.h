@@ -71,6 +71,8 @@ private:
     LONG m_refCount = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus = CPUS_LOGON;
     CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR m_rgFieldDescriptors[4];
+    // Own localized labels for the lifetime of the field descriptors.
+    std::wstring m_fieldLabels[4];
     ICredentialProviderEvents* m_pEvents = nullptr;
     UINT_PTR m_upAdviseContext = 0;
 
