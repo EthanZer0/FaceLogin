@@ -3,6 +3,10 @@
 </p>
 
 <p align="center">
+  简体中文 · <a href="README.ko-KR.md">한국어</a>
+</p>
+
+<p align="center">
   基于 Windows Credential Provider 框架的摄像头人脸识别解锁系统。<br>
   在锁屏界面集成"人脸登录"磁贴，看一眼即可解锁 — 支持本地账户和微软在线账户 (MSA)。
 </p>
