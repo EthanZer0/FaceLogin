@@ -15,6 +15,13 @@ const wchar_t REGVAL_SERVICE_START_UPTIME[] = L"ServiceStartUptime";
 // the credential provider (running inside LogonUI, which cannot reach
 // config.json reliably) knows whether cold-boot recognition needs a key press.
 const wchar_t REGVAL_COLD_BOOT_KEY_TRIGGER[] = L"ColdBootKeyTrigger";
+// Set once by the service/console when a camera was caught in a broken manual
+// exposure state (severe overexposure that Set(Auto) cannot undo — a driver
+// bug). While set, the exposure controller skips the camera channel entirely
+// and runs digital gain only, so the camera is never re-poisoned. The user
+// must restart the machine (or the camera driver) to recover the camera, and
+// may clear this value manually after that.
+const wchar_t REGVAL_EXPOSURE_HW_BROKEN[] = L"ExposureHardwareBroken";
 
 // Read a REG_SZ value from HKLM\SOFTWARE\FaceLogin.
 // Returns defaultValue if the key/value is missing or not a string.
