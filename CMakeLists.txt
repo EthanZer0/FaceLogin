@@ -4,9 +4,17 @@ project(FaceLogin VERSION 1.6.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find dlib (used by face_service and enrollment_app, NOT by credential_provider)
-find_package(dlib CONFIG REQUIRED)
-find_package(onnxruntime CONFIG REQUIRED)
+option(FACELOGIN_BUILD_VISION_COMPONENTS
+       "Build the face service and enrollment console (requires dlib/ONNX Runtime)"
+       ON)
+
+# dlib and ONNX Runtime are only needed by the vision components. Keeping the
+# credential provider independently buildable makes native locale changes
+# quick to validate and enables a lightweight CI job.
+if(FACELOGIN_BUILD_VISION_COMPONENTS)
+    find_package(dlib CONFIG REQUIRED)
+    find_package(onnxruntime CONFIG REQUIRED)
+endif()
 
 # Global compile definitions
 add_compile_definitions(
@@ -30,6 +38,8 @@ if(MSVC)
 endif()
 
 add_subdirectory(common)
-add_subdirectory(face_service)
 add_subdirectory(credential_provider)
-add_subdirectory(enrollment_app)
+if(FACELOGIN_BUILD_VISION_COMPONENTS)
+    add_subdirectory(face_service)
+    add_subdirectory(enrollment_app)
+endif()

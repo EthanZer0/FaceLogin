@@ -6,6 +6,9 @@
 namespace facelogin {
 
 struct AppConfig {
+    // UI language as a BCP 47 tag. "auto" follows the Windows display
+    // language; unsupported languages fall back to Simplified Chinese.
+    std::string    ui_language            = "auto";
     // dlib recognizer/detector were removed — the system is pure ONNX.
     // recognition_model and detector are retained for config.json backwards
     // compatibility but ignored at runtime (only "onnx"/"scrfd" are valid).
@@ -73,6 +76,10 @@ AppConfig DefaultConfig();
 // Serialization
 std::string ConfigToJson(const AppConfig& cfg);
 AppConfig   ConfigFromJson(const std::string& json);
+
+// Lightweight JSON string lookup shared by configuration and locale packs.
+// Locale catalogs deliberately use a flat string-to-string schema.
+std::string JsonGetString(const std::string& json, const std::string& key);
 
 // LivenessMethod helpers
 std::string    LivenessMethodToString(LivenessMethod m);

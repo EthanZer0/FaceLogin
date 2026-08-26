@@ -26,9 +26,10 @@ static constexpr uint32_t ALIGN_COMPAT_VERSION = 5;
 // Helpers for V4 serialization
 namespace {
 
-// Default label for a face: L"脸N" where N = face id.
+// Locale-neutral fallback for API callers that do not supply a UI label. The
+// enrollment console normally passes its localized face.defaultLabel value.
 inline std::wstring DefaultFaceLabel(uint32_t id) {
-    return L"脸" + std::to_wstring(id);  // 脸N
+    return L"Face " + std::to_wstring(id);
 }
 
 // Trim a face label for storage (empty → default). Keeps labels sane.

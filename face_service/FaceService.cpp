@@ -351,6 +351,7 @@ bool FaceService::Initialize() {
     // Load configuration from config.json (falls back to registry). Must happen
     // before camera init — the configured camera_device is used below.
     m_config = LoadConfig(m_dataDir);
+    m_locale.Load(m_dataDir, m_config.ui_language);
     m_matchThreshold = m_config.match_threshold;
     m_livenessMethod = m_config.liveness_method;
     m_antiSpoofThreshold = m_config.anti_spoof_threshold;
@@ -718,7 +719,8 @@ void FaceService::Run() {
             // configure, so fail the reload with a descriptive error.
             if (!EnsureModelsLoaded()) {
                 FACELOGIN_ERROR(L"CONFIG_RELOAD: required models failed to load");
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"服务模型加载失败"));
+                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
+                    m_locale.GetWide("service.modelLoadFailed", L"服务模型加载失败")));
                 FlushFileBuffers(m_pipeServer->GetHandle());
                 m_pipeServer->DrainOutput(5000);
                 m_pipeServer->Disconnect();
@@ -771,12 +773,11 @@ void FaceService::Run() {
             // Lazy-init camera: create + start on demand, then fully shutdown
             // after auth to free the device for other processes.
             if (!EnsureCameraForAuth()) {
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
+                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(m_locale.GetWide("service.cameraUnavailable", L"摄像头不可用")));
                 FlushFileBuffers(m_pipeServer->GetHandle());
                 m_pipeServer->DrainOutput(5000);
                 m_pipeServer->Disconnect();
-                continue;
-            }
+                continue;            }
             ProcessAuthRequest();
             ReleaseCamera();
             // Free the heavy model sessions now that the auth pipeline has fully
