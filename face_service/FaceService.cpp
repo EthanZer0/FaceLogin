@@ -915,12 +915,30 @@ void FaceService::AttachExposureControl() {
     }
     m_exposure.Configure(m_config.face_exposure_control, m_config.face_exposure_target,
                          m_config.face_exposure_band);
+    // Persistent "poisoned camera" flag (see REGVAL_EXPOSURE_HW_BROKEN): a
+    // previous session caught this camera in a broken manual exposure state
+    // that Set(Auto) could not undo. Never touch its controls again — the
+    // digital gain alone keeps the effective luma normalized.
+    if (ReadRegDword(REGVAL_EXPOSURE_HW_BROKEN, 0) == 1) {
+        m_exposure.ForceDigitalOnly();
+        FACELOGIN_WARN(L"Face exposure control: camera marked broken "
+                       L"(ExposureHardwareBroken=1) — hardware channel disabled, digital gain only");
+    }
 }
 
 void FaceService::ReleaseCamera() {
     // Restore the camera's auto controls FIRST — the borrowed control
     // interfaces must be touched while the capture object is still alive.
     m_exposure.Reset();
+    // Persist the "poisoned camera" flag: severe overexposure with an
+    // un-recoverable manual state is a driver bug, not a lighting condition —
+    // blacklist the hardware channel so no future session re-poisons it.
+    if (m_exposure.WasSevereOverexposure()) {
+        WriteRegDword(REGVAL_EXPOSURE_HW_BROKEN, 1);
+        FACELOGIN_WARN(L"Face exposure control: camera poisoned by manual exposure — "
+                       L"persisted ExposureHardwareBroken=1 (restart the machine to "
+                       L"recover the camera, then delete the value to re-enable)");
+    }
     if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
         m_webcamMF->Shutdown();
         m_webcamMF.reset();
@@ -1124,6 +1142,11 @@ bool FaceService::ProcessAuthRequest() {
             if (m_exposure.SteerFrame(steerFrame, steerRect, steerIters + 1)) {
                 break;   // face luma in band — camera settled
             }
+            // Demoted (broken/unresponsive camera driver): further iterations
+            // cannot fix the RAW brightness — the digital gain inside
+            // SteerFrame already normalized the effective luma. Move on to
+            // the match loop instead of burning the auth budget.
+            if (!m_exposure.HardwareActive()) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         FACELOGIN_INFO(L"Exposure control: face convergence phase done (%d iteration(s))",

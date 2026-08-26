@@ -60,6 +60,20 @@ public:
     bool SteerFrame(dlib::matrix<dlib::rgb_pixel>& frame,
                     const dlib::rectangle& faceRect, int iteration);
 
+    // True while a camera-control channel is in play (exposure or gain).
+    // Callers use this to skip pointless steer iterations once a driver has
+    // been demoted — the digital gain already normalizes the effective luma.
+    bool HardwareActive() const { return m_channel != Channel::Digital; }
+
+    // Force the digital-only path (camera channel disabled) for this session.
+    // Used when a persistent "camera poisoned by manual exposure" flag is set
+    // (see REGVAL_EXPOSURE_HW_BROKEN) so the camera is never re-stepped.
+    void ForceDigitalOnly();
+
+    // True once a severe-overexposure demotion fired this session. Callers
+    // persist it (registry flag) so future sessions skip the camera channel.
+    bool WasSevereOverexposure() const { return m_severeOverexposureSeen; }
+
     // Apply the current session digital gain (no-op at 1.0). Call on every
     // frame that leaves the steer path (match loop, liveness, verify,
     // enrollment samples) so all of them see the same normalized image.
@@ -81,6 +95,9 @@ private:
     bool ApplyCameraCorrection(float faceLuma);   // false once fully digital
     bool SetExposureManual(float faceLuma);       // false → demote channel
     bool SetGainManual(float faceLuma);           // false → demote channel
+    // Restore the camera's original values/flags and demote to digital-only.
+    // Called on severe overexposure, unresponsive or reversing drivers.
+    void RestoreCameraAuto();
     static void ApplyGainInPlace(dlib::matrix<dlib::rgb_pixel>& frame, float gain);
     static float Clamp(float v, float lo, float hi);
 
@@ -96,6 +113,7 @@ private:
     bool m_capabilityLogged = false;
     bool m_cameraChanged = false;        // set once a camera control was touched
     bool m_lastInBand = false;           // previous SteerFrame band state (log gating)
+    bool m_severeOverexposureSeen = false;  // demoted due to severe overexposure
 
     // Camera-step pacing (control-loop stability): a camera needs time to
     // respond to an exposure write; stepping every frame at 30fps makes a
@@ -109,6 +127,12 @@ private:
     // hammering a control that does nothing.
     float m_lastStepLuma = -1.0f;
     int m_unresponsiveSteps = 0;
+    // Step-response check: after a camera step, the next measurement should
+    // move TOWARD the target. A reversed move means the driver mishandles
+    // manual mode (AE fights the Set). Two such reversals → restore auto.
+    bool m_stepAckPending = false;
+    int m_lastStepDir = 0;          // +1 = step aimed brighter, -1 = darker
+    int m_badResponseCount = 0;
 
     // Original camera values, restored on Reset().
     long m_restoreExposureValue = 0;

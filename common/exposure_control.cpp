@@ -25,6 +25,17 @@ constexpr auto kCameraStepIntervalMs = std::chrono::milliseconds(400);
 // digital-only. Laptop cameras commonly accept Set() but keep AE in charge.
 constexpr int kNoResponseStepCount = 3;
 constexpr float kNoResponseLumaDelta = 8.0f;
+// Severe overexposure: majority of face pixels clipped — the camera is in a
+// broken exposure state (e.g. stuck at a multi-second shutter from an earlier
+// manual step). Digital gain cannot recover the lost highlights AND the long
+// shutter collapses the frame rate (white screen + frozen preview). Restore
+// auto mode immediately and run digital-only.
+constexpr float kSevereOverexposureLuma = 200.0f;
+constexpr float kSevereOverexposureClipPct = 50.0f;
+// A camera step should move the next measurement TOWARD the target. A move
+// of more than this against the step direction means the driver mishandles
+// manual mode (AE fights the manual Set) — two in a row demote to digital.
+constexpr float kResponseReversalDelta = 25.0f;
 }
 
 float FaceExposureController::Clamp(float v, float lo, float hi) {
@@ -37,6 +48,7 @@ void FaceExposureController::Attach(IAMVideoProcAmp* videoProcAmp,
     m_vpa = videoProcAmp;
     m_cc = cameraControl;
     m_capabilityLogged = false;   // re-probe per camera open
+    m_severeOverexposureSeen = false;   // per-session flag (Reset preserves it)
 }
 
 void FaceExposureController::Configure(bool enabled, float targetLuma,
@@ -79,6 +91,17 @@ void FaceExposureController::ProbeCapabilities() {
         FACELOGIN_INFO(L"Exposure control: manual exposure supported "
                        L"(range %ld..%ld, step %ld) — channel=exposure",
                        minV, maxV, stepV);
+        // Snapshot the current value NOW so the camera can be restored to
+        // auto even if it starts this session in a broken manual state
+        // (left over from a previous open).
+        if (!m_restoreExposureValid) {
+            long v = 0, f = 0;
+            if (SUCCEEDED(m_cc->Get(CameraControl_Exposure, &v, &f))) {
+                m_restoreExposureValue = v;
+                m_restoreExposureFlags = f;
+                m_restoreExposureValid = true;
+            }
+        }
         return;
     }
     if (m_vpa && SUCCEEDED(m_vpa->GetRange(VideoProcAmp_Gain,
@@ -87,6 +110,14 @@ void FaceExposureController::ProbeCapabilities() {
         FACELOGIN_INFO(L"Exposure control: manual gain supported "
                        L"(range %ld..%ld, step %ld) — channel=gain",
                        minV, maxV, stepV);
+        if (!m_restoreGainValid) {
+            long v = 0, f = 0;
+            if (SUCCEEDED(m_vpa->Get(VideoProcAmp_Gain, &v, &f))) {
+                m_restoreGainValue = v;
+                m_restoreGainFlags = f;
+                m_restoreGainValid = true;
+            }
+        }
         return;
     }
     FACELOGIN_INFO(L"Exposure control: no manual camera control — digital gain only");
@@ -119,6 +150,36 @@ bool FaceExposureController::SteerFrame(
     if (count == 0) return false;
     const float luma = static_cast<float>(sum / count);
     const float clipPct = 100.0f * static_cast<float>(clipped) / count;
+
+    // Severe overexposure → broken camera exposure state (stuck long
+    // shutter): the digital gain cannot recover the lost highlights and the
+    // frame rate collapses. Restore auto mode, run digital-only. Also flags
+    // the session so the caller can persist the "poisoned camera" state.
+    if (m_channel != Channel::Digital &&
+        (luma > kSevereOverexposureLuma || clipPct > kSevereOverexposureClipPct)) {
+        m_severeOverexposureSeen = true;
+        FACELOGIN_WARN(L"Exposure control: face severely overexposed "
+                       L"(luma=%.0f clip=%.1f%%) — restoring camera auto, digital gain only",
+                       luma, clipPct);
+        RestoreCameraAuto();
+    }
+
+    // Step-response confirmation: the frame after a camera step should have
+    // moved TOWARD the target. A reversed move (AE fighting the manual Set)
+    // twice in a row demotes the camera channel.
+    if (m_stepAckPending) {
+        m_stepAckPending = false;
+        const float moved = luma - m_lastStepLuma;
+        if (m_lastStepDir != 0 && moved * m_lastStepDir < -kResponseReversalDelta) {
+            if (++m_badResponseCount >= 2) {
+                FACELOGIN_WARN(L"Exposure control: camera steps reversed the brightness "
+                               L"(driver fights manual mode) — digital gain only");
+                RestoreCameraAuto();
+            }
+        } else {
+            m_badResponseCount = 0;
+        }
+    }
 
     const bool inBand = std::fabs(luma - m_target) <= m_band;
     const bool cameraChanged = !inBand && ApplyCameraCorrection(luma);
@@ -162,6 +223,10 @@ bool FaceExposureController::ApplyCameraCorrection(float faceLuma) {
             m_channel = Channel::Gain;
         } else {
             m_lastCameraStepAt = std::chrono::steady_clock::now();
+            // Arm the step-response check: the next measurement must move
+            // toward the target, or the driver is fighting manual mode.
+            m_stepAckPending = true;
+            m_lastStepDir = (faceLuma < m_target) ? 1 : -1;
             // No-response detection: some cameras accept Set() but keep AE in
             // charge. If the luma never moves across consecutive steps, stop
             // hammering the dead control — demote to digital-only.
@@ -188,9 +253,35 @@ bool FaceExposureController::ApplyCameraCorrection(float faceLuma) {
             return false;
         }
         m_lastCameraStepAt = std::chrono::steady_clock::now();
+        m_stepAckPending = true;
+        m_lastStepDir = (faceLuma < m_target) ? 1 : -1;
         return true;
     }
     return false;
+}
+
+void FaceExposureController::ForceDigitalOnly() {
+    m_channel = Channel::Digital;
+    m_capabilityLogged = true;   // never re-probe — the camera is known-bad
+    m_stepAckPending = false;
+}
+
+void FaceExposureController::RestoreCameraAuto() {
+    if (m_cc && m_restoreExposureValid) {
+        m_cc->Set(CameraControl_Exposure,
+                  m_restoreExposureValue, m_restoreExposureFlags);
+    }
+    if (m_vpa && m_restoreGainValid) {
+        m_vpa->Set(VideoProcAmp_Gain,
+                   m_restoreGainValue, m_restoreGainFlags);
+    }
+    m_cameraChanged = false;
+    m_channel = Channel::Digital;
+    m_lastStepLuma = -1.0f;
+    m_unresponsiveSteps = 0;
+    m_stepAckPending = false;
+    m_lastStepDir = 0;
+    m_badResponseCount = 0;
 }
 
 bool FaceExposureController::SetExposureManual(float faceLuma) {
@@ -305,15 +396,10 @@ void FaceExposureController::ApplyGainInPlace(
 }
 
 void FaceExposureController::Reset() {
-    if (m_cameraChanged) {
-        if (m_cc && m_restoreExposureValid) {
-            m_cc->Set(CameraControl_Exposure,
-                      m_restoreExposureValue, m_restoreExposureFlags);
-        }
-        if (m_vpa && m_restoreGainValid) {
-            m_vpa->Set(VideoProcAmp_Gain,
-                       m_restoreGainValue, m_restoreGainFlags);
-        }
+    // Restore whenever we hold a snapshot — idempotent when the camera is
+    // already back in auto (e.g. after RestoreCameraAuto mid-session).
+    if (m_restoreExposureValid || m_restoreGainValid) {
+        RestoreCameraAuto();
         FACELOGIN_INFO(L"Exposure control: camera controls restored to original");
     }
     m_vpa = nullptr;
@@ -321,11 +407,8 @@ void FaceExposureController::Reset() {
     m_sessionGain = 1.0f;
     m_channel = Channel::Digital;
     m_capabilityLogged = false;
-    m_cameraChanged = false;
     m_lastInBand = false;
     m_lastCameraStepAt = {};
-    m_lastStepLuma = -1.0f;
-    m_unresponsiveSteps = 0;
     m_restoreExposureValid = false;
     m_restoreGainValid = false;
 }

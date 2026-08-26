@@ -372,6 +372,14 @@ bool EnrollmentWizard::StartPreview() {
     m_exposure.Attach(m_webcam->GetVideoProcAmp(), m_webcam->GetCameraControl());
     m_exposure.Configure(m_config.face_exposure_control, m_config.face_exposure_target,
                          m_config.face_exposure_band);
+    // Persistent "poisoned camera" flag (see REGVAL_EXPOSURE_HW_BROKEN): the
+    // service persisted it after a severe-overexposure demotion. Skip the
+    // hardware channel here too — the digital gain alone normalizes luma.
+    if (ReadRegDword(REGVAL_EXPOSURE_HW_BROKEN, 0) == 1) {
+        m_exposure.ForceDigitalOnly();
+        FACELOGIN_WARN(L"Face exposure control: camera marked broken "
+                       L"(ExposureHardwareBroken=1) — hardware channel disabled, digital gain only");
+    }
 
     // Single background thread: load models (if needed) → GrabFrame → JPEG
     // encode → detect → update caches. The UI thread stays completely free;
@@ -661,6 +669,12 @@ void EnrollmentWizard::StopPreview() {
     // Restore the camera's auto controls FIRST — the borrowed control
     // interfaces must be touched while the capture object is still alive.
     m_exposure.Reset();
+    // Persist the "poisoned camera" flag the same way the service does.
+    if (m_exposure.WasSevereOverexposure()) {
+        WriteRegDword(REGVAL_EXPOSURE_HW_BROKEN, 1);
+        FACELOGIN_WARN(L"Face exposure control: camera poisoned by manual exposure — "
+                       L"persisted ExposureHardwareBroken=1");
+    }
 
     // Shut down the camera FIRST so a synchronous ReadSample that is blocked
     // (camera taken over by the credential provider at lock) returns an error.
