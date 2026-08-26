@@ -702,7 +702,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
                 FACELOGIN_WARN(L"Auth error: %s", result.errorMessage.c_str());
                 // Passwordless account: show the notice in-place and finish.
                 if (result.errorMessage == facelogin::ipc::MSG_PASSWORDLESS_NOTICE) {
-                    m_statusText = result.errorMessage;
+                    m_statusText = LocalizeServiceMessage(result.errorMessage);
                     m_state = State::Blocked;
                     if (m_pCredentialEvents) {
                         m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
@@ -712,7 +712,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
                 }
                 // Surface the service's specific error on the lock screen.
                 if (!result.errorMessage.empty()) {
-                    m_statusText = result.errorMessage;
+                    m_statusText = LocalizeServiceMessage(result.errorMessage);
                 }
                 m_state = State::Error;
                 *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
@@ -1060,28 +1060,36 @@ void FaceLoginCredential::OnPipeStatus(const std::wstring& message) {
 }
 
 std::wstring FaceLoginCredential::LocalizeServiceMessage(const std::wstring& message) const {
+    // The service sends its STATUS/error text in Chinese (it is NOT the
+    // translation point — the credential provider is). This table maps every
+    // message the service can send to a locale key; the fallback is Chinese
+    // so a missing locale pack degrades to the PR-before behavior, never to
+    // a mixed-language tile. Keep this table in sync with the service's
+    // literals (face_service/FaceService.cpp).
     if (message == L"\u6b63\u5728\u52a0\u8f7d\u6a21\u578b...")
-        return Text("service.loadingModels", L"Loading face models...");
+        return Text("service.loadingModels", L"正在加载模型...");
     if (message == L"\u8bc6\u522b\u4e2d...")
-        return Text("credential.recognizing", L"Recognizing...");
+        return Text("credential.recognizing", L"识别中...");
     if (message == L"\u4eba\u8138\u5339\u914d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u6216\u4f7f\u7528\u5bc6\u7801\u767b\u5f55")
-        return Text("credential.noMatch", L"Face did not match; retry or use your password");
+        return Text("credential.noMatch", L"人脸匹配失败，请重试或使用密码登录");
     if (message == L"\u6b63\u5728\u8fdb\u884c\u6d3b\u4f53\u68c0\u6d4b...")
-        return Text("service.livenessChecking", L"Checking for a live face...");
+        return Text("service.livenessChecking", L"正在进行活体检测...");
     if (message == L"\u8bf7\u7728\u773c\u4ee5\u786e\u8ba4\u6d3b\u4f53...")
-        return Text("service.blinkPrompt", L"Blink to confirm you are present...");
+        return Text("service.blinkPrompt", L"请眨眼以确认活体...");
     if (message == L"\u6ca1\u6709\u6ce8\u518c\u7528\u6237")
-        return Text("service.noRegisteredUsers", L"No enrolled user was found");
+        return Text("service.noRegisteredUsers", L"没有注册用户");
     if (message == L"\u670d\u52a1\u6a21\u578b\u52a0\u8f7d\u5931\u8d25")
-        return Text("service.modelLoadFailed", L"The face models could not be loaded");
+        return Text("service.modelLoadFailed", L"服务模型加载失败");
+    if (message == L"\u6444\u50cf\u5934\u4e0d\u53ef\u7528")
+        return Text("service.cameraUnavailable", L"摄像头不可用");
     if (message == L"\u68c0\u6d4b\u5230\u653b\u51fb\uff0c\u8bf7\u4f7f\u7528\u771f\u5b9e\u4eba\u8138")
-        return Text("service.antiSpoofFailed", L"A spoof was detected; use your real face");
+        return Text("service.antiSpoofFailed", L"检测到攻击，请使用真实人脸");
     if (message == L"\u672a\u68c0\u6d4b\u5230\u7728\u773c\uff0c\u8bf7\u52a8\u4f5c\u660e\u786e\u5730\u95ed\u773c\u518d\u7741\u5f00\u91cd\u8bd5")
-        return Text("service.blinkFailed", L"No blink was detected; close and reopen your eyes clearly");
+        return Text("service.blinkFailed", L"未检测到眨眼，请动作明确地闭眼再睁开重试");
     if (message == L"\u6d3b\u4f53\u9a8c\u8bc1\u671f\u95f4\u4eba\u8138\u4e0d\u5339\u914d\uff0c\u8bf7\u91cd\u8bd5")
-        return Text("service.finalMatchFailed", L"The face changed during liveness verification; retry");
+        return Text("service.finalMatchFailed", L"活体验证期间人脸不匹配，请重试");
     if (message == facelogin::ipc::MSG_PASSWORDLESS_NOTICE)
-        return Text("credential.passwordless", L"This account has no password; use PIN or Windows Hello");
+        return Text("credential.passwordless", L"该账号无密码，人脸识别无法用于解锁，请使用 PIN/Hello 登录");
     return message;
 }
 

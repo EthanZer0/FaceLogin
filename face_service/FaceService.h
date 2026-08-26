@@ -19,7 +19,6 @@
 #include "pipe_server.h"
 #include "credential_store.h"
 #include "../common/config_util.h"
-#include "../common/locale_util.h"
 
 namespace facelogin {
 
@@ -119,7 +118,6 @@ private:
 
     // Configuration
     AppConfig m_config;
-    LocaleCatalog m_locale;
     LivenessMethod m_livenessMethod = LivenessMethod::Blink;
     float m_antiSpoofThreshold = 0.30f;
 
