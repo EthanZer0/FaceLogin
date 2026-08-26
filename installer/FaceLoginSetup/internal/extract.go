@@ -30,11 +30,17 @@ func ExtractResource(embeddedPath, destPath string) error {
 //	  openblas.dll  (etc.)
 //	  models/
 //	    *.dat, *.onnx  (model files)
+//	  locales/
+//	    *.json          (runtime language packs)
 func ExtractAll(destDir string, progressFn func(step, total int, name string)) error {
 	// Create target directories
 	modelsDir := filepath.Join(destDir, "models")
 	if err := os.MkdirAll(modelsDir, 0755); err != nil {
 		return fmt.Errorf("create models dir: %w", err)
+	}
+	localesDir := filepath.Join(destDir, "locales")
+	if err := os.MkdirAll(localesDir, 0755); err != nil {
+		return fmt.Errorf("create locales dir: %w", err)
 	}
 
 	// List embedded files (recursively from "resources" using all: embed)
@@ -43,8 +49,16 @@ func ExtractAll(destDir string, progressFn func(step, total int, name string)) e
 		return fmt.Errorf("read embedded resources: %w", err)
 	}
 	modelEntries, _ := fs.ReadDir(EmbeddedFS, "resources/models")
+	localeEntries, _ := fs.ReadDir(EmbeddedFS, "resources/locales")
 
-	total := len(entries) + len(modelEntries)
+	total := 0
+	for _, group := range [][]fs.DirEntry{entries, modelEntries, localeEntries} {
+		for _, entry := range group {
+			if !entry.IsDir() {
+				total++
+			}
+		}
+	}
 	step := 0
 
 	processEntry := func(name, srcPath, dstPath string) error {
@@ -86,6 +100,21 @@ func ExtractAll(destDir string, progressFn func(step, total int, name string)) e
 		dstPath := filepath.Join(modelsDir, name)
 		if err := processEntry(name, srcPath, dstPath); err != nil {
 			return fmt.Errorf("extract %s: %w", name, err)
+		}
+	}
+
+	// Language packs are deliberately external to FaceLoginConsole.exe so they
+	// can be maintained and updated independently. They must therefore be
+	// deployed beside the application rather than merely embedded in Setup.
+	for _, entry := range localeEntries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		srcPath := "resources/locales/" + name
+		dstPath := filepath.Join(localesDir, name)
+		if err := processEntry(filepath.Join("locales", name), srcPath, dstPath); err != nil {
+			return fmt.Errorf("extract locale %s: %w", name, err)
 		}
 	}
 	return nil
@@ -133,6 +162,7 @@ func RemoveInstalledFiles(destDir string, removeUserData bool) (int, error) {
 		return removed, firstErr
 	}
 	modelEntries, _ := fs.ReadDir(EmbeddedFS, "resources/models")
+	localeEntries, _ := fs.ReadDir(EmbeddedFS, "resources/locales")
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -164,6 +194,27 @@ func RemoveInstalledFiles(destDir string, removeUserData bool) (int, error) {
 			} else {
 				removed++
 			}
+		}
+	}
+	localesDir := filepath.Join(destDir, "locales")
+	for _, entry := range localeEntries {
+		if entry.IsDir() {
+			continue
+		}
+		dstPath := filepath.Join(localesDir, entry.Name())
+		if FileExists(dstPath) {
+			if err := os.Remove(dstPath); err != nil {
+				recordErr(err)
+			} else {
+				removed++
+			}
+		}
+	}
+	// Remove only the now-empty directories owned by the installer. Unknown
+	// files keep the directory in place and are never deleted implicitly.
+	for _, dir := range []string{modelsDir, localesDir} {
+		if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+			recordErr(os.Remove(dir))
 		}
 	}
 
@@ -200,27 +251,37 @@ func RemoveInstalledDir(destDir string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// Also tolerate the models/ subdir being left empty (it's ours) — but only
-	// if it contains nothing. Anything else means the dir is NOT empty.
+	// Also tolerate installer-owned subdirectories being left empty — but only
+	// if they contain nothing. Anything else means the dir is NOT empty.
 	if len(entries) == 0 {
 		if err := os.Remove(destDir); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
-	// If only an empty models/ remains, remove it then retry.
-	onlyModels := len(entries) == 1 && entries[0].IsDir() && strings.EqualFold(entries[0].Name(), "models")
-	if onlyModels {
-		mEntries, _ := os.ReadDir(filepath.Join(destDir, "models"))
-		if len(mEntries) == 0 {
-			if err := os.Remove(filepath.Join(destDir, "models")); err != nil {
-				return false, err
-			}
-			if err := os.Remove(destDir); err != nil {
-				return false, err
-			}
-			return true, nil
+	// Remove any empty installer-owned directories, then retry once. Unknown
+	// directories or files are intentionally preserved.
+	for _, entry := range entries {
+		if !entry.IsDir() || (!strings.EqualFold(entry.Name(), "models") && !strings.EqualFold(entry.Name(), "locales")) {
+			continue
 		}
+		dir := filepath.Join(destDir, entry.Name())
+		subEntries, readErr := os.ReadDir(dir)
+		if readErr == nil && len(subEntries) == 0 {
+			if err := os.Remove(dir); err != nil {
+				return false, err
+			}
+		}
+	}
+	remaining, err := os.ReadDir(destDir)
+	if err != nil {
+		return false, err
+	}
+	if len(remaining) == 0 {
+		if err := os.Remove(destDir); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	return false, nil // not empty — do NOT delete
 }
