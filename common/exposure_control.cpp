@@ -255,6 +255,10 @@ bool FaceExposureController::ApplyCameraCorrection(float faceLuma) {
         m_lastCameraStepAt = std::chrono::steady_clock::now();
         m_stepAckPending = true;
         m_lastStepDir = (faceLuma < m_target) ? 1 : -1;
+        // Same reference for the step-response check as the exposure branch —
+        // without this the reversal check would compare against the stale
+        // pre-channel-switch luma and could misfire on the first gain step.
+        m_lastStepLuma = faceLuma;
         return true;
     }
     return false;
@@ -377,7 +381,10 @@ bool FaceExposureController::SetGainManual(float faceLuma) {
 
 void FaceExposureController::ApplySessionGain(
     dlib::matrix<dlib::rgb_pixel>& frame) const {
-    if (!m_enabled || m_sessionGain == 1.0f) return;
+    // Threshold instead of == 1.0f: target/luma rarely equals exactly 1.0,
+    // so an exact comparison would run the full-frame gain pass every frame
+    // even when the correction is negligible.
+    if (!m_enabled || std::fabs(m_sessionGain - 1.0f) < 1e-3f) return;
     ApplyGainInPlace(frame, m_sessionGain);
 }
 
