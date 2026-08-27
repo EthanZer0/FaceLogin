@@ -3,6 +3,12 @@ import { WindowSetTitle } from '../wailsjs/runtime/runtime'
 import zhCNText from '../../../../locales/zh-CN.json?raw'
 import koKRText from '../../../../locales/ko-KR.json?raw'
 import enUSText from '../../../../locales/en-US.json?raw'
+// The upgrade announcement is deliberately NOT part of the locale packs: it
+// is installer-only content, shipped in exactly two languages (Chinese for
+// zh-CN, English for everything else) so release notes never pollute the
+// shared packs.
+import noticeZhText from './notice-zh.json?raw'
+import noticeEnText from './notice-en.json?raw'
 
 type Catalog = Record<string, string>
 
@@ -11,6 +17,13 @@ const catalogs: Record<string, Catalog> = {
   'zh-CN': JSON.parse(zhCNText),
   'ko-KR': JSON.parse(koKRText),
   'en-US': JSON.parse(enUSText),
+}
+
+// Upgrade-announcement catalog: zh-CN reads Chinese, every other language
+// reads English (exactly the two-language policy requested for release notes).
+const noticeCatalog: Record<string, Catalog> = {
+  'zh-CN': JSON.parse(noticeZhText),
+  'en-US': JSON.parse(noticeEnText),
 }
 
 function normalizeLocale(locale: string | null | undefined): string {
@@ -51,6 +64,14 @@ export function t(key: string, values: Record<string, string | number> = {}): st
     message = message.replaceAll(`{${name}}`, String(value))
   }
   return message
+}
+
+// Translate an upgrade-notice key (title/body lines). Chinese UI reads the
+// Chinese announcement, every other UI language reads the English one; an
+// unknown key degrades to the key itself.
+export function noticeT(key: string): string {
+  const lang = activeLocale.value === 'zh-CN' ? 'zh-CN' : 'en-US'
+  return noticeCatalog[lang][key] ?? key
 }
 
 setLocale(savedLocale)

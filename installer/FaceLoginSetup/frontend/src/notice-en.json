@@ -1,0 +1,18 @@
+{
+  "installer.notice.title": "FaceLogin 1.9.0 Update Notes",
+  "installer.notice.features": "New Features",
+  "installer.notice.reliability": "Recognition Reliability",
+  "installer.notice.interaction": "Interaction Improvements",
+  "installer.notice.fixes": "Fixes",
+  "installer.notice.note": "Note",
+  "installer.notice.unknownCapture": "Unknown-face capture (optional): when an unmatched face appears at the lock screen, a photo and event record are saved and can be browsed/deleted from the Console logs page (stored locally only)",
+  "installer.notice.coldBootKey": "Key-triggered sign-in at boot (optional): by default recognition starts automatically at boot; you can change it to require any key press (same as lock screen)",
+  "installer.notice.threshold": "Match threshold recalibrated 0.65 → 0.75: unlock failures caused by changing ambient light (e.g. moving between rooms) are significantly improved; stranger rejection is unaffected",
+  "installer.notice.usbCamera": "Built-in USB camera frame-rate fix: prefers compressed formats, stable 30fps at 720p, face enrollment no longer stalls",
+  "installer.notice.firstAuto": "Cold boot auto-recognizes only once: after a failed/timed-out attempt, or after switching to another tile and back, a key press is required to start recognition again",
+  "installer.notice.noLoop": "Failed recognition no longer restarts the camera in a loop; switching to the password tile stops recognition immediately and password input is no longer interrupted",
+  "installer.notice.pinReset": "Fixed the camera repeatedly activating and PIN appearing unavailable when resetting a Microsoft account PIN",
+  "installer.notice.msaDetection": "Fixed Console still showing a local account after switching/linking to a Microsoft account",
+  "installer.notice.thresholdUpgrade": "Fixed the match threshold not being synced to the new default after an upgrade install",
+  "installer.notice.facesPreserved": "Already enrolled face data is unaffected; no re-enrollment needed"
+}

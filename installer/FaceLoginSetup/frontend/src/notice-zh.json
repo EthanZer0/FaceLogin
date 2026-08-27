@@ -1,0 +1,18 @@
+{
+  "installer.notice.title": "FaceLogin 1.9.0 更新说明",
+  "installer.notice.features": "新功能",
+  "installer.notice.reliability": "识别可靠性",
+  "installer.notice.interaction": "交互完善",
+  "installer.notice.fixes": "修复",
+  "installer.notice.note": "提示",
+  "installer.notice.unknownCapture": "陌生人未匹配人脸记录（可选开启）：锁屏出现未匹配人脸时保存照片与记录，可在 Console 日志页浏览/删除（仅本机存储）",
+  "installer.notice.coldBootKey": "开机登录按键触发可选：默认开机自动识别，可在设置中改为按任意键开始（与锁屏一致）",
+  "installer.notice.threshold": "匹配阈值重校准 0.65 → 0.75：环境光照变化（如换教室/宿舍）导致解锁失败的问题显著改善，陌生人拦截不受影响",
+  "installer.notice.usbCamera": "内置 USB 摄像头帧率修复：优先压缩格式取流，720p 下稳定 30fps，人脸录入不再卡住",
+  "installer.notice.firstAuto": "冷启动仅首次自动识别：识别失败/超时、或切换到其他登录磁贴再切回后，按任意键才重新识别",
+  "installer.notice.noLoop": "锁屏识别失败不再循环启动摄像头，切换密码磁贴时识别立即停止，密码输入不再被打断",
+  "installer.notice.pinReset": "修复微软账户重置 PIN 时摄像头反复调用、PIN 显示不可用的问题",
+  "installer.notice.msaDetection": "修复从本地账号切换/绑定到微软账户后 Console 仍显示本地账号的问题",
+  "installer.notice.thresholdUpgrade": "修复升级安装后匹配阈值未同步为新默认值的问题",
+  "installer.notice.facesPreserved": "已录入的人脸数据不受影响，无需重新录入"
+}

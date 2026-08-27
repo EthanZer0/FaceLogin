@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { GetDefaultPaths, Install, Uninstall, PickDirectory, IsInstalled, GetUpgradeNotice } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime'
-import { activeLocale, availableLocales, localePreference, setLocale, t } from './i18n'
+import { activeLocale, availableLocales, localePreference, setLocale, t, noticeT } from './i18n'
 
 const installDir = ref('')
 const showInstall = ref(true)
@@ -33,11 +33,13 @@ function localizeBackendMessage(message: string): string {
   return t(message)
 }
 
-// Notice body lines, filtered to non-empty (rendered as bullets)
+// Notice body lines, filtered to non-empty (rendered as bullets). The lines
+// are keys into the standalone announcement catalog (noticeT) — the release
+// notes live in notice-zh/en.json, not in the shared locale packs.
 const noticeLines = computed(() =>
   notice.value && notice.value.body
     ? (notice.value.body as string).split('\n').filter((l: string) => l.trim() !== '').map((key: string) =>
-        key.endsWith(':') ? `${t(key.slice(0, -1))}:` : t(key)
+        key.endsWith(':') ? `${noticeT(key.slice(0, -1))}:` : noticeT(key)
       )
     : []
 )
@@ -292,7 +294,7 @@ async function doUninstall() {
               <span class="notice-ver-badge">v{{ notice.version }}</span>
               <span class="text-xs text-gray-400 font-light">{{ t('installer.releaseNotice') }}</span>
             </div>
-            <h2 class="text-lg font-medium text-gray-900 leading-snug">{{ t(notice.title) }}</h2>
+            <h2 class="text-lg font-medium text-gray-900 leading-snug">{{ noticeT(notice.title) }}</h2>
           </div>
           <button
             class="notice-close text-gray-400 hover:text-gray-600 text-xl leading-none mt-0.5"
