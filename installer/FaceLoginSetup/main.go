@@ -86,34 +86,20 @@ func main() {
 	internal.NoticeEnabled = true
 	internal.NoticeVersion = "1.9.0"
 	internal.NoticeTitle = "installer.notice.title"
-	internal.NoticeBody = "installer.notice.features:
-" +
-		"installer.notice.unknownCapture
-" +
-		"installer.notice.coldBootKey
-" +
-		"installer.notice.reliability:
-" +
-		"installer.notice.threshold
-" +
-		"installer.notice.usbCamera
-" +
-		"installer.notice.interaction:
-" +
-		"installer.notice.firstAuto
-" +
-		"installer.notice.noLoop
-" +
-		"installer.notice.fixes:
-" +
-		"installer.notice.pinReset
-" +
-		"installer.notice.msaDetection
-" +
-		"installer.notice.thresholdUpgrade
-" +
-		"installer.notice.note:
-" +
+	internal.NoticeBody = "installer.notice.features:\n" +
+		"installer.notice.unknownCapture\n" +
+		"installer.notice.coldBootKey\n" +
+		"installer.notice.reliability:\n" +
+		"installer.notice.threshold\n" +
+		"installer.notice.usbCamera\n" +
+		"installer.notice.interaction:\n" +
+		"installer.notice.firstAuto\n" +
+		"installer.notice.noLoop\n" +
+		"installer.notice.fixes:\n" +
+		"installer.notice.pinReset\n" +
+		"installer.notice.msaDetection\n" +
+		"installer.notice.thresholdUpgrade\n" +
+		"installer.notice.note:\n" +
 		"installer.notice.facesPreserved"
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
