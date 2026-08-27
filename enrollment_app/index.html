@@ -1155,6 +1155,7 @@ button{font-family:inherit}
 // Shared locale pack injected by WebviewHost from <installDir>/locales.
 // The source-language fallback keeps the standalone HTML preview usable.
 var I18N = window.__FACELOGIN_LOCALE__ || {};
+var I18N_ZH = window.__FACELOGIN_LOCALE_ZH__ || {};
 var STATIC_TEXT_KEYS = {
   '生物识别登录 · 录入 / 校准': 'console.subtitle',
   '录入': 'console.tab.enroll',
@@ -1279,7 +1280,7 @@ function translateRuntimeText(text) {
   return t(RUNTIME_TEXT_KEYS[text] || text);
 }
 function t(key, values) {
-  var message = I18N[key] || key;
+  var message = I18N[key] || I18N_ZH[key] || key;
   values = values || {};
   Object.keys(values).forEach(function(name) {
     message = message.split('{' + name + '}').join(String(values[name]));

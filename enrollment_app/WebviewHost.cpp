@@ -131,14 +131,29 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
         const facelogin::AppConfig config = facelogin::LoadConfig(installDir);
         facelogin::LocaleCatalog locale;
         if (locale.Load(installDir, config.ui_language)) {
+            auto escapeLessThan = [](std::string& s) {
+                size_t pos = 0;
+                while ((pos = s.find('<', pos)) != std::string::npos) {
+                    s.replace(pos, 1, "\\u003c");
+                    pos += 6;
+                }
+            };
             std::string safeJson = locale.json();
-            size_t pos = 0;
-            while ((pos = safeJson.find('<', pos)) != std::string::npos) {
-                safeJson.replace(pos, 1, "\\u003c");
-                pos += 6;
+            escapeLessThan(safeJson);
+
+            // zh-CN fallback pack: t() falls back to it when the active
+            // catalog misses a key (pack drift) — a translated string instead
+            // of a raw key name such as "console.settings.exposureControl".
+            std::string zhJson = "{}";
+            facelogin::LocaleCatalog zhFallback;
+            if (zhFallback.Load(installDir, "zh-CN")) {
+                zhJson = zhFallback.json();
+                escapeLessThan(zhJson);
             }
+
             const std::string bootstrap =
                 "<script>window.__FACELOGIN_LOCALE__=" + safeJson +
+                ";window.__FACELOGIN_LOCALE_ZH__=" + zhJson +
                 ";window.__FACELOGIN_LOCALE_CODE__='" + locale.locale() + "';</script>";
             const size_t head = htmlContent.find("<head>");
             htmlContent.insert(head == std::string::npos ? 0 : head + 6, bootstrap);
