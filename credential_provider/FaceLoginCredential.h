@@ -100,7 +100,10 @@ private:
     std::wstring Text(const char* key, const wchar_t* fallback) const {
         return m_locale.GetWide(key, fallback);
     }
-    std::wstring LocalizeServiceMessage(const std::wstring& message) const;
+    // Translate a pipe payload: the service sends locale keys (ipc::L10N_*),
+    // never display text. Lookup is active pack → zh-CN pack → empty; callers
+    // fall back to their state's default text when the result is empty.
+    std::wstring LocalizeKey(const std::wstring& key) const;
 
     // Trigger re-enumeration of credentials (via CredentialsChanged)
     void TriggerReEnumeration();

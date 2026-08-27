@@ -31,19 +31,6 @@ std::string ReadUtf8File(const std::wstring& path) {
     return buffer.str();
 }
 
-std::wstring Utf8ToWide(const std::string& value) {
-    if (value.empty()) return {};
-    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                          value.data(), static_cast<int>(value.size()),
-                                          nullptr, 0);
-    if (size <= 0) return {};
-    std::wstring result(static_cast<size_t>(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                        value.data(), static_cast<int>(value.size()),
-                        result.data(), size);
-    return result;
-}
-
 std::string NormalizeTag(std::string locale) {
     std::replace(locale.begin(), locale.end(), '_', '-');
     std::transform(locale.begin(), locale.end(), locale.begin(),
@@ -140,6 +127,31 @@ std::string ReadInteractiveSessionUiLanguage() {
 
 } // namespace
 
+std::wstring Utf8ToWide(const std::string& value) {
+    if (value.empty()) return {};
+    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                          value.data(), static_cast<int>(value.size()),
+                                          nullptr, 0);
+    if (size <= 0) return {};
+    std::wstring result(static_cast<size_t>(size), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                        value.data(), static_cast<int>(value.size()),
+                        result.data(), size);
+    return result;
+}
+
+std::string WideToUtf8(const std::wstring& value) {
+    if (value.empty()) return {};
+    const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(),
+                                         static_cast<int>(value.size()),
+                                         nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return {};
+    std::string result(static_cast<size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+                        result.data(), size, nullptr, nullptr);
+    return result;
+}
+
 std::string ResolveLocale(const std::string& preference) {
     if (!preference.empty() && preference != "auto") {
         const std::string tag = NormalizeTag(preference);
@@ -189,13 +201,25 @@ bool LocaleCatalog::Load(const std::wstring& installDir, const std::string& pref
         FACELOGIN_INFO(L"[l10n] LocaleCatalog::Load: '%hs' missing — fell back to zh-CN",
                        Utf8ToWide(preference).c_str());
     }
-    FACELOGIN_INFO(L"[l10n] LocaleCatalog::Load: locale='%hs' file='%ls' bytes=%zu ok=%d",
-                   m_locale.c_str(), path.c_str(), m_json.size(), !m_json.empty());
+    // The zh-CN pack is always loaded as the translation fallback layer
+    // (current pack → zh-CN pack → caller fallback), mirroring the Console's
+    // t() policy — a key missing from the active pack still resolves.
+    if (m_locale == "zh-CN") {
+        m_jsonZh = m_json;
+    } else {
+        m_jsonZh = ReadUtf8File(installDir + L"\\locales\\zh-CN.json");
+    }
+    FACELOGIN_INFO(L"[l10n] LocaleCatalog::Load: locale='%hs' file='%ls' bytes=%zu ok=%d zhFallback=%zu",
+                   m_locale.c_str(), path.c_str(), m_json.size(), !m_json.empty(),
+                   m_jsonZh.size());
     return !m_json.empty();
 }
 
 std::string LocaleCatalog::Get(const std::string& key, const std::string& fallback) const {
-    const std::string value = JsonGetString(m_json, key);
+    std::string value = JsonGetString(m_json, key);
+    if (value.empty()) {
+        value = JsonGetString(m_jsonZh, key);
+    }
     return value.empty() ? fallback : value;
 }
 

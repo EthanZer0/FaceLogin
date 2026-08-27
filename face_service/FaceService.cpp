@@ -718,7 +718,7 @@ void FaceService::Run() {
             // configure, so fail the reload with a descriptive error.
             if (!EnsureModelsLoaded()) {
                 FACELOGIN_ERROR(L"CONFIG_RELOAD: required models failed to load");
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"服务模型加载失败"));
+                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_MODEL_LOAD_FAILED));
                 FlushFileBuffers(m_pipeServer->GetHandle());
                 m_pipeServer->DrainOutput(5000);
                 m_pipeServer->Disconnect();
@@ -771,7 +771,7 @@ void FaceService::Run() {
             // Lazy-init camera: create + start on demand, then fully shutdown
             // after auth to free the device for other processes.
             if (!EnsureCameraForAuth()) {
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
+                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_CAMERA_UNAVAILABLE));
                 FlushFileBuffers(m_pipeServer->GetHandle());
                 m_pipeServer->DrainOutput(5000);
                 m_pipeServer->Disconnect();
@@ -982,7 +982,7 @@ bool FaceService::ProcessAuthRequest() {
 
     if (m_store->GetUserCount() == 0) {
         FACELOGIN_WARN(L"No registered users");
-        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"\u6ca1\u6709\u6ce8\u518c\u7528\u6237"));
+        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_NO_REGISTERED_USERS));
         FlushFileBuffers(m_pipeServer->GetHandle());
         m_pipeServer->DrainOutput(5000);
         return false;
@@ -991,12 +991,13 @@ bool FaceService::ProcessAuthRequest() {
     // E: If the heavy models are still loading in the background (unusually
     // fast lock screen right after boot), tell the lock screen what's
     // happening instead of silently blocking. The CP updates the tile's status
-    // text live via STATUS:, so the user sees "\u6b63\u5728\u52a0\u8f7d\u6a21\u578b..." rather than a
-    // frozen "\u8bc6\u522b\u4e2d". The message is NOT flushed until after the wait below \u2014
-    // if the models are already ready, this whole block is a no-op and no
-    // extra STATUS message is sent.
+    // text live via STATUS: — the payload is the locale key
+    // (ipc::L10N_LOADING_MODELS) and the CP translates it, so the user sees
+    // "正在加载模型..." rather than a frozen "识别中". The message is NOT
+    // flushed until after the wait below — if the models are already ready,
+    // this whole block is a no-op and no extra STATUS message is sent.
     if (!m_modelsReady.load() && m_modelsLoading.load()) {
-        m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u6b63\u5728\u52a0\u8f7d\u6a21\u578b...");
+        m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_LOADING_MODELS);
     }
 
     // Heavy models (2d106det + recognizer, optionally anti-spoof) load
@@ -1006,7 +1007,7 @@ bool FaceService::ProcessAuthRequest() {
     // connected, so this only ever costs the tail of the boot time.
     if (!EnsureModelsLoaded()) {
         FACELOGIN_ERROR(L"Required models not loaded \u2014 cannot authenticate");
-        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"\u670d\u52a1\u6a21\u578b\u52a0\u8f7d\u5931\u8d25"));
+        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_MODEL_LOAD_FAILED));
         FlushFileBuffers(m_pipeServer->GetHandle());
         m_pipeServer->DrainOutput(5000);
         return false;
@@ -1151,10 +1152,11 @@ bool FaceService::ProcessAuthRequest() {
                        steerIters);
     }
 
-    // STATUS: Notify credential provider that recognition has started.
-    // L"\u8bc6\u522b\u4e2d..." = L"识别中..."
+    // STATUS: Notify credential provider that recognition has started. The
+    // payload is the locale key (ipc::L10N_RECOGNIZING = "credential.recognizing");
+    // the CP translates it to the lock-screen language.
     {
-        std::wstring statusMsg = std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u8bc6\u522b\u4e2d...";
+        std::wstring statusMsg = std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_RECOGNIZING;
         m_pipeServer->WriteMessage(statusMsg);
     }
 
@@ -1330,10 +1332,12 @@ bool FaceService::ProcessAuthRequest() {
                         SaveUnknownFace(frame, d0);
                     }
                     // Distinct terminal message (AUTH_NO_MATCH) so the CP can
-                    // show "人脸匹配失败" instead of the timeout wording
-                    // ("未识别到人脸") — a face WAS seen, it just didn't match.
+                    // show the no-match wording instead of the timeout one —
+                    // a face WAS seen, it just didn't match. The STATUS: text
+                    // carries the locale key (ipc::L10N_NO_MATCH); the CP
+                    // translates it.
                     m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) +
-                        L"\u4eba\u8138\u5339\u914d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u6216\u4f7f\u7528\u5bc6\u7801\u767b\u5f55");
+                        ipc::L10N_NO_MATCH);
                     FlushFileBuffers(m_pipeServer->GetHandle());
                     m_pipeServer->WriteMessage(ipc::MSG_AUTH_NO_MATCH);
                     FlushFileBuffers(m_pipeServer->GetHandle());
@@ -1388,9 +1392,9 @@ bool FaceService::ProcessAuthRequest() {
 
                 // Determine status text
                 if (method == LivenessMethod::AntiSpoof) {
-                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u6b63\u5728\u8fdb\u884c\u6d3b\u4f53\u68c0\u6d4b...");
+                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_LIVENESS_CHECKING);
                 } else if (method == LivenessMethod::Blink) {
-                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u8bf7\u7728\u773c\u4ee5\u786e\u8ba4\u6d3b\u4f53...");
+                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_BLINK_PROMPT);
                 }
                 if (method != LivenessMethod::None) {
                     FlushFileBuffers(m_pipeServer->GetHandle());
@@ -1501,8 +1505,8 @@ bool FaceService::ProcessAuthRequest() {
                     FACELOGIN_WARN(L"Liveness check failed");
                     m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
                         method == LivenessMethod::AntiSpoof ?
-                        L"\u68c0\u6d4b\u5230\u653b\u51fb\uff0c\u8bf7\u4f7f\u7528\u771f\u5b9e\u4eba\u8138" :
-                        L"\u672a\u68c0\u6d4b\u5230\u7728\u773c\uff0c\u8bf7\u52a8\u4f5c\u660e\u786e\u5730\u95ed\u773c\u518d\u7741\u5f00\u91cd\u8bd5"));
+                        ipc::L10N_ANTI_SPOOF_FAILED :
+                        ipc::L10N_BLINK_FAILED));
                     FlushFileBuffers(m_pipeServer->GetHandle());
                     m_pipeServer->DrainOutput(5000);
                     SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
@@ -1587,7 +1591,7 @@ bool FaceService::ProcessAuthRequest() {
                     if (!verifyOk) {
                         FACELOGIN_WARN(L"Final match verify failed \u2014 face swap detected");
                         m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
-                            L"\u6d3b\u4f53\u9a8c\u8bc1\u671f\u95f4\u4eba\u8138\u4e0d\u5339\u914d\uff0c\u8bf7\u91cd\u8bd5"));
+                            ipc::L10N_FINAL_MATCH_FAILED));
                         FlushFileBuffers(m_pipeServer->GetHandle());
                         m_pipeServer->DrainOutput(5000);
                         SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
