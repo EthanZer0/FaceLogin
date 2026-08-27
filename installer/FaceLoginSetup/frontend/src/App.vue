@@ -33,22 +33,21 @@ function localizeBackendMessage(message: string): string {
   return t(message)
 }
 
-// Notice body lines, filtered to non-empty (rendered as bullets). The lines
-// are keys into the standalone announcement catalog (noticeT) — the release
-// notes live in notice-zh/en.json, not in the shared locale packs.
+// Notice body lines, filtered to non-empty (rendered as bullets). The whole
+// body is ONE locale key (installer.notice.body) whose value is a newline-
+// separated list — no group headers, so the announcement stays a plain
+// bullet list (see notice-zh/en.json).
 const noticeLines = computed(() =>
   notice.value && notice.value.body
-    ? (notice.value.body as string).split('\n').filter((l: string) => l.trim() !== '').map((key: string) =>
-        key.endsWith(':') ? `${noticeT(key.slice(0, -1))}:` : noticeT(key)
-      )
+    ? noticeT(notice.value.body).split('\n').filter((l: string) => l.trim() !== '')
     : []
 )
 
-// Notice body parsed into {group, items} sections. A line ending with '：'
-// (e.g. "核心变更：" or "新功能：") starts a new section whose following
-// '-' bullets belong to it; lines before any such header go into a default
-// section. Falls back to a single unnamed section when the body has no
-// group headers, so the legacy flat format still renders.
+// Notice body parsed into {group, items} sections. The current announcement
+// format is a flat bullet list (single installer.notice.body key), which
+// lands in one unnamed section here. Group headers ("新功能：" etc.) are
+// still tolerated for older notice formats: a line ending with '：' starts
+// a section whose following lines belong to it.
 interface NoticeSection { group: string; items: string[]; important?: boolean }
 const noticeSections = computed<NoticeSection[]>(() => {
   const lines = noticeLines.value

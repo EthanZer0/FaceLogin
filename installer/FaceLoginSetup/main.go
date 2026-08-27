@@ -82,25 +82,13 @@ func main() {
 
 	// =========================================================================
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
+	// Title and body are single locale keys; the body value is a newline-
+	// separated list rendered as plain bullets (see notice-zh/en.json).
 	// =========================================================================
 	internal.NoticeEnabled = true
 	internal.NoticeVersion = "1.9.0"
 	internal.NoticeTitle = "installer.notice.title"
-	internal.NoticeBody = "installer.notice.features:\n" +
-		"installer.notice.unknownCapture\n" +
-		"installer.notice.coldBootKey\n" +
-		"installer.notice.reliability:\n" +
-		"installer.notice.threshold\n" +
-		"installer.notice.usbCamera\n" +
-		"installer.notice.interaction:\n" +
-		"installer.notice.firstAuto\n" +
-		"installer.notice.noLoop\n" +
-		"installer.notice.fixes:\n" +
-		"installer.notice.pinReset\n" +
-		"installer.notice.msaDetection\n" +
-		"installer.notice.thresholdUpgrade\n" +
-		"installer.notice.note:\n" +
-		"installer.notice.facesPreserved"
+	internal.NoticeBody = "installer.notice.body"
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
 
