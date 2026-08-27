@@ -26,6 +26,7 @@
 #include <uuids.h>
 #include <process.h>
 #include <stdio.h>
+#include <locale.h>
 #include <wchar.h>
 #include <string>
 #include <vector>
@@ -69,9 +70,26 @@ struct ISampleGrabberCB : public IUnknown {
 };
 
 // ==========================================================================
-// Output helpers: console + report file (UTF-8 with BOM, so Notepad reads it).
+// Output helpers: console (WriteConsoleW — bypasses the ANSI code page, so
+// Chinese renders correctly regardless of the system locale) + report file
+// (UTF-8 with BOM, so Notepad reads it). When stdout is redirected (pipe /
+// file), WriteConsoleW is unavailable and we fall back to wprintf with the
+// system ANSI locale set.
 // ==========================================================================
 static FILE* g_report = nullptr;
+
+static void OutConsole(const std::wstring& s) {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    if (hOut != INVALID_HANDLE_VALUE && GetConsoleMode(hOut, &mode)) {
+        DWORD written = 0;
+        WriteConsoleW(hOut, s.c_str(), static_cast<DWORD>(s.size()), &written, nullptr);
+        WriteConsoleW(hOut, L"\n", 1, &written, nullptr);
+        return;
+    }
+    // Redirected: rely on the C runtime locale (set in wmain).
+    wprintf(L"%s\n", s.c_str());
+}
 
 static void WriteReportUtf8(const std::wstring& wtext) {
     if (!g_report) return;
@@ -89,7 +107,7 @@ static void Out(const wchar_t* fmt, ...) {
     wchar_t buf[1024];
     vswprintf_s(buf, fmt, args);
     va_end(args);
-    wprintf(L"%s\n", buf);
+    OutConsole(buf);
     WriteReportUtf8(std::wstring(buf) + L"\r\n");
 }
 
@@ -657,6 +675,10 @@ static void DsTestThunk(void* ctx) {
 // main
 // ==========================================================================
 int wmain() {
+    // C runtime locale for the redirected-stdout fallback path (the
+    // interactive console path uses WriteConsoleW and needs no locale).
+    setlocale(LC_ALL, "");
+
     // Report file next to the exe
     wchar_t exeDir[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exeDir, MAX_PATH);
