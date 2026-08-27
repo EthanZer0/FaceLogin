@@ -139,7 +139,8 @@ FaceLogin/
 ├── face_service/           # 人脸识别 Windows 服务
 ├── enrollment_app/         # 人脸录入控制台（WebView2 GUI）
 ├── installer/              # Go Wails 图形安装程序
-├── scripts/                # 辅助脚本（模型下载、诊断工具，不随安装包发布）
+├── locales/                # 独立语言包（zh-CN / ko-KR / en-US）
+├── scripts/                # 辅助脚本（模型下载、诊断工具、语言包一致性检查）
 └── assets/                 # 图标资源
 ```
 
