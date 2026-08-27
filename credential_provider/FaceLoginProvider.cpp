@@ -20,8 +20,11 @@ FaceLoginProvider::FaceLoginProvider() {
     FACELOGIN_INFO(L"FaceLoginProvider created");
 
     const std::wstring installDir = ReadRegString(REGVAL_INSTALL_PATH, L"");
+    const std::string uiLang = facelogin::LoadConfig(installDir).ui_language;
     facelogin::LocaleCatalog locale;
-    locale.Load(installDir, facelogin::LoadConfig(installDir).ui_language);
+    const bool localeOk = locale.Load(installDir, uiLang);
+    FACELOGIN_INFO(L"[l10n] Provider: installDir='%ls' ui_language='%hs' locale='%hs' loadOk=%d",
+                   installDir.c_str(), uiLang.c_str(), locale.locale().c_str(), localeOk);
     m_fieldLabels[0] = locale.GetWide("credential.title", L"人脸登录");
     m_fieldLabels[1] = locale.GetWide("credential.field.status", L"状态");
     m_fieldLabels[2] = locale.GetWide("credential.field.submit", L"提交");
