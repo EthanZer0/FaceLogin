@@ -389,6 +389,55 @@ static void MfTestDevice(const std::wstring& path, const std::wstring& name, int
 // DS device test: build graph, list stream caps, SetFormat(1280x720),
 // grab frames via SampleGrabber (hard timeout so the tool never hangs)
 // ==========================================================================
+// ==========================================================================
+// Create a filter by class. qedit.dll's SampleGrabber (and on some systems
+// quartz's NullRenderer) ship UNREGISTERED — CoCreateInstance then fails
+// with REGDB_E_CLASSNOTREG and even DllGetClassObject refuses (the DLL
+// validates registration internally). Self-repair: when the class is not
+// registered, call the DLL's DllRegisterServer (needs admin; works when the
+// tool is run elevated) and retry. Otherwise report the manual command.
+// ==========================================================================
+static HRESULT CreateFilterByClass(const CLSID& clsid, const wchar_t* dllName,
+                                   IBaseFilter** ppFilter) {
+    *ppFilter = nullptr;
+    HRESULT hr = CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(ppFilter));
+    if (SUCCEEDED(hr)) return hr;
+
+    if (hr == REGDB_E_CLASSNOTREG) {
+        HMODULE hDll = LoadLibraryW(dllName);
+        if (hDll) {
+            typedef HRESULT(WINAPI* DllRegisterServerFn)();
+            auto reg = reinterpret_cast<DllRegisterServerFn>(
+                GetProcAddress(hDll, "DllRegisterServer"));
+            if (reg) {
+                HRESULT regHr = reg();
+                if (SUCCEEDED(regHr)) {
+                    Out(L"[DS] 自动注册 %s 成功（DllRegisterServer，需管理员权限）", dllName);
+                    hr = CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER,
+                                          IID_PPV_ARGS(ppFilter));
+                    if (SUCCEEDED(hr)) {
+                        Out(L"[DS] %s 注册后创建成功", dllName);
+                        FreeLibrary(hDll);
+                        return hr;
+                    }
+                    Out(L"[DS] %s 注册后 CoCreateInstance 仍失败: 0x%08X", dllName, hr);
+                } else {
+                    Out(L"[DS] %s DllRegisterServer 失败: 0x%08X", dllName, regHr);
+                }
+            }
+            FreeLibrary(hDll);
+        } else {
+            Out(L"[DS] LoadLibrary(%s) 失败 err=%lu", dllName, GetLastError());
+        }
+        Out(L"[DS] 提示: DS 抓帧测试需要 %s 注册——请以管理员身份重新运行本工具，"
+            L"或手动执行: regsvr32 %s", dllName, dllName);
+    } else {
+        Out(L"[DS] %s CoCreateInstance 失败: 0x%08X", dllName, hr);
+    }
+    return hr;
+}
+
 class GrabCallback : public ISampleGrabberCB {
 public:
     volatile LONG m_count = 0;
@@ -535,14 +584,16 @@ static void DsTestDevice(const std::wstring& name, int index) {
         Out(L"[DS] 未找到带 IAMStreamConfig 的输出 pin");
     }
 
-    // Build graph + SampleGrabber, grab 10 frames with a hard timeout
+    // Build graph and test frame delivery. Two paths:
+    //   A) SampleGrabber + NullRenderer — precise per-frame timing; requires
+    //      qedit/quartz registration (self-repaired when possible).
+    //   B) AVI Mux + File Writer — frame delivery measured by output file
+    //      growth; the AVI Mux is always registered, so this path works even
+    //      where qedit/NULL renderer classes are missing.
     {
         IGraphBuilder* graph = nullptr;
         ICaptureGraphBuilder2* capBuilder = nullptr;
-        IBaseFilter* grabberFilter = nullptr;
-        ISampleGrabber* grabber = nullptr;
         IMediaControl* control = nullptr;
-        GrabCallback callback;
 
         hr = CoCreateInstance(CLSID_FilterGraph, nullptr, CLSCTX_INPROC_SERVER,
                               IID_PPV_ARGS(&graph));
@@ -550,79 +601,139 @@ static void DsTestDevice(const std::wstring& name, int index) {
             hr = CoCreateInstance(CLSID_CaptureGraphBuilder2, nullptr, CLSCTX_INPROC_SERVER,
                                   IID_PPV_ARGS(&capBuilder));
         }
-        if (SUCCEEDED(hr) && capBuilder && graph) {
-            capBuilder->SetFiltergraph(graph);
-            hr = CoCreateInstance(CLSID_SampleGrabber, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(&grabberFilter));
-            if (FAILED(hr)) {
-                Out(L"[DS] CoCreateInstance(CLSID_SampleGrabber) failed: 0x%08X", hr);
-                if (hr == REGDB_E_CLASSNOTREG) {
-                    Out(L"[DS]   提示: SampleGrabber 类未注册（qedit.dll）——"
-                        L"可用管理员运行: regsvr32 qedit.dll");
-                }
-            }
-        }
-        if (SUCCEEDED(hr) && grabberFilter) {
-            grabberFilter->QueryInterface(IID_ISampleGrabber, reinterpret_cast<void**>(&grabber));
-        }
-        if (SUCCEEDED(hr) && grabber) {
-            AM_MEDIA_TYPE grabMt = {};
-            grabMt.majortype = MEDIATYPE_Video;
-            grabMt.subtype = MEDIASUBTYPE_RGB24;
-            grabber->SetMediaType(&grabMt);
-            hr = graph->AddFilter(captureFilter, L"Capture");
-            if (SUCCEEDED(hr)) hr = graph->AddFilter(grabberFilter, L"Grabber");
-        }
-        if (SUCCEEDED(hr) && grabber && capBuilder) {
-            // Connect capture pin -> SampleGrabber -> NullRenderer
+        bool graphUp = SUCCEEDED(hr) && graph && capBuilder;
+        if (graphUp) capBuilder->SetFiltergraph(graph);
+
+        // ---- Path A: SampleGrabber + NullRenderer ----
+        HRESULT aHr = E_FAIL;
+        if (graphUp) {
+            IBaseFilter* grabberFilter = nullptr;
+            ISampleGrabber* grabber = nullptr;
             IBaseFilter* nullFilter = nullptr;
-            hr = CoCreateInstance(CLSID_NullRenderer, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(&nullFilter));
-            if (SUCCEEDED(hr)) hr = graph->AddFilter(nullFilter, L"Null");
-            if (SUCCEEDED(hr) && grabber && nullFilter) {
-                hr = capBuilder->RenderStream(&PIN_CATEGORY_CAPTURE, &MEDIATYPE_Video,
-                                              captureFilter, grabberFilter, nullFilter);
-                Out(L"[DS] RenderStream(capture→grabber→null): %s (0x%08X)",
-                    SUCCEEDED(hr) ? L"成功" : L"失败", hr);
+            GrabCallback callback;
+
+            aHr = CreateFilterByClass(CLSID_SampleGrabber, L"qedit.dll", &grabberFilter);
+            if (SUCCEEDED(aHr) && grabberFilter) {
+                grabberFilter->QueryInterface(IID_ISampleGrabber,
+                                              reinterpret_cast<void**>(&grabber));
             }
+            if (SUCCEEDED(aHr) && grabber) {
+                AM_MEDIA_TYPE grabMt = {};
+                grabMt.majortype = MEDIATYPE_Video;
+                grabMt.subtype = MEDIASUBTYPE_RGB24;
+                grabber->SetMediaType(&grabMt);
+                aHr = graph->AddFilter(captureFilter, L"Capture");
+                if (SUCCEEDED(aHr)) aHr = graph->AddFilter(grabberFilter, L"Grabber");
+            }
+            if (SUCCEEDED(aHr) && grabber && capBuilder) {
+                aHr = CreateFilterByClass(CLSID_NullRenderer, L"quartz.dll", &nullFilter);
+                if (SUCCEEDED(aHr)) aHr = graph->AddFilter(nullFilter, L"Null");
+                if (SUCCEEDED(aHr) && nullFilter) {
+                    aHr = capBuilder->RenderStream(&PIN_CATEGORY_CAPTURE, &MEDIATYPE_Video,
+                                                   captureFilter, grabberFilter, nullFilter);
+                    Out(L"[DS] RenderStream(capture→grabber→null): %s (0x%08X)",
+                        SUCCEEDED(aHr) ? L"成功" : L"失败", aHr);
+                }
+            }
+            if (grabberFilter) grabberFilter->Release();
             if (nullFilter) nullFilter->Release();
+
+            if (SUCCEEDED(aHr) && grabber) {
+                graph->QueryInterface(IID_PPV_ARGS(&control));
+                grabber->SetCallback(&callback, 0);
+                aHr = control->Run();
+                Out(L"[DS] graph Run(): %s (0x%08X)", SUCCEEDED(aHr) ? L"成功" : L"失败", aHr);
+
+                if (SUCCEEDED(aHr)) {
+                    // Wait for 10 frames or 15s — a stall here is the hang root cause
+                    const double deadline = NowSec() + 15.0;
+                    while (callback.m_count < 10 && NowSec() < deadline) {
+                        Sleep(50);
+                    }
+                    const LONG got = callback.m_count;
+                    if (got >= 10) {
+                        double first = static_cast<double>(callback.m_firstTime);
+                        double last = static_cast<double>(callback.m_lastTime);
+                        LARGE_INTEGER freq{};
+                        QueryPerformanceFrequency(&freq);
+                        Out(L"[DS] 抓帧结果: %ld 帧, 平均间隔 %.1f ms%s", got,
+                            (last - first) / freq.QuadPart / (got - 1) * 1000.0,
+                            L"  <<<< 无帧输出（认证卡死根因候选）");
+                    } else if (got > 0) {
+                        Out(L"[DS] 抓帧结果: 仅 %ld 帧后停止输出（15 秒内）——设备输出异常", got);
+                    } else {
+                        Out(L"[DS] 抓帧结果: 0 帧（15 秒超时）<<<< 认证卡死根因候选");
+                    }
+                    control->Stop();
+                }
+            }
+            if (grabber) grabber->Release();
         }
 
-        if (SUCCEEDED(hr) && grabber && control == nullptr) {
-            graph->QueryInterface(IID_PPV_ARGS(&control));
-            grabber->SetCallback(&callback, 0);
-            hr = control->Run();
-            Out(L"[DS] graph Run(): %s (0x%08X)", SUCCEEDED(hr) ? L"成功" : L"失败", hr);
+        // ---- Path B: AVI Mux + File Writer (frame delivery via file growth) ----
+        if (!SUCCEEDED(aHr)) {
+            Out(L"[DS] SampleGrabber 路径不可用——改用 AVI Mux + File Writer 出帧检测");
+            IBaseFilter* aviMux = nullptr;
+            IBaseFilter* fileWriter = nullptr;
+            IFileSinkFilter* sink = nullptr;
+            wchar_t aviPath[MAX_PATH] = {};
+            wchar_t exeDir[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exeDir, MAX_PATH);
+            wchar_t* slash = wcsrchr(exeDir, L'\\');
+            if (slash) *slash = L'\0';
+            swprintf_s(aviPath, L"%s\\diag_ds_capture.avi", exeDir);
+            DeleteFileW(aviPath);
 
-            if (SUCCEEDED(hr)) {
-                // Wait for 10 frames or 15s — a stall here is the hang root cause
-                const double deadline = NowSec() + 15.0;
-                while (callback.m_count < 10 && NowSec() < deadline) {
-                    Sleep(50);
-                }
-                const LONG got = callback.m_count;
-                if (got >= 10) {
-                    double first = static_cast<double>(callback.m_firstTime);
-                    double last = static_cast<double>(callback.m_lastTime);
-                    LARGE_INTEGER freq{};
-                    QueryPerformanceFrequency(&freq);
-                    Out(L"[DS] 抓帧结果: %ld 帧, 平均间隔 %.1f ms%s", got,
-                        (last - first) / freq.QuadPart / (got - 1) * 1000.0,
-                        L"  <<<< 无帧输出（认证卡死根因候选）");
-                } else if (got > 0) {
-                    Out(L"[DS] 抓帧结果: 仅 %ld 帧后停止输出（15 秒内）——设备输出异常", got);
-                } else {
-                    Out(L"[DS] 抓帧结果: 0 帧（15 秒超时）<<<< 认证卡死根因候选");
-                }
-                control->Stop();
+            HRESULT bHr = CreateFilterByClass(CLSID_AviDest, L"quartz.dll", &aviMux);
+            if (SUCCEEDED(bHr)) bHr = CreateFilterByClass(CLSID_FileWriter, L"quartz.dll", &fileWriter);
+            if (SUCCEEDED(bHr) && fileWriter) {
+                fileWriter->QueryInterface(IID_PPV_ARGS(&sink));
+                if (sink) bHr = sink->SetFileName(aviPath, nullptr);
             }
-        } else if (FAILED(hr)) {
-            Out(L"[DS] graph 构建失败: 0x%08X", hr);
+            if (SUCCEEDED(bHr)) {
+                bHr = graph->AddFilter(captureFilter, L"Capture");
+                if (SUCCEEDED(bHr)) bHr = graph->AddFilter(aviMux, L"Avi Mux");
+                if (SUCCEEDED(bHr)) bHr = graph->AddFilter(fileWriter, L"File Writer");
+            }
+            if (SUCCEEDED(bHr) && capBuilder) {
+                bHr = capBuilder->RenderStream(&PIN_CATEGORY_CAPTURE, &MEDIATYPE_Video,
+                                               captureFilter, aviMux, fileWriter);
+                Out(L"[DS] RenderStream(capture→AVI Mux→File Writer): %s (0x%08X)",
+                    SUCCEEDED(bHr) ? L"成功" : L"失败", bHr);
+            }
+            if (SUCCEEDED(bHr)) {
+                graph->QueryInterface(IID_PPV_ARGS(&control));
+                bHr = control->Run();
+                Out(L"[DS] graph Run(): %s (0x%08X)", SUCCEEDED(bHr) ? L"成功" : L"失败", bHr);
+                if (SUCCEEDED(bHr)) {
+                    // 3 seconds of capture, then stop; file growth = frames delivered
+                    Sleep(3000);
+                    control->Stop();
+                    DWORD size = 0;
+                    HANDLE hFile = CreateFileW(aviPath, GENERIC_READ, FILE_SHARE_READ,
+                                               nullptr, OPEN_EXISTING, 0, nullptr);
+                    if (hFile != INVALID_HANDLE_VALUE) {
+                        size = GetFileSize(hFile, nullptr);
+                        CloseHandle(hFile);
+                    }
+                    if (size > 20000) {
+                        Out(L"[DS] 出帧检测: 3 秒写入 %lu KB——设备正常出帧 ✓", size / 1024);
+                    } else if (size > 0) {
+                        Out(L"[DS] 出帧检测: 3 秒仅写入 %lu 字节——AVI 头已写但无帧数据 <<<< 无帧输出", size);
+                    } else {
+                        Out(L"[DS] 出帧检测: 文件为空——未写入任何数据 <<<< 无帧输出", size);
+                    }
+                }
+            } else {
+                Out(L"[DS] AVI 路径构建失败: 0x%08X", bHr);
+            }
+            if (sink) sink->Release();
+            if (aviMux) aviMux->Release();
+            if (fileWriter) fileWriter->Release();
+            DeleteFileW(aviPath);
         }
 
         if (control) control->Release();
-        if (grabber) grabber->Release();
-        if (grabberFilter) grabberFilter->Release();
         if (capBuilder) capBuilder->Release();
         if (graph) graph->Release();
     }
