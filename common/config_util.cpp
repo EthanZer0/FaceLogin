@@ -154,7 +154,7 @@ AppConfig ConfigFromJson(const std::string& json) {
     cfg.blink_glasses_mode = (JsonGetString(json, "blink_glasses_mode") == "true");
     cfg.low_light_enhance = (JsonGetString(json, "low_light_enhance") == "true");
     cfg.unload_models_after_auth = (JsonGetString(json, "unload_models_after_auth") == "true");
-    cfg.face_exposure_control = (jsonGetString(json, "face_exposure_control") == "true");
+    cfg.face_exposure_control = (JsonGetString(json, "face_exposure_control") == "true");
     cfg.face_exposure_target = jsonGetFloat(json, "face_exposure_target", 110.0f);
     cfg.face_exposure_band = jsonGetFloat(json, "face_exposure_band", 15.0f);
 
