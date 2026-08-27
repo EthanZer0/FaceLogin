@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - 'locales/**'
+      - 'enrollment_app/index.html'
       - 'scripts/check-locales.mjs'
       - '.github/workflows/locales.yml'
   push:
     paths:
       - 'locales/**'
+      - 'enrollment_app/index.html'
       - 'scripts/check-locales.mjs'
       - '.github/workflows/locales.yml'
 
