@@ -669,6 +669,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
             const LONGLONG AUTH_TIMEOUT_100NS = 200000000LL;
             if (now - m_authStartTime > AUTH_TIMEOUT_100NS) {
                 FACELOGIN_WARN(L"Auth timed out waiting for service response");
+                m_statusText.clear();   // drop stale "识别中..." (see timeout paths)
                 m_state = State::Failed;
                 *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
                 return S_OK;
@@ -697,6 +698,10 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
             }
             else if (result.status == facelogin::ipc::AuthResult::Status::Timeout) {
                 FACELOGIN_INFO(L"Auth timeout");
+                // Clear any live STATUS text ("识别中..." etc.) — the camera is
+                // off now, and GetStringValue's Failed branch would otherwise
+                // keep showing the stale text instead of the timeout wording.
+                m_statusText.clear();
                 m_state = State::Failed;
                 *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
                 return S_OK;
@@ -1102,6 +1107,10 @@ void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& messa
             return;
         } else if (result.status == facelogin::ipc::AuthResult::Status::Timeout) {
             FACELOGIN_INFO(L"OnPipeResponse: Auth timeout");
+            // Same as GetSerialization's timeout path: drop the live STATUS
+            // text so the Failed tile shows the generic "未识别到人脸" wording
+            // instead of the stale "识别中...".
+            m_statusText.clear();
             m_state = State::Failed;
         } else if (result.status == facelogin::ipc::AuthResult::Status::NoMatch) {
             // A face was seen but did not match any enrolled face. Show the
@@ -1136,6 +1145,7 @@ void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& messa
         }
     } else {
         FACELOGIN_WARN(L"OnPipeResponse: Read failed — server disconnected?");
+        m_statusText.clear();   // no specific error text: show the generic unavailable wording
         m_state = State::Error;
     }
     TriggerReEnumeration();
