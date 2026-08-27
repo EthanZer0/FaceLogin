@@ -223,5 +223,11 @@
   "console.logs.distance": "距离 {distance}",
   "console.logs.readFailed": "读取失败: {error}",
   "console.logs.deleteFailedDetail": "删除失败: {error}",
-  "console.logs.clearFailedDetail": "清空失败: {error}"
+  "console.logs.clearFailedDetail": "清空失败: {error}",
+  "console.settings.language": "界面语言 (Language)",
+  "console.settings.languageHelp": "界面显示语言。\"跟随系统\"使用当前 Windows 登录用户的语言，无需手动选择。",
+  "console.settings.languageAuto": "跟随系统",
+  "console.settings.languageZhCN": "简体中文",
+  "console.settings.languageKoKR": "한국어",
+  "console.settings.languageEnUS": "English"
 }

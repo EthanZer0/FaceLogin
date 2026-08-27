@@ -872,6 +872,20 @@ button{font-family:inherit}
          dlib was dropped, the system is now pure ONNX (InsightFace + SCRFD). -->
 
     <div class="field">
+      <label class="tip"><span>界面语言 (Language)</span><span class="tip-ico">i</span><span class="tip-box">界面显示语言。"跟随系统"使用当前 Windows 登录用户的语言，无需手动选择。</span></label>
+      <div class="cs-wrap" data-cs="language">
+        <select id="cfg-language" class="cs-native">
+          <option value="auto">跟随系统</option>
+          <option value="zh-CN">简体中文</option>
+          <option value="ko-KR">한국어</option>
+          <option value="en-US">English</option>
+        </select>
+        <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false"><span class="cs-val"></span><span class="cs-arrow"></span></button>
+        <div class="cs-list" role="listbox"></div>
+      </div>
+    </div>
+
+    <div class="field">
       <label class="tip"><span>摄像头旋转 (Camera Rotation)</span><span class="tip-ico">i</span><span class="tip-box">摄像头物理安装方向不是正向上时（如竖屏安装），可在此调整。实时预览会立即反映旋转效果。</span></label>
       <div class="cs-wrap" data-cs="rotation">
         <select id="cfg-rotation" class="cs-native">
@@ -1184,6 +1198,12 @@ var STATIC_TEXT_KEYS = {
   '取消': 'console.cancel',
   '系统设置': 'console.settings.title',
   '修改设置后会自动通知后台服务，无需重启。': 'console.settings.autoApply',
+  '界面语言 (Language)': 'console.settings.language',
+  '界面显示语言。"跟随系统"使用当前 Windows 登录用户的语言，无需手动选择。': 'console.settings.languageHelp',
+  '跟随系统': 'console.settings.languageAuto',
+  '简体中文': 'console.settings.languageZhCN',
+  '한국어': 'console.settings.languageKoKR',
+  'English': 'console.settings.languageEnUS',
   '摄像头旋转 (Camera Rotation)': 'console.settings.rotation',
   '摄像头物理安装方向不是正向上时（如竖屏安装），可在此调整。实时预览会立即反映旋转效果。': 'console.settings.rotationHelp',
   '不旋转 (0°)': 'console.settings.rotation0',
@@ -1702,6 +1722,10 @@ function loadSettings() {
     var json = H.GetConfig();
     var cfg = JSON.parse(json);
     document.getElementById('cfg-liveness').value = cfg.liveness_method || 'none';
+    document.getElementById('cfg-language').value = cfg.ui_language || 'auto';
+    // Remember the language the page was loaded with — onSaveSettings compares
+    // against this to decide whether a reload is needed for the new pack.
+    window.__CFG_UI_LANGUAGE_INITIAL__ = cfg.ui_language || 'auto';
     document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
     document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
@@ -1745,6 +1769,10 @@ function loadSettings() {
     // (blink) even when config says antispoof/none.
     var livWrap = document.getElementById('cfg-liveness').closest('.cs-wrap');
     if (livWrap) csPopulate(livWrap, document.getElementById('cfg-liveness'));
+    // Same for the language dropdown — its value came from config, so the
+    // dial must reflect it instead of the page-load default.
+    var langWrap = document.getElementById('cfg-language').closest('.cs-wrap');
+    if (langWrap) csPopulate(langWrap, document.getElementById('cfg-language'));
 
     // match_threshold is stored as Euclidean distance (lower = stricter).
     // New slider mapping (1.6.0): threshold = 0.45 + (90 - strictness)/100,
@@ -1776,6 +1804,7 @@ function onSaveSettings() {
     // recognition_model/detector are fixed to onnx/scrfd (dlib was removed);
     // they're not sent here — the service and config defaults handle them.
     liveness_method: document.getElementById('cfg-liveness').value,
+    ui_language: document.getElementById('cfg-language').value,
     // Convert strictness back to distance threshold (1.6.0 mapping):
     // threshold = 0.45 + (90 - strictness)/100
     match_threshold: 0.45 + (90 - strictness) / 100,
@@ -1793,6 +1822,12 @@ function onSaveSettings() {
     var ok = H.SetConfig(JSON.stringify(cfg));
     if (ok) {
       showBanner('settings', '设置已保存并通知后台服务。', 'ok');
+      // The locale pack is injected on page navigation — when the language
+      // changed, reload so the new pack takes effect immediately.
+      if (document.getElementById('cfg-language').value !==
+          (window.__CFG_UI_LANGUAGE_INITIAL__ || 'auto')) {
+        setTimeout(function() { window.location.reload(); }, 800);
+      }
       // Update hint text based on liveness method
       var method = cfg.liveness_method;
       if (method === 'antispoof') {
