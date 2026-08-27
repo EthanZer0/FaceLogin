@@ -4,6 +4,7 @@
 #include "../common/logger.h"
 #include "../common/ipc_protocol.h"
 #include "../common/registry_util.h"
+#include "../common/config_util.h"
 #include <wincred.h>
 #include <ntstatus.h>
 #include <ntsecapi.h>
@@ -114,6 +115,12 @@ FaceLoginCredential::FaceLoginCredential() {
         FACELOGIN_ERROR(L"Failed to create credentials ready event");
     }
 
+    const std::wstring installDir = ReadRegString(REGVAL_INSTALL_PATH, L"");
+    const std::string uiLang = facelogin::LoadConfig(installDir).ui_language;
+    const bool localeOk = m_locale.Load(installDir, uiLang);
+    FACELOGIN_INFO(L"[l10n] Credential: installDir='%ls' ui_language='%hs' locale='%hs' loadOk=%d",
+                   installDir.c_str(), uiLang.c_str(), m_locale.locale().c_str(), localeOk);
+
     FACELOGIN_DEBUG(L"FaceLoginCredential created");
 }
 
@@ -197,8 +204,18 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // auth round, don't restart the flow.  This prevents an infinite
     // loop where OnPipeResponse → CredentialsChanged → Advise()
     // overwrites Ready back to Authenticating.
-    if (m_state == State::Ready && !m_password.empty()) {
+    // NOTE: m_password may legitimately be EMPTY here (passwordless
+    // record — blank-credential unlock). The check is on the Ready
+    // state only.
+    if (m_state == State::Ready) {
         FACELOGIN_INFO(L"Advise: credentials already ready, skipping auth restart");
+        return S_OK;
+    }
+
+    // Submitted: the credential is with LogonUI/LSA now — never restart auth
+    // while the outcome is pending (would re-recognize and re-submit).
+    if (m_state == State::Submitted) {
+        FACELOGIN_INFO(L"Advise: credential submitted, skipping auth restart");
         return S_OK;
     }
 
@@ -224,8 +241,16 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // restart the input-detection thread so the NEXT key press retries —
     // that is the user's expected retry path (clicking the tile also
     // retries via SetSelected).
-    if (m_state == State::Failed) {
-        FACELOGIN_INFO(L"Advise: failed state — restarting input detection (key press retries)");
+    if (m_state == State::Failed || m_state == State::Error) {
+        // Failed (no match / timeout / submission rejected) and Error
+        // (service-side rejection: anti-spoof attack, blink liveness failed,
+        // service unavailable) both keep their specific status text — the
+        // unconditional Waiting reset below would otherwise show "按下任意键"
+        // and drop the real reason. Never auto-restart auth; restart the
+        // input-detection thread so the NEXT key press retries (or the user
+        // clicks the tile — SetSelected handles that).
+        FACELOGIN_INFO(L"Advise: %s state — restarting input detection (key press retries)",
+                       m_state == State::Failed ? L"failed" : L"error");
         m_waitingStartTick = GetTickCount();
         StartInputDetectionThread();
         return S_OK;
@@ -268,8 +293,8 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
             FACELOGIN_INFO(L"Advise: cold boot + key-trigger enabled — waiting for key press");
             StartInputDetectionThread();
             if (m_pCredentialEvents) {
-                m_pCredentialEvents->SetFieldString(
-                    this, 1, L"\u6309\u4e0b\u4efb\u610f\u952e\u4ee5\u5f00\u59cb\u4eba\u8138\u8bc6\u522b");
+                const std::wstring waiting = Text("credential.pressAnyKey", L"按下任意按键以开始人脸识别");
+                m_pCredentialEvents->SetFieldString(this, 1, waiting.c_str());
             }
         } else {
             FACELOGIN_INFO(L"Advise: cold boot — starting auth immediately");
@@ -283,7 +308,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         // start the camera — that was the PIN-unavailable fix.
         if (!facelogin::PipeClient::ProbeServiceAvailable()) {
             FACELOGIN_WARN(L"Advise: service pipe missing — showing service-not-running notice");
-            m_statusText = L"人脸识别服务未运行，请检查 FaceLoginService";
+            m_statusText = Text("credential.serviceNotRunning", L"人脸识别服务未运行，请检查 FaceLoginService");
             m_state = State::Error;
             if (m_pCredentialEvents) {
                 m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
@@ -333,11 +358,13 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
     //     So SetSelected NEVER starts auth directly; it only (re)starts the
     //     input-detection thread. This matches the lock-screen behavior the
     //     user already relies on (switch back → press any key).
-    if (m_state == State::Failed) {
-        // Failed (no match / timeout) + tile re-selected: start waiting for a
-        // key press to retry. Never auto-restart — the failed text stays
+    if (m_state == State::Failed || m_state == State::Error) {
+        // Failed (no match / timeout / submission rejected) / Error (anti-spoof,
+        // blink liveness, service unavailable) + tile re-selected: start waiting
+        // for a key press to retry. Never auto-restart — the failure text stays
         // visible and the next key press is the explicit retry.
-        FACELOGIN_INFO(L"SetSelected: failed state — restarting input detection (key press retries)");
+        FACELOGIN_INFO(L"SetSelected: %s state — restarting input detection (key press retries)",
+                       m_state == State::Failed ? L"failed" : L"error");
         m_waitingStartTick = GetTickCount();
         StartInputDetectionThread();
     } else if (m_state == State::Waiting && !m_inputThreadRunning) {
@@ -351,8 +378,8 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
         // Repush the Waiting text (clears any residual "识别中..." / stale text)
         m_statusText.clear();
         if (m_pCredentialEvents) {
-            m_pCredentialEvents->SetFieldString(
-                this, 1, L"\u6309\u4e0b\u4efb\u610f\u952e\u4ee5\u5f00\u59cb\u4eba\u8138\u8bc6\u522b");
+            const std::wstring waiting = Text("credential.pressAnyKey", L"按下任意按键以开始人脸识别");
+            m_pCredentialEvents->SetFieldString(this, 1, waiting.c_str());
         }
     }
 
@@ -446,32 +473,40 @@ STDMETHODIMP FaceLoginCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) 
 
     switch (dwFieldID) {
     case 0: // Label
-        return SHStrDupW(L"人脸登录", ppwsz);
+        return SHStrDupW(Text("credential.title", L"人脸登录").c_str(), ppwsz);
 
     case 1: // Status
         switch (m_state) {
         case State::Waiting:
-            return SHStrDupW(L"按下任意按键以开始人脸识别", ppwsz);
+            return SHStrDupW(Text("credential.pressAnyKey", L"按下任意按键以开始人脸识别").c_str(), ppwsz);
         case State::Authenticating:
             if (!m_statusText.empty()) {
                 return SHStrDupW(m_statusText.c_str(), ppwsz);
             }
-            return SHStrDupW(L"识别中...", ppwsz);
+            return SHStrDupW(Text("credential.recognizing", L"识别中...").c_str(), ppwsz);
         case State::Ready:
-            return SHStrDupW(L"人脸识别成功，正在解锁...", ppwsz);
-        case State::Failed:
-            // AUTH_NO_MATCH carries its own wording ("人脸匹配失败...");
-            // plain timeouts keep the generic text.
+            return SHStrDupW(Text("credential.success", L"人脸识别成功，正在解锁...").c_str(), ppwsz);
+        case State::Submitted:
+            // Credential handed to LogonUI — outcome is decided by LSA. Avoid
+            // the misleading "成功" text on the rejection error page.
+            return SHStrDupW(L"正在验证登录，等待 Windows 确认...", ppwsz);        case State::Failed:
+            // A specific failure text (e.g. submission rejected by LSA —
+            // ReportResult) takes precedence; AUTH_NO_MATCH carries its own
+            // wording ("人脸匹配失败..."); plain timeouts keep the generic.
+            if (!m_statusText.empty()) {
+                return SHStrDupW(m_statusText.c_str(), ppwsz);
+            }
             if (m_noMatchFailed) {
                 return SHStrDupW(m_statusText.empty() ?
-                                 L"人脸匹配失败，请重试或使用密码登录" :
+                                 Text("credential.noMatch", L"人脸匹配失败，请重试或使用密码登录").c_str() :
                                  m_statusText.c_str(), ppwsz);
+
             }
-            return SHStrDupW(L"未识别到人脸，请重试或使用密码登录", ppwsz);
+            return SHStrDupW(Text("credential.noFace", L"未识别到人脸，请重试或使用密码登录").c_str(), ppwsz);
         case State::Blocked:
             // Passwordless account notice (set by OnPipeResponse / polling).
             return SHStrDupW(m_statusText.empty() ?
-                             L"该账号无密码，人脸识别无法用于解锁，请使用 PIN/Hello 登录" :
+                             Text("credential.passwordless", L"该账号无密码，人脸识别无法用于解锁，请使用 PIN/Hello 登录").c_str() :
                              m_statusText.c_str(), ppwsz);
         case State::Error:
             // Show the specific error message from the service (e.g. anti-spoof
@@ -479,7 +514,7 @@ STDMETHODIMP FaceLoginCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) 
             if (!m_statusText.empty()) {
                 return SHStrDupW(m_statusText.c_str(), ppwsz);
             }
-            return SHStrDupW(L"人脸登录服务不可用", ppwsz);
+            return SHStrDupW(Text("credential.serviceUnavailable", L"人脸登录服务不可用").c_str(), ppwsz);
         default:
             return SHStrDupW(L"", ppwsz);
         }
@@ -488,7 +523,7 @@ STDMETHODIMP FaceLoginCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) 
         return SHStrDupW(L"", ppwsz);
 
     case 3: // Command link
-        return SHStrDupW(L"切换到密码登录", ppwsz);
+        return SHStrDupW(Text("credential.switchToPassword", L"切换到密码登录").c_str(), ppwsz);
 
     default:
         return E_INVALIDARG;
@@ -575,6 +610,17 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
 
     ZeroMemory(pcpcs, sizeof(*pcpcs));
 
+    // Submitted: the credential was already handed over ("finished") and no
+    // re-submission is allowed — LSA already judged it (LogonUI error page
+    // after a blank-password rejection, or success). Ending without a new
+    // credential lets LogonUI settle on its own error/success UI instead of
+    // starting another auth round.
+    if (m_state == State::Submitted) {
+        FACELOGIN_INFO(L"GetSerialization: credential already submitted — ending without re-submit");
+        *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
+        return S_OK;
+    }
+
     // Unlock scenario: if we're in Waiting state, the background input-
     // detection thread is still waiting for user input. Return "not
     // finished" — no credentials yet.
@@ -623,6 +669,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
             const LONGLONG AUTH_TIMEOUT_100NS = 200000000LL;
             if (now - m_authStartTime > AUTH_TIMEOUT_100NS) {
                 FACELOGIN_WARN(L"Auth timed out waiting for service response");
+                m_statusText.clear();   // drop stale "识别中..." (see timeout paths)
                 m_state = State::Failed;
                 *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
                 return S_OK;
@@ -651,6 +698,10 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
             }
             else if (result.status == facelogin::ipc::AuthResult::Status::Timeout) {
                 FACELOGIN_INFO(L"Auth timeout");
+                // Clear any live STATUS text ("识别中..." etc.) — the camera is
+                // off now, and GetStringValue's Failed branch would otherwise
+                // keep showing the stale text instead of the timeout wording.
+                m_statusText.clear();
                 m_state = State::Failed;
                 *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
                 return S_OK;
@@ -659,7 +710,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
                 FACELOGIN_WARN(L"Auth error: %s", result.errorMessage.c_str());
                 // Passwordless account: show the notice in-place and finish.
                 if (result.errorMessage == facelogin::ipc::MSG_PASSWORDLESS_NOTICE) {
-                    m_statusText = result.errorMessage;
+                    m_statusText = LocalizeKey(result.errorMessage);
                     m_state = State::Blocked;
                     if (m_pCredentialEvents) {
                         m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
@@ -669,7 +720,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
                 }
                 // Surface the service's specific error on the lock screen.
                 if (!result.errorMessage.empty()) {
-                    m_statusText = result.errorMessage;
+                    m_statusText = LocalizeKey(result.errorMessage);
                 }
                 m_state = State::Error;
                 *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
@@ -678,12 +729,30 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
         }
     }
 
-    // If we have credentials ready, pack and return them
-    if (m_state == State::Ready && !m_password.empty()) {
+    // If we have credentials ready, pack and return them. A still-empty
+    // password is VALID here: it means the record is passwordless (blank
+    // password account) and we pack a blank MSV1_0 credential — Windows
+    // allows blank-password console logon by default, so face unlock works.
+    if (m_state == State::Ready) {
         // NOTE: never log the password or any part of it — it is a credential.
         HRESULT hr = PackCredentials(pcpcs);
         if (SUCCEEDED(hr)) {
             *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+            // Move to Submitted: the credential was handed to LogonUI. If LSA
+            // rejects it (wrong password / blank not allowed), the error page
+            // and any re-poll must NOT pack the same credential again — the
+            // user returns to the tile after the error page and would see
+            // "人脸识别成功" and a resubmission loop otherwise. ReportResult
+            // drives the real outcome (success → done; failure → Failed).
+            m_state = State::Submitted;
+            // Push the status text NOW so the stale "人脸识别成功，正在解锁..."
+            // (pulled by LogonUI while Ready) is replaced before the LSA
+            // rejection error page hides the shell — LogonUI does not re-pull
+            // the string once the error page is up.
+            if (m_pCredentialEvents) {
+                m_pCredentialEvents->SetFieldString(
+                    this, 1, L"\u6b63\u5728\u9a8c\u8bc1\u767b\u5f55\uff0c\u7b49\u5f85 Windows \u786e\u8ba4...");
+            }
             FACELOGIN_INFO(L"PackCred SUCCESS: cbSerialization=%lu, ulAuthPackage=%lu",
                           pcpcs->cbSerialization, pcpcs->ulAuthenticationPackage);
         } else {
@@ -721,9 +790,21 @@ STDMETHODIMP FaceLoginCredential::ReportResult(
         FACELOGIN_WARN(L"Authentication failed: status=0x%08X, substatus=0x%08X",
                       ntsStatus, ntsSubstatus);
 
-        // Reset for retry
-        m_state = State::Waiting;
+        // Turn this into a FAILED state, NOT Waiting: a failed submission
+        // (e.g. blank-password credential rejected because the account has a
+        // real password, or the policy forbids blank logon) triggers
+        // re-enumeration → Advise. The cold-boot Advise branch auto-starts
+        // auth when state is Waiting — looping it forever (recognize →
+        // submit → reject → re-enumerate → recognize…). Failed instead makes
+        // Advise restart the input-detection thread: a key press is the
+        // explicit retry, matching the no-match behavior.
+        m_state = State::Failed;
+        m_statusText = L"登录被拒绝（密码或策略原因），请使用 PIN/密码登录";
         m_password.clear();
+
+        if (m_pCredentialEvents) {
+            m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
+        }
 
         if (m_pipeClient) {
             m_pipeClient.reset();
@@ -756,7 +837,7 @@ void FaceLoginCredential::StartAuth() {
     if (m_pipeClient->Connect()) {
         m_pipeClient->SendMessage(facelogin::ipc::MSG_AUTH_REQUEST);
 
-        m_statusText = L"识别中...";
+        m_statusText = Text("credential.recognizing", L"识别中...");
 
         auto self = this;
         m_pipeClient->StartBackgroundRead(
@@ -775,7 +856,7 @@ void FaceLoginCredential::StartAuth() {
         // (PipeClient::Connect already logged the precise error to
         // credential_provider.log.)
         FACELOGIN_WARN(L"Failed to connect to face service pipe");
-        m_statusText = L"人脸识别服务未运行，请检查 FaceLoginService";
+        m_statusText = Text("credential.serviceNotRunning", L"人脸识别服务未运行，请检查 FaceLoginService");
         m_state = State::Error;
         if (m_pCredentialEvents) {
             m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
@@ -974,15 +1055,25 @@ HRESULT FaceLoginCredential::SwitchToPasswordProvider() {
 }
 
 void FaceLoginCredential::OnPipeStatus(const std::wstring& message) {
+    const std::wstring localized = LocalizeKey(message);
     EnterCriticalSection(&m_cs);
-    m_statusText = message;
+    m_statusText = localized;
     LeaveCriticalSection(&m_cs);
-    FACELOGIN_INFO(L"Status text updated: %s", message.c_str());
+    FACELOGIN_INFO(L"Status text updated: %s", localized.c_str());
     // Use SetFieldString to update the status text in-place on the lock
     // screen, without triggering re-enumeration (which destroys the pipe).
     if (m_pCredentialEvents) {
-        m_pCredentialEvents->SetFieldString(this, 1, message.c_str());
+        m_pCredentialEvents->SetFieldString(this, 1, localized.c_str());
     }
+}
+
+std::wstring FaceLoginCredential::LocalizeKey(const std::wstring& key) const {
+    // Pipe payloads are locale keys (see ipc::L10N_* in ipc_protocol.h) — the
+    // service never embeds display text. LocaleCatalog resolves: active pack
+    // → zh-CN pack → empty (the caller's state default then applies), so a
+    // key missing from the packs degrades to Chinese, never to a mixed-
+    // language tile or a raw key.
+    return m_locale.GetWide(facelogin::WideToUtf8(key));
 }
 
 void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& message) {
@@ -1016,13 +1107,17 @@ void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& messa
             return;
         } else if (result.status == facelogin::ipc::AuthResult::Status::Timeout) {
             FACELOGIN_INFO(L"OnPipeResponse: Auth timeout");
+            // Same as GetSerialization's timeout path: drop the live STATUS
+            // text so the Failed tile shows the generic "未识别到人脸" wording
+            // instead of the stale "识别中...".
+            m_statusText.clear();
             m_state = State::Failed;
         } else if (result.status == facelogin::ipc::AuthResult::Status::NoMatch) {
             // A face was seen but did not match any enrolled face. Show the
             // specific wording (and keep it — the timeout case below shows the
             // generic "未识别到人脸" instead).
             FACELOGIN_INFO(L"OnPipeResponse: Face present but no match");
-            m_statusText = L"\u4eba\u8138\u5339\u914d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u6216\u4f7f\u7528\u5bc6\u7801\u767b\u5f55";
+            m_statusText = Text("credential.noMatch", L"人脸匹配失败，请重试或使用密码登录");
             m_noMatchFailed = true;
             if (m_pCredentialEvents) {
                 m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
@@ -1033,22 +1128,24 @@ void FaceLoginCredential::OnPipeResponse(bool success, const std::wstring& messa
             // Passwordless account: show the notice in-place and stop — do NOT
             // trigger re-enumeration or submit any credentials.
             if (result.errorMessage == facelogin::ipc::MSG_PASSWORDLESS_NOTICE) {
-                m_statusText = result.errorMessage;
+                m_statusText = LocalizeKey(result.errorMessage);
                 m_state = State::Blocked;
                 if (m_pCredentialEvents) {
                     m_pCredentialEvents->SetFieldString(this, 1, m_statusText.c_str());
                 }
                 return;
             }
-            // Surface the service's specific error (e.g. "检测到攻击，请使用真实人脸")
-            // on the lock screen instead of the generic "service unavailable".
+            // Surface the service's specific error (e.g. the anti-spoof
+            // rejection key) on the lock screen instead of the generic
+            // "service unavailable".
             if (!result.errorMessage.empty()) {
-                m_statusText = result.errorMessage;
+                m_statusText = LocalizeKey(result.errorMessage);
             }
             m_state = State::Error;
         }
     } else {
         FACELOGIN_WARN(L"OnPipeResponse: Read failed — server disconnected?");
+        m_statusText.clear();   // no specific error text: show the generic unavailable wording
         m_state = State::Error;
     }
     TriggerReEnumeration();

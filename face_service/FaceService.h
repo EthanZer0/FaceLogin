@@ -15,11 +15,21 @@
 #include "onnx_models.h"
 #include "webcam_capture.h"
 #include "webcam_capture_dshow.h"
+#include "../common/exposure_control.h"
 #include "pipe_server.h"
 #include "credential_store.h"
 #include "../common/config_util.h"
 
 namespace facelogin {
+
+// Which camera backend serves the current auth session. Unifying on the
+// Media Foundation pipeline matters: enrollment (console) and unlock (service)
+// must capture through the SAME pipeline, or the DS/MF colour & gain
+// difference shifts same-person embeddings by ~0.4 (observed 0.66-0.75 vs the
+// 0.75 threshold), which is the systematic offset behind cross-environment
+// recognition failures. Service mode therefore prefers MF and falls back to
+// DirectShow only when MF cannot initialize in Session 0.
+enum class CameraPipeline { None, MF, DS };
 
 // Windows service implementing the face recognition pipeline.
 // Runs as LOCAL SYSTEM (required for DPAPI machine-scope decryption
@@ -57,11 +67,20 @@ private:
     bool Initialize();   // Load DB, config, lightweight SCRFD; queue heavy models
     bool ProcessAuthRequest();  // Handle one auth session
 
+    // Camera lifecycle for one auth session: pick the backend (service mode:
+    // MF preferred, DS fallback; standalone: MF) and release it afterwards.
+    bool EnsureCameraForAuth();
+    void ReleaseCamera();
+    // Attach the exposure controller to the active camera + apply config
+    // (called after every camera (re)init).
+    void AttachExposureControl();
+
     // Lazy model loading (1.5.0)
     void StartBackgroundModelLoad();   // spawn the async loader thread
     bool EnsureModelsLoaded();         // block until heavy models are ready
     bool LoadHeavyModels(bool lowLightEnhance);  // shape pred + recognizer + anti-spoof
     void UnloadHeavyModels();          // release model memory after auth (1.6.0)
+    void TrimWorkingSet();             // empty process working set after unload (1.9.0)
     void ValidateLivenessMethod();     // anti-spoof → blink fallback (main thread only)
     void AbortModelLoadWait();         // release anyone blocked in EnsureModelsLoaded
 
@@ -88,8 +107,13 @@ private:
     std::unique_ptr<OnnxDetector> m_onnxDetector;       // SCRFD (face detection)
     std::unique_ptr<OnnxRecognizer> m_onnxRecognizer;   // InsightFace (recognition)
     std::unique_ptr<OnnxAntiSpoof>  m_antiSpoof;        // MiniFASNetV2 (optional)
-    std::unique_ptr<WebcamCapture>   m_webcamMF;   // Media Foundation (standalone)
-    std::unique_ptr<WebcamCaptureDS> m_webcamDS;   // DirectShow (service mode)
+    std::unique_ptr<WebcamCapture>   m_webcamMF;   // Media Foundation (standalone / service MF-first)
+    std::unique_ptr<WebcamCaptureDS> m_webcamDS;   // DirectShow (service fallback)
+    CameraPipeline m_cameraPipeline = CameraPipeline::None;  // active backend
+    // Face exposure auto-control; declared after the cameras so it is
+    // destroyed FIRST (its Reset() must run while the camera handles are
+    // still valid).
+    FaceExposureController m_exposure;
     std::unique_ptr<CredentialStore> m_store;
 
     // Configuration

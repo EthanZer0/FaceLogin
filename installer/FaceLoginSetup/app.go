@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"os"
 	"path/filepath"
 
@@ -45,6 +45,21 @@ func (a *App) emit(percent int, step, status, detail string) {
 	})
 }
 
+// i18nMessage keeps backend errors and variable progress details localizable
+// without making the Go installer load a second copy of the locale catalog.
+// The frontend decodes this small envelope and renders it through the shared
+// JSON language pack. Plain strings remain supported for OS/library errors.
+func i18nMessage(key string, values map[string]interface{}) string {
+	payload, err := json.Marshal(map[string]interface{}{
+		"key":    key,
+		"values": values,
+	})
+	if err != nil {
+		return key
+	}
+	return string(payload)
+}
+
 // GetDefaultPaths returns default install and data paths for the frontend.
 func (a *App) GetDefaultPaths() map[string]string {
 	return map[string]string{
@@ -54,9 +69,9 @@ func (a *App) GetDefaultPaths() map[string]string {
 
 // PickDirectory opens a native folder picker dialog and returns the selected path.
 // Returns empty string if the user cancels.
-func (a *App) PickDirectory() string {
+func (a *App) PickDirectory(title string) string {
 	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择安装目录",
+		Title: title,
 	})
 	if err != nil {
 		return ""
@@ -83,42 +98,42 @@ func (a *App) GetUpgradeNotice() map[string]interface{} {
 }
 
 // Install runs the full installation.
-func (a *App) Install(installDir string) map[string]interface{} {
+func (a *App) Install(installDir string, locale string) map[string]interface{} {
 	var err error
 
-	a.emit(0, "开始安装", "running", "")
+	a.emit(0, "installer.progress.startInstall", "running", "")
 	installDir = filepath.Clean(installDir)
 
 	// Step 1: Stop and delete existing service
-	a.emit(0, "停止并删除已有服务", "running", "")
+	a.emit(0, "installer.progress.stopExistingService", "running", "")
 	if err = internal.StopAndDeleteService(); err != nil {
 		return result(false, err.Error())
 	}
-	a.emit(12, "停止并删除已有服务", "done", "")
+	a.emit(12, "installer.progress.stopExistingService", "done", "")
 
 	// Step 2: Create directories
-	a.emit(12, "创建目标目录", "running", "")
+	a.emit(12, "installer.progress.createDirectory", "running", "")
 	if err = os.MkdirAll(installDir, 0755); err != nil {
 		return result(false, err.Error())
 	}
-	a.emit(25, "创建目标目录", "done", "")
+	a.emit(25, "installer.progress.createDirectory", "done", "")
 
 	// Step 3: Write registry paths — DataPath is the install dir itself, C++ appends \models
-	a.emit(25, "配置注册表路径", "running", "")
+	a.emit(25, "installer.progress.configureRegistry", "running", "")
 	if err = internal.WriteRegString(REGVAL_INSTALL_PATH, installDir); err != nil {
-		return result(false, fmt.Sprintf("写入安装路径失败: %v", err))
+		return result(false, i18nMessage("installer.error.writeInstallPath", map[string]interface{}{"error": err.Error()}))
 	}
 	if err = internal.WriteRegString(REGVAL_DATA_PATH, installDir); err != nil {
-		return result(false, fmt.Sprintf("写入数据路径失败: %v", err))
+		return result(false, i18nMessage("installer.error.writeDataPath", map[string]interface{}{"error": err.Error()}))
 	}
-	a.emit(30, "配置注册表路径", "done", "")
+	a.emit(30, "installer.progress.configureRegistry", "done", "")
 
 	// Step 4: Extract all embedded resources
-	a.emit(30, "复制文件", "running", "")
+	a.emit(30, "installer.progress.copyFiles", "running", "")
 	if err = internal.ExtractAll(installDir, func(step, total int, name string) {
-		a.emit(30+step*30/total, "复制文件", "running", name)
+		a.emit(30+step*30/total, "installer.progress.copyFiles", "running", name)
 	}); err != nil {
-		return result(false, fmt.Sprintf("复制文件失败: %v", err))
+		return result(false, i18nMessage("installer.error.copyFiles", map[string]interface{}{"error": err.Error()}))
 	}
 	// Step 4.5: Create data/ and log/ directories, ensure config.json defaults
 	dataDir := filepath.Join(installDir, "data")
@@ -129,82 +144,82 @@ func (a *App) Install(installDir string) map[string]interface{} {
 	// Selectively force the adjusted default parameters (match/anti-spoof
 	// thresholds) onto any existing config, and create a default config when
 	// none exists. Other user settings are preserved.
-	if err := internal.EnsureConfigDefaults(configPath); err != nil {
-		a.emit(60, "写入默认设置", "warn", err.Error())
+	if err := internal.EnsureConfigDefaults(configPath, locale); err != nil {
+		a.emit(60, "installer.progress.writeDefaults", "warn", err.Error())
 		// Persist the failure so a silent config miss (e.g. match_threshold
 		// not force-synced) can be diagnosed from the install dir.
 		logErr := os.WriteFile(filepath.Join(installDir, "data", "install.log"),
 			[]byte("EnsureConfigDefaults failed: "+err.Error()+"\n"), 0644)
 		if logErr != nil {
-			a.emit(60, "写入默认设置", "warn", "install.log 写入失败: "+logErr.Error())
+			a.emit(60, "installer.progress.writeDefaults", "warn", "install.log: "+logErr.Error())
 		}
 	} else {
-		a.emit(60, "写入默认设置", "done", "")
+		a.emit(60, "installer.progress.writeDefaults", "done", "")
 	}
 
-	a.emit(60, "复制文件", "done", "")
+	a.emit(60, "installer.progress.copyFiles", "done", "")
 
 	// Step 5: Set data directory ACL
-	a.emit(60, "设置数据目录权限", "running", "")
+	a.emit(60, "installer.progress.secureDataDirectory", "running", "")
 	if err = internal.SetDirectoryACL(installDir); err != nil {
-		a.emit(60, "设置数据目录权限", "warn", err.Error())
+		a.emit(60, "installer.progress.secureDataDirectory", "warn", err.Error())
 	} else {
-		a.emit(67, "设置数据目录权限", "done", "")
+		a.emit(67, "installer.progress.secureDataDirectory", "done", "")
 	}
 
 	// Step 6: Register COM DLL
-	a.emit(67, "注册登录组件", "running", "")
+	a.emit(67, "installer.progress.registerProvider", "running", "")
 	dllPath := filepath.Join(installDir, "FaceLoginCredentialProvider.dll")
 	if err = internal.RegisterCOMDLL(dllPath); err != nil {
-		a.emit(67, "注册登录组件", "fail", err.Error())
+		a.emit(67, "installer.progress.registerProvider", "fail", err.Error())
 		return result(false, err.Error())
 	}
-	a.emit(75, "注册登录组件", "done", "")
+	a.emit(75, "installer.progress.registerProvider", "done", "")
 
 	// Step 7: Install service (stops old service first)
-	a.emit(75, "安装并启动认证服务", "running", "")
+	a.emit(75, "installer.progress.installService", "running", "")
 	svcPath := filepath.Join(installDir, "FaceLoginService.exe")
 	if err = internal.InstallService(svcPath); err != nil {
-		a.emit(75, "安装并启动认证服务", "fail", err.Error())
+		a.emit(75, "installer.progress.installService", "fail", err.Error())
 		return result(false, err.Error())
 	}
-	a.emit(90, "安装并启动认证服务", "done", "")
+	a.emit(90, "installer.progress.installService", "done", "")
 
 	// Step 8: Finalize
 	enrollDest := filepath.Join(installDir, "FaceLoginConsole.exe")
 	_ = internal.ExtractResource("resources/FaceLoginConsole.exe", enrollDest)
 
-	a.emit(100, "完成", "done", "")
-	return result(true, "安装完成。\n请运行安装目录下的 FaceLoginConsole.exe 注册人脸。")
+	a.emit(100, "installer.progress.complete", "done", "")
+	return result(true, "installer.result.installed")
 }
 
 // Uninstall runs the full uninstallation.
 func (a *App) Uninstall() map[string]interface{} {
 	var err error
 
-	a.emit(0, "开始卸载", "running", "")
+	a.emit(0, "installer.progress.startUninstall", "running", "")
 
 	// Step 1: Stop and delete service
-	a.emit(0, "停止并删除认证服务", "running", "")
+	a.emit(0, "installer.progress.stopService", "running", "")
 	if err = internal.StopAndDeleteService(); err != nil {
-		a.emit(0, "停止并删除认证服务", "fail", err.Error())
+		a.emit(0, "installer.progress.stopService", "fail", err.Error())
 		return result(false, err.Error())
 	}
-	a.emit(30, "停止并删除认证服务", "done", "")
+	a.emit(30, "installer.progress.stopService", "done", "")
 
 	// Step 2: Unregister COM DLL
-	a.emit(30, "注销登录组件", "running", "")
+	a.emit(30, "installer.progress.unregisterProvider", "running", "")
 	installDir := internal.ReadRegString(REGVAL_INSTALL_PATH, "")
 	if installDir != "" {
 		dllPath := filepath.Join(installDir, "FaceLoginCredentialProvider.dll")
 		if err = internal.UnregisterCOMDLL(dllPath); err != nil {
-			a.emit(30, "注销登录组件", "warn", err.Error())
+			a.emit(30, "installer.progress.unregisterProvider", "warn", err.Error())
 		} else {
-			a.emit(50, "注销登录组件", "done", "")
+			a.emit(50, "installer.progress.unregisterProvider", "done", "")
 		}
 	} else {
 		internal.UnregisterCOMDLL("")
-		a.emit(50, "注销登录组件", "done", "")
+		a.emit(50, "installer.progress.unregisterProvider", "done", "")
 	}
 
 	// Step 3: Delete installed program files AND user data (data/, log/) and
@@ -214,27 +229,27 @@ func (a *App) Uninstall() map[string]interface{} {
 	// we own has been deleted and the folder is confirmed empty, so an
 	// unexpected/unknown file (not deployed by us) leaves the dir in place and
 	// never gets silently wiped.
-	a.emit(50, "删除程序文件", "running", "")
+	a.emit(50, "installer.progress.deleteFiles", "running", "")
 	if installDir != "" && internal.DirExists(installDir) {
 		removed, rmErr := internal.RemoveInstalledFiles(installDir, true)
 		if rmErr != nil {
-			a.emit(50, "删除程序文件", "warn",
-				fmt.Sprintf("已删除 %d 个文件，部分文件删除失败。", removed))
+			a.emit(50, "installer.progress.deleteFiles", "warn",
+				i18nMessage("installer.uninstall.filesPartiallyRemoved", map[string]interface{}{"count": removed, "error": rmErr.Error()}))
 		} else {
-			a.emit(70, "删除程序文件", "done",
-				fmt.Sprintf("已删除 %d 个程序文件及用户数据。", removed))
+			a.emit(70, "installer.progress.deleteFiles", "done",
+				i18nMessage("installer.uninstall.filesRemoved", map[string]interface{}{"count": removed}))
 		}
 
 		// Remove the (now empty) install directory — guarded so it only
 		// happens when nothing remains.
 		if internal.DirExists(installDir) {
 			if _, err := internal.RemoveInstalledDir(installDir); err != nil {
-				a.emit(70, "删除程序文件", "warn",
-					fmt.Sprintf("安装目录非空，已保留（%v）。", err))
+				a.emit(70, "installer.progress.deleteFiles", "warn",
+					i18nMessage("installer.uninstall.directoryKept", map[string]interface{}{"error": err.Error()}))
 			}
 		}
 	} else {
-		a.emit(70, "删除程序文件", "done", "")
+		a.emit(70, "installer.progress.deleteFiles", "done", "")
 	}
 
 	// Step 4: Clean registry — remove the whole HKLM\SOFTWARE\FaceLogin key
@@ -242,16 +257,15 @@ func (a *App) Uninstall() map[string]interface{} {
 	// ServiceStartUptime, AboutSeenVersion written by the service and console).
 	// DeleteRegValue() alone would only remove two values and leave the key and
 	// the orphaned runtime values behind.
-	a.emit(70, "清理注册表", "running", "")
+	a.emit(70, "installer.progress.cleanRegistry", "running", "")
 	_ = internal.DeleteRegKey()
-	a.emit(85, "清理注册表", "done", "")
+	a.emit(85, "installer.progress.cleanRegistry", "done", "")
 
 	// Step 5: Notify complete
-	a.emit(85, "完成", "running", "")
-	a.emit(100, "完成", "done",
-		"卸载完成，程序文件、人脸数据和日志已全部删除。")
+	a.emit(85, "installer.progress.complete", "running", "")
+	a.emit(100, "installer.progress.complete", "done", "installer.result.uninstalled")
 
-	return result(true, "卸载完成，登录界面已恢复为默认密码登录。程序文件、人脸数据和日志已全部删除。")
+	return result(true, "installer.result.uninstalled")
 }
 
 func result(success bool, message string) map[string]interface{} {

@@ -92,6 +92,11 @@ public:
     ~WebviewHost();
     int Run();
     void ResizeWebView(HWND hWnd);
+    // (Re)build the page: re-read the embedded HTML, inject the current
+    // locale pack and navigate. The initial load and the JS-triggered
+    // language switch both go through here — NavigateToString pages have no
+    // real URL, so window.location.reload() navigates to a blank page.
+    void ReloadUi();
 
     HINSTANCE m_hInstance;
     HWND     m_hWnd = nullptr;
@@ -114,7 +119,8 @@ private:
 
 class HostObject : public IDispatch {
 public:
-    HostObject(facelogin::EnrollmentWizard* w) : m_wizard(w), m_refCount(1), m_lastDispId(0) {}
+    HostObject(WebviewHost* host, facelogin::EnrollmentWizard* w)
+        : m_host(host), m_wizard(w), m_refCount(1), m_lastDispId(0) {}
 
     STDMETHOD(QueryInterface)(REFIID riid, void** ppv);
     STDMETHOD_(ULONG, AddRef)();
@@ -125,6 +131,7 @@ public:
     STDMETHOD(Invoke)(DISPID, REFIID, LCID, WORD, DISPPARAMS*, VARIANT*, EXCEPINFO*, UINT*) override;
 
 private:
+    WebviewHost* m_host;
     facelogin::EnrollmentWizard* m_wizard;
     ULONG m_refCount;
     DISPID m_lastDispId;

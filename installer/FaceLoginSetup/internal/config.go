@@ -26,7 +26,9 @@ import (
 // 0.75 keeps strangers >0.94 comfortably rejected). Existing installs must be
 // force-synced; new installs get it from the fresh-default below. LATER
 // RELEASES MUST SET THIS BACK TO false.
-var ConfigUpgradeEnabled = true
+// v1.9.0: OFF — back to default; release shipped with 1.8.0, later releases
+// preserve user-tuned values.
+var ConfigUpgradeEnabled = false
 
 // ConfigUpgradeForcedDefaults lists the keys force-synced to these values
 // when ConfigUpgradeEnabled is true. Keys NOT listed here are preserved
@@ -42,7 +44,7 @@ var ConfigUpgradeForcedDefaults = map[string]any{
 // If the file is missing, a fresh default config is written so the app has a
 // complete, valid file to load. If the upgrade switch is off, an existing
 // config is left completely untouched.
-func EnsureConfigDefaults(configPath string) error {
+func EnsureConfigDefaults(configPath string, uiLanguage string) error {
 	var cfg map[string]any
 
 	data, err := os.ReadFile(configPath)
@@ -54,6 +56,7 @@ func EnsureConfigDefaults(configPath string) error {
 		// No config yet — start from a full default so the app loads sane
 		// values on first run (the app's own defaults mirror these).
 		cfg = map[string]any{
+			"ui_language":             "auto",
 			"recognition_model":       "onnx",
 			"detector":                "scrfd",
 			"liveness_method":         "none",
@@ -66,6 +69,10 @@ func EnsureConfigDefaults(configPath string) error {
 			"capture_unknown_faces":   false,
 			"cold_boot_key_trigger":   false,
 		}
+	}
+
+	if uiLanguage == "auto" || uiLanguage == "zh-CN" || uiLanguage == "ko-KR" || uiLanguage == "en-US" {
+		cfg["ui_language"] = uiLanguage
 	}
 
 	// Apply per-release forced defaults ONLY when this release opted in.

@@ -1,0 +1,28 @@
+name: Locale packs
+
+on:
+  pull_request:
+    paths:
+      - 'locales/**'
+      - 'enrollment_app/index.html'
+      - 'scripts/check-locales.mjs'
+      - '.github/workflows/locales.yml'
+  push:
+    paths:
+      - 'locales/**'
+      - 'enrollment_app/index.html'
+      - 'scripts/check-locales.mjs'
+      - '.github/workflows/locales.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check-locales.mjs

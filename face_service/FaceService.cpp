@@ -12,8 +12,10 @@
 #include <algorithm>
 #include <cmath>
 #include <wtsapi32.h>
+#include <psapi.h>
 
 #pragma comment(lib, "wtsapi32.lib")
+#pragma comment(lib, "psapi.lib")
 
 namespace facelogin {
 
@@ -385,38 +387,44 @@ bool FaceService::Initialize() {
 
     m_detector = nullptr;  // loaded by the background thread — see StartBackgroundModelLoad()
 
-    // Load SCRFD ONNX detector (the only detector, and the lightest model —
-    // 2.5MB). This is loaded SYNCHRONOUSLY in Initialize() because the pipe
-    // listener must be up as soon as possible: SCRFD is needed for the very
-    // first frame of auth, and it loads in a few hundred ms even on a cold
-    // mechanical disk. Everything heavier (2d106det landmark detector,
-    // InsightFace recognizer, anti-spoof) is deferred to a background thread —
-    // see StartBackgroundModelLoad(). The lock screen therefore connects to
-    // the pipe the moment it appears instead of waiting out the model loads.
-    m_onnxDetector = std::make_unique<OnnxDetector>();
-    std::wstring onnxDetPath = m_modelsDir + L"\\det_500m.onnx";
-    if (m_onnxDetector->Initialize(onnxDetPath)) {
-        FACELOGIN_INFO(L"SCRFD detector loaded");
-    } else {
-        FACELOGIN_ERROR(L"SCRFD detector failed to load — face detection unavailable");
-        return false;
-    }
+    // SCRFD (m_onnxDetector) is now also loaded by the background thread
+    // (see LoadHeavyModels step 0) and is unloaded alongside the other models
+    // when unload_models_after_auth is on. The pipe listener can still be up
+    // as fast as before: auth waits on EnsureModelsLoaded() (which blocks
+    // until the background loader finishes, or loads synchronously if models
+    // were unloaded after a prior auth).
+    // NOTE: this keeps the idle service at zero model memory when the
+    // "内存优化" setting is enabled (previously SCRFD stayed resident).
 
-    // Heavy models (2d106det + recognizer + anti-spoof) load in a
+    // Heavy models (2d106det + recognizer + anti-spoof + SCRFD) load in a
     // background thread. See StartBackgroundModelLoad().
     StartBackgroundModelLoad();
 
     if (m_isServiceMode) {
         // Camera is initialized lazily per auth request to avoid
         // device contention with the console app. See Run().
-        FACELOGIN_INFO(L"DirectShow webcam will be initialized on demand%s",
+        // MF is preferred so unlock images come from the SAME pipeline the
+        // enrollment console uses (DirectShow colour/gain output differs →
+        // systematic ~0.4 embedding offset). DS remains the Session 0
+        // fallback when MF cannot initialize.
+FACELOGIN_INFO(L"Camera pipeline: MF preferred, DirectShow fallback — initialized on demand%s",
                        m_config.camera_device.empty() ? L"" : L" (configured device)");
     } else {
         // Media Foundation camera is also initialized on demand — keeping
         // it open across auth sessions causes the source reader to stall
         // (especially when FaceLoginConsole is running concurrently).
-        FACELOGIN_INFO(L"MF webcam will be initialized on demand%s",
+        FACELOGIN_INFO(L"MF camera will be initialized on demand%s",
                        m_config.camera_device.empty() ? L"" : L" (configured device)");
+    }
+
+    if (m_config.face_exposure_control) {
+        // Enrolled embeddings live in the pre-gain brightness domain;
+        // switching the input domain on requires fresh anchors (same rule as
+        // the V5 alignment change).
+        FACELOGIN_WARN(L"Face exposure control ENABLED (target=%.0f band=%.0f) — "
+                       L"re-enroll faces afterwards: old embeddings are in the "
+                       L"pre-normalization brightness domain",
+                       m_config.face_exposure_target, m_config.face_exposure_band);
     }
 
     m_pipeServer = std::make_unique<PipeServer>();
@@ -456,6 +464,22 @@ bool FaceService::Initialize() {
 
 bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
     FACELOGIN_INFO(L"Loading heavy models in background...");
+
+    // 0. SCRFD face detector (det_500m, ~22MB? — actually ~2.5MB). Moved into
+    // the background loader so the idle service holds ZERO model memory when
+    // unload_models_after_auth is on. Auth waits for all of these via
+    // EnsureModelsLoaded().
+    {
+        auto detector = std::make_unique<OnnxDetector>();
+        std::wstring path = m_modelsDir + L"\\det_500m.onnx";
+        if (!detector->Initialize(path)) {
+            FACELOGIN_ERROR(L"SCRFD detector failed to load — face detection unavailable");
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(m_modelMutex);
+        m_onnxDetector = std::move(detector);
+    }
+    FACELOGIN_INFO(L"SCRFD detector loaded");
 
     // 1. 106-point landmark detector (2d106det.onnx, ~5MB — replaces the
     // 99.7MB dlib shape predictor).
@@ -519,15 +543,17 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
     return true;
 }
 
-// Release all heavy-model memory (2d106det + recognizer + anti-spoof sessions)
-// after an auth completes, so the idle service's RSS drops back to ~baseline.
+// Release all heavy-model memory (SCRFD + 2d106det + recognizer + anti-spoof
+// sessions) after an auth completes, so the idle service's RSS drops back to
+// ~baseline (zero model memory — 1.9.0: SCRFD is included now; previously it
+// stayed resident for the first frame, keeping ~22MB peak-ish resident).
 // The next auth's EnsureModelsLoaded() reloads them synchronously (~200-500ms
 // of startup latency, a deliberate trade for a low idle footprint — 1.6.0).
-// SCRFD (m_onnxDetector) stays resident: it is needed for the very first frame
-// and is the lightest model. Only called from the main pipe thread after the
-// auth pipeline has fully unwound, so no inference is in flight.
+// Only called from the main pipe thread after the auth pipeline has fully
+// unwound, so no inference is in flight.
 void FaceService::UnloadHeavyModels() {
     std::lock_guard<std::mutex> lock(m_modelMutex);
+    if (m_onnxDetector)     { m_onnxDetector.reset(); }
     if (m_detector)         { m_detector.reset(); }
     if (m_onnxRecognizer)   { m_onnxRecognizer.reset(); }
     if (m_antiSpoof)        { m_antiSpoof.reset(); }
@@ -535,6 +561,33 @@ void FaceService::UnloadHeavyModels() {
     m_modelsReady.store(false);
     m_modelsFailed.store(false);
     FACELOGIN_INFO(L"Heavy models unloaded after auth");
+}
+
+// Empty the process working set so freed model pages leave the RESIDENT set
+// (heap free returns the memory to the allocator but Windows keeps the pages
+// resident until they're trimmed or evicted — observable as high RSS while
+// "idle"). Pages are paged out to the standby list and re-faulted on next
+// access; combined with UnloadHeavyModels() the service's idle footprint after
+// auth drops to the true baseline. Called only on the auth-completion path.
+void FaceService::TrimWorkingSet() {
+    // Log RSS before/after so the benefit is measurable from service.log.
+    PROCESS_MEMORY_COUNTERS pmc = {};
+    pmc.cb = sizeof(PROCESS_MEMORY_COUNTERS);
+    SIZE_T beforeWs = 0, afterWs = 0;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        beforeWs = pmc.WorkingSetSize;
+    }
+
+    BOOL ok = SetProcessWorkingSetSizeEx(
+        GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1, 0);
+
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        afterWs = pmc.WorkingSetSize;
+    }
+    FACELOGIN_INFO(L"TrimWorkingSet: %s (WS %llu KB -> %llu KB)",
+                   ok ? L"ok" : L"FAILED",
+                   static_cast<unsigned long long>(beforeWs / 1024),
+                   static_cast<unsigned long long>(afterWs / 1024));
 }
 
 void FaceService::StartBackgroundModelLoad() {
@@ -665,7 +718,7 @@ void FaceService::Run() {
             // configure, so fail the reload with a descriptive error.
             if (!EnsureModelsLoaded()) {
                 FACELOGIN_ERROR(L"CONFIG_RELOAD: required models failed to load");
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"服务模型加载失败"));
+                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_MODEL_LOAD_FAILED));
                 FlushFileBuffers(m_pipeServer->GetHandle());
                 m_pipeServer->DrainOutput(5000);
                 m_pipeServer->Disconnect();
@@ -717,54 +770,13 @@ void FaceService::Run() {
         else if (request == ipc::MSG_AUTH_REQUEST) {
             // Lazy-init camera: create + start on demand, then fully shutdown
             // after auth to free the device for other processes.
-            if (m_isServiceMode) {
-                if (!m_webcamDS) {
-                    m_webcamDS = std::make_unique<WebcamCaptureDS>();
-                    if (!m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
-                        FACELOGIN_ERROR(L"DS camera init failed on demand");
-                        m_webcamDS.reset();
-                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
-                        FlushFileBuffers(m_pipeServer->GetHandle());
-                        m_pipeServer->DrainOutput(5000);
-                        m_pipeServer->Disconnect();
-                        continue;
-                    }
-                    FACELOGIN_INFO(L"DS camera initialized on demand for auth");
-                }
-            } else {
-                // After a system resume the camera may still be in low-power
-                // recovery. Drop the stale instance so Initialize() rebuilds a
-                // fresh SourceReader instead of reusing the one that stalled.
-                if (m_resumedFlag.exchange(false) && m_webcamMF) {
-                    FACELOGIN_INFO(L"Resume detected — rebuilding MF camera");
-                    m_webcamMF->Shutdown();
-                    m_webcamMF.reset();
-                }
-                if (!m_webcamMF) {
-                    m_webcamMF = std::make_unique<WebcamCapture>();
-                    if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
-                        FACELOGIN_ERROR(L"MF camera init failed on demand");
-                        m_webcamMF.reset();
-                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"摄像头不可用"));
-                        FlushFileBuffers(m_pipeServer->GetHandle());
-                        m_pipeServer->DrainOutput(5000);
-                        m_pipeServer->Disconnect();
-                        continue;
-                    }
-                    FACELOGIN_INFO(L"MF camera initialized on demand for auth");
-                }
-            }
-            ProcessAuthRequest();
-            if (m_isServiceMode && m_webcamDS) {
-                m_webcamDS->Shutdown();
-                m_webcamDS.reset();
-                FACELOGIN_INFO(L"DS camera released after auth");
-            }
-            if (!m_isServiceMode && m_webcamMF) {
-                m_webcamMF->Shutdown();
-                m_webcamMF.reset();
-                FACELOGIN_INFO(L"MF camera released after auth");
-            }
+            if (!EnsureCameraForAuth()) {
+                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_CAMERA_UNAVAILABLE));
+                FlushFileBuffers(m_pipeServer->GetHandle());
+                m_pipeServer->DrainOutput(5000);
+                m_pipeServer->Disconnect();
+                continue;            }            ProcessAuthRequest();
+            ReleaseCamera();
             // Free the heavy model sessions now that the auth pipeline has fully
             // unwound, dropping idle RSS back to baseline. Reload happens on the
             // next auth (see EnsureModelsLoaded). Note: this intentionally does
@@ -773,6 +785,12 @@ void FaceService::Run() {
             // models resident for the fastest auth).
             if (m_config.unload_models_after_auth) {
                 UnloadHeavyModels();
+                // Empty the working set so the freed model pages actually leave
+                // the resident set (heap free ≠ physical-page return on
+                // Windows). Pages are paged out and re-faulted in on demand —
+                // the next auth must reload the models from disk anyway, so
+                // this only costs a few extra page faults.
+                TrimWorkingSet();
             }
             m_pipeServer->Disconnect();
         }
@@ -794,13 +812,16 @@ void FaceService::Run() {
 
 void FaceService::Stop() {
     m_running = false;
-    if (m_isServiceMode && m_webcamDS) {
+    m_exposure.Reset();   // restore camera auto controls while they're alive
+    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
+        m_webcamMF->Shutdown();
+        m_webcamMF.reset();
+    }
+    if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
         m_webcamDS->Shutdown();
         m_webcamDS.reset();
     }
-    if (!m_isServiceMode && m_webcamMF) {
-        m_webcamMF->Shutdown();
-    }
+    m_cameraPipeline = CameraPipeline::None;
     // Signal the model loader to stop and join it. If an auth request was
     // blocked in EnsureModelsLoaded(), the abort flag releases it so it can
     // exit cleanly (m_running is false → ProcessAuthRequest returns false).
@@ -810,8 +831,128 @@ void FaceService::Stop() {
     }
 }
 
+// ============================================================================
+// Camera lifecycle — MF preferred, DirectShow fallback
+// ============================================================================
+
+bool FaceService::EnsureCameraForAuth() {
+    if (m_isServiceMode) {
+        // The camera is released after every auth, so normally nothing is up
+        // when we get here — these two checks only cover a mid-auth fallback
+        // where the pipeline already switched.
+        if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF &&
+            m_webcamMF->IsInitialized()) {
+            return true;
+        }
+        if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS &&
+            m_webcamDS->IsInitialized()) {
+            return true;
+        }
+
+        // Prefer Media Foundation: it is the SAME pipeline the enrollment
+        // console uses. Matching requires enrollment and unlock images from
+        // ONE pipeline — DirectShow's colour/gain output differs enough to
+        // shift same-person embeddings by ~0.4 (observed 0.66-0.75 against a
+        // 0.75 threshold), the systematic offset behind cross-environment
+        // recognition failures. DS stays as the Session 0 fallback.
+        m_webcamMF = std::make_unique<WebcamCapture>();
+        if (m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+            m_cameraPipeline = CameraPipeline::MF;
+            FACELOGIN_INFO(L"MF camera initialized on demand for auth (preferred pipeline)");
+            AttachExposureControl();
+            return true;
+        }
+        FACELOGIN_WARN(L"MF camera init failed in service mode — falling back to DirectShow");
+        m_webcamMF.reset();
+        m_cameraPipeline = CameraPipeline::None;
+
+        m_webcamDS = std::make_unique<WebcamCaptureDS>();
+        if (m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+            m_cameraPipeline = CameraPipeline::DS;
+            FACELOGIN_INFO(L"DS camera initialized on demand for auth (fallback pipeline)");
+            AttachExposureControl();
+            return true;
+        }
+        FACELOGIN_ERROR(L"Both MF and DS camera init failed in service mode");
+        m_webcamDS.reset();
+        m_cameraPipeline = CameraPipeline::None;
+        return false;
+    }
+
+    // Standalone: Media Foundation only.
+    // After a system resume the camera may still be in low-power recovery.
+    // Drop the stale instance so Initialize() rebuilds a fresh SourceReader
+    // instead of reusing the one that stalled.
+    if (m_resumedFlag.exchange(false) && m_webcamMF) {
+        FACELOGIN_INFO(L"Resume detected — rebuilding MF camera");
+        m_webcamMF->Shutdown();
+        m_webcamMF.reset();
+    }
+    if (!m_webcamMF) {
+        m_webcamMF = std::make_unique<WebcamCapture>();
+        if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+            FACELOGIN_ERROR(L"MF camera init failed on demand");
+            m_webcamMF.reset();
+            m_cameraPipeline = CameraPipeline::None;
+            return false;
+        }
+        FACELOGIN_INFO(L"MF camera initialized on demand for auth (standalone)");
+    }
+    m_cameraPipeline = CameraPipeline::MF;
+    AttachExposureControl();
+    return true;
+}
+
+void FaceService::AttachExposureControl() {
+    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
+        m_exposure.Attach(m_webcamMF->GetVideoProcAmp(), m_webcamMF->GetCameraControl());
+    } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
+        m_exposure.Attach(m_webcamDS->GetVideoProcAmp(), m_webcamDS->GetCameraControl());
+    } else {
+        m_exposure.Attach(nullptr, nullptr);
+    }
+    m_exposure.Configure(m_config.face_exposure_control, m_config.face_exposure_target,
+                         m_config.face_exposure_band);
+    // Persistent "poisoned camera" flag (see REGVAL_EXPOSURE_HW_BROKEN): a
+    // previous session caught this camera in a broken manual exposure state
+    // that Set(Auto) could not undo. Never touch its controls again — the
+    // digital gain alone keeps the effective luma normalized.
+    if (ReadRegDword(REGVAL_EXPOSURE_HW_BROKEN, 0) == 1) {
+        m_exposure.ForceDigitalOnly();
+        FACELOGIN_WARN(L"Face exposure control: camera marked broken "
+                       L"(ExposureHardwareBroken=1) — hardware channel disabled, digital gain only");
+    }
+}
+
+void FaceService::ReleaseCamera() {
+    // Restore the camera's auto controls FIRST — the borrowed control
+    // interfaces must be touched while the capture object is still alive.
+    m_exposure.Reset();
+    // Persist the "poisoned camera" flag: severe overexposure with an
+    // un-recoverable manual state is a driver bug, not a lighting condition —
+    // blacklist the hardware channel so no future session re-poisons it.
+    if (m_exposure.WasSevereOverexposure()) {
+        WriteRegDword(REGVAL_EXPOSURE_HW_BROKEN, 1);
+        FACELOGIN_WARN(L"Face exposure control: camera poisoned by manual exposure — "
+                       L"persisted ExposureHardwareBroken=1 (restart the machine to "
+                       L"recover the camera, then delete the value to re-enable)");
+    }
+    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
+        m_webcamMF->Shutdown();
+        m_webcamMF.reset();
+        FACELOGIN_INFO(L"MF camera released after auth");
+    } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
+        m_webcamDS->Shutdown();
+        m_webcamDS.reset();
+        FACELOGIN_INFO(L"DS camera released after auth");
+    }
+    m_cameraPipeline = CameraPipeline::None;
+}
+
 bool FaceService::ProcessAuthRequest() {
-    FACELOGIN_INFO(L"Starting face authentication...");
+    const char* camName = m_cameraPipeline == CameraPipeline::MF ? "MF" :
+                          m_cameraPipeline == CameraPipeline::DS ? "DS" : "none";
+    FACELOGIN_INFO(L"Starting face authentication... (camera=%hs)", camName);
 
     // Single grab helper used by ALL auth stages (match, anti-spoof, blink,
     // final verify): it applies the configured camera rotation so every stage
@@ -819,16 +960,29 @@ bool FaceService::ProcessAuthRequest() {
     // applied in the match loop, leaving the liveness/verify stages to process
     // unrotated frames — with 90/270 rotation the face was sideways there and
     // detection/landmarks/EAR failed, blocking unlock.
-    auto grabFrame = [this](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
-        bool ok = m_isServiceMode ? m_webcamDS->GrabFrame(f)
-                                  : (m_webcamMF ? m_webcamMF->GrabFrame(f) : false);
+    // grabRaw: one frame straight from the active camera + rotation, WITHOUT
+    // the exposure session gain — the steer loop must measure the camera's
+    // true output. grabFrame wraps it with the session gain so every auth
+    // stage (match/liveness/verify) sees the normalized domain.
+    auto grabRaw = [this](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
+        bool ok = false;
+        if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
+            ok = m_webcamMF->GrabFrame(f);
+        } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
+            ok = m_webcamDS->GrabFrame(f);
+        }
         if (ok) RotateFrame(f, m_config.camera_rotation);
         return ok;
+    };
+    auto grabFrame = [this, &grabRaw](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
+        if (!grabRaw(f)) return false;
+        m_exposure.ApplySessionGain(f);
+        return true;
     };
 
     if (m_store->GetUserCount() == 0) {
         FACELOGIN_WARN(L"No registered users");
-        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"\u6ca1\u6709\u6ce8\u518c\u7528\u6237"));
+        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_NO_REGISTERED_USERS));
         FlushFileBuffers(m_pipeServer->GetHandle());
         m_pipeServer->DrainOutput(5000);
         return false;
@@ -837,12 +991,13 @@ bool FaceService::ProcessAuthRequest() {
     // E: If the heavy models are still loading in the background (unusually
     // fast lock screen right after boot), tell the lock screen what's
     // happening instead of silently blocking. The CP updates the tile's status
-    // text live via STATUS:, so the user sees "\u6b63\u5728\u52a0\u8f7d\u6a21\u578b..." rather than a
-    // frozen "\u8bc6\u522b\u4e2d". The message is NOT flushed until after the wait below \u2014
-    // if the models are already ready, this whole block is a no-op and no
-    // extra STATUS message is sent.
+    // text live via STATUS: — the payload is the locale key
+    // (ipc::L10N_LOADING_MODELS) and the CP translates it, so the user sees
+    // "正在加载模型..." rather than a frozen "识别中". The message is NOT
+    // flushed until after the wait below — if the models are already ready,
+    // this whole block is a no-op and no extra STATUS message is sent.
     if (!m_modelsReady.load() && m_modelsLoading.load()) {
-        m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u6b63\u5728\u52a0\u8f7d\u6a21\u578b...");
+        m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_LOADING_MODELS);
     }
 
     // Heavy models (2d106det + recognizer, optionally anti-spoof) load
@@ -852,7 +1007,7 @@ bool FaceService::ProcessAuthRequest() {
     // connected, so this only ever costs the tail of the boot time.
     if (!EnsureModelsLoaded()) {
         FACELOGIN_ERROR(L"Required models not loaded \u2014 cannot authenticate");
-        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(L"\u670d\u52a1\u6a21\u578b\u52a0\u8f7d\u5931\u8d25"));
+        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_MODEL_LOAD_FAILED));
         FlushFileBuffers(m_pipeServer->GetHandle());
         m_pipeServer->DrainOutput(5000);
         return false;
@@ -956,10 +1111,52 @@ bool FaceService::ProcessAuthRequest() {
         }
     }
 
-    // STATUS: Notify credential provider that recognition has started.
-    // L"\u8bc6\u522b\u4e2d..." = L"识别中..."
+    // Face-exposure convergence (1.9.0, config-gated): after the whole-frame
+    // AE warmup, steer the FACE's own brightness to the configured target —
+    // whole-frame luma hides a blown-out face in a dark scene (the observed
+    // failure mode: face region 12-25% clipped at 255 while the frame reads
+    // "dim"). Camera manual exposure/gain is preferred (physical exposure
+    // reduction prevents clipping that no digital gain can undo); the digital
+    // session gain always tops up the residual, so the match loop runs in a
+    // fixed brightness domain regardless of the camera's settling.
+    if (m_exposure.Enabled()) {
+        // Iterations are paced by the camera-step interval (400ms) — 9
+        // iterations ≈ 1.4-2s gives a responsive camera ~4 steps to converge
+        // while a camera that ignores manual mode demotes after 3 no-response
+        // steps and the digital gain carries the normalization.
+        constexpr int kMaxSteerIters = 9;
+        int steerIters = 0;
+        for (; steerIters < kMaxSteerIters; steerIters++) {
+            dlib::matrix<dlib::rgb_pixel> steerFrame;
+            if (!grabRaw(steerFrame)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                continue;
+            }
+            auto steerDet = m_onnxDetector->DetectLargestFace(steerFrame);
+            if (!steerDet) break;   // no face in view — nothing to steer
+            dlib::rectangle steerRect(static_cast<long>(steerDet->x1),
+                                      static_cast<long>(steerDet->y1),
+                                      static_cast<long>(steerDet->x2),
+                                      static_cast<long>(steerDet->y2));
+            if (m_exposure.SteerFrame(steerFrame, steerRect, steerIters + 1)) {
+                break;   // face luma in band — camera settled
+            }
+            // Demoted (broken/unresponsive camera driver): further iterations
+            // cannot fix the RAW brightness — the digital gain inside
+            // SteerFrame already normalized the effective luma. Move on to
+            // the match loop instead of burning the auth budget.
+            if (!m_exposure.HardwareActive()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        FACELOGIN_INFO(L"Exposure control: face convergence phase done (%d iteration(s))",
+                       steerIters);
+    }
+
+    // STATUS: Notify credential provider that recognition has started. The
+    // payload is the locale key (ipc::L10N_RECOGNIZING = "credential.recognizing");
+    // the CP translates it to the lock-screen language.
     {
-        std::wstring statusMsg = std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u8bc6\u522b\u4e2d...";
+        std::wstring statusMsg = std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_RECOGNIZING;
         m_pipeServer->WriteMessage(statusMsg);
     }
 
@@ -1007,7 +1204,9 @@ bool FaceService::ProcessAuthRequest() {
             // A stalled camera (e.g. after resume) self-shut-down in
             // GrabFrame. Rebuild it here so auth can continue instead of
             // spinning on a dead SourceReader until timeout.
-            if (m_webcamMF && !m_webcamMF->IsInitialized()) {
+            if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF &&
+                !m_webcamMF->IsInitialized()) {
+                m_exposure.Reset();   // drop the stale camera's control handles
                 FACELOGIN_INFO(L"MF camera stalled — re-initializing");
                 m_webcamMF->Shutdown();
                 m_webcamMF.reset();
@@ -1015,7 +1214,25 @@ bool FaceService::ProcessAuthRequest() {
                 if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
                     FACELOGIN_ERROR(L"MF camera re-init failed");
                     m_webcamMF.reset();
+                    m_cameraPipeline = CameraPipeline::None;
+                    // Service mode: a resume-stalled MF reader shouldn't kill
+                    // the unlock — fall back to the DirectShow pipeline.
+                    if (m_isServiceMode) EnsureCameraForAuth();
                 }
+                AttachExposureControl();   // re-attach to the fresh camera (or the DS fallback)
+            } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS &&
+                       !m_webcamDS->IsInitialized()) {
+                m_exposure.Reset();
+                FACELOGIN_INFO(L"DS camera stalled — re-initializing");
+                m_webcamDS->Shutdown();
+                m_webcamDS.reset();
+                m_webcamDS = std::make_unique<WebcamCaptureDS>();
+                if (!m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+                    FACELOGIN_ERROR(L"DS camera re-init failed");
+                    m_webcamDS.reset();
+                    m_cameraPipeline = CameraPipeline::None;
+                }
+                AttachExposureControl();
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
@@ -1115,10 +1332,12 @@ bool FaceService::ProcessAuthRequest() {
                         SaveUnknownFace(frame, d0);
                     }
                     // Distinct terminal message (AUTH_NO_MATCH) so the CP can
-                    // show "人脸匹配失败" instead of the timeout wording
-                    // ("未识别到人脸") — a face WAS seen, it just didn't match.
+                    // show the no-match wording instead of the timeout one —
+                    // a face WAS seen, it just didn't match. The STATUS: text
+                    // carries the locale key (ipc::L10N_NO_MATCH); the CP
+                    // translates it.
                     m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) +
-                        L"\u4eba\u8138\u5339\u914d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u6216\u4f7f\u7528\u5bc6\u7801\u767b\u5f55");
+                        ipc::L10N_NO_MATCH);
                     FlushFileBuffers(m_pipeServer->GetHandle());
                     m_pipeServer->WriteMessage(ipc::MSG_AUTH_NO_MATCH);
                     FlushFileBuffers(m_pipeServer->GetHandle());
@@ -1144,17 +1363,16 @@ bool FaceService::ProcessAuthRequest() {
         }
 
         {
-            // Passwordless account: face login cannot unlock it (no password to
-            // submit to LSA). Degrade gracefully with a notice instead of
-            // attempting liveness and submitting nothing. Do NOT mark the user
-            // as logged in.
+            // Passwordless account: no stored password. Submit a BLANK
+            // credential — Windows allows blank-password accounts to
+            // console-logon (lock-screen unlock included) by default policy,
+            // so a genuinely passwordless account unlocks via face login.
+            // If the policy forbids it or the account actually has a password,
+            // LSA rejects at submission time and the user falls back to PIN.
             if (match->passwordless) {
-                FACELOGIN_WARN(L"Matched passwordless account '%s' — face login cannot unlock; notifying CP",
+                match->password.clear();  // defensive; store already returns empty
+                FACELOGIN_INFO(L"Matched passwordless account '%s' — issuing blank-password unlock",
                                match->username.c_str());
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::MSG_PASSWORDLESS_NOTICE));
-                FlushFileBuffers(m_pipeServer->GetHandle());
-                m_pipeServer->DrainOutput(5000);
-                return false;
             }
 
             std::wstring domain = L".";
@@ -1174,9 +1392,9 @@ bool FaceService::ProcessAuthRequest() {
 
                 // Determine status text
                 if (method == LivenessMethod::AntiSpoof) {
-                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u6b63\u5728\u8fdb\u884c\u6d3b\u4f53\u68c0\u6d4b...");
+                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_LIVENESS_CHECKING);
                 } else if (method == LivenessMethod::Blink) {
-                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + L"\u8bf7\u7728\u773c\u4ee5\u786e\u8ba4\u6d3b\u4f53...");
+                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_BLINK_PROMPT);
                 }
                 if (method != LivenessMethod::None) {
                     FlushFileBuffers(m_pipeServer->GetHandle());
@@ -1287,8 +1505,8 @@ bool FaceService::ProcessAuthRequest() {
                     FACELOGIN_WARN(L"Liveness check failed");
                     m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
                         method == LivenessMethod::AntiSpoof ?
-                        L"\u68c0\u6d4b\u5230\u653b\u51fb\uff0c\u8bf7\u4f7f\u7528\u771f\u5b9e\u4eba\u8138" :
-                        L"\u672a\u68c0\u6d4b\u5230\u7728\u773c\uff0c\u8bf7\u52a8\u4f5c\u660e\u786e\u5730\u95ed\u773c\u518d\u7741\u5f00\u91cd\u8bd5"));
+                        ipc::L10N_ANTI_SPOOF_FAILED :
+                        ipc::L10N_BLINK_FAILED));
                     FlushFileBuffers(m_pipeServer->GetHandle());
                     m_pipeServer->DrainOutput(5000);
                     SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
@@ -1373,7 +1591,7 @@ bool FaceService::ProcessAuthRequest() {
                     if (!verifyOk) {
                         FACELOGIN_WARN(L"Final match verify failed \u2014 face swap detected");
                         m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
-                            L"\u6d3b\u4f53\u9a8c\u8bc1\u671f\u95f4\u4eba\u8138\u4e0d\u5339\u914d\uff0c\u8bf7\u91cd\u8bd5"));
+                            ipc::L10N_FINAL_MATCH_FAILED));
                         FlushFileBuffers(m_pipeServer->GetHandle());
                         m_pipeServer->DrainOutput(5000);
                         SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
@@ -1404,9 +1622,9 @@ bool FaceService::ProcessAuthRequest() {
             // pipe drain below. The graph keeps streaming during auth; pausing
             // it immediately after success frees the camera without waiting for
             // the full teardown.
-            if (m_isServiceMode && m_webcamDS) {
+            if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
                 m_webcamDS->Pause();
-            } else if (!m_isServiceMode && m_webcamMF) {
+            } else if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
                 m_webcamMF->Shutdown();
             }
 

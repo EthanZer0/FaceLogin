@@ -2,6 +2,8 @@
 #include "EnrollmentWizard.h"
 #include "../common/logger.h"
 #include "resource.h"
+#include "../common/config_util.h"
+#include "../common/locale_util.h"
 #include <shellapi.h>
 #include <wtsapi32.h>
 
@@ -53,7 +55,7 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
     ctrl->get_CoreWebView2(&self->m_webview);
 
     // Register host object
-    HostObject* host = new HostObject(self->m_wizard);
+    HostObject* host = new HostObject(self, self->m_wizard);
     VARIANT v; VariantInit(&v);
     v.vt = VT_DISPATCH;
     host->QueryInterface(IID_IDispatch, (void**)&v.pdispVal);
@@ -104,6 +106,18 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
         c2->Release();
     }
 
+    // Initial page load (locale injection + navigation). ReloadUi is also
+    // callable from JS (language switch) — see WebviewHost::ReloadUi.
+    self->ReloadUi();
+    self->ResizeWebView(hWnd);
+    return S_OK;
+}
+
+// ==========================================================================
+// WebviewHost::ReloadUi
+// ==========================================================================
+
+void WebviewHost::ReloadUi() {
     // Load HTML from embedded resource (compiled into EXE)
     HRSRC hRes = FindResourceW(nullptr, MAKEINTRESOURCEW(IDR_INDEX_HTML), RT_RCDATA);
     std::string htmlContent;
@@ -117,17 +131,51 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
         }
     }
     if (htmlContent.empty()) {
-        htmlContent = self->m_html; // fallback
+        htmlContent = m_html; // fallback
         FACELOGIN_WARN(L"Failed to load HTML from resource, using fallback");
+    }
+
+    // Inject the selected locale pack before any application script runs.
+    // Locale JSON remains a separate installed file, so translations can be
+    // updated independently without rebuilding the enrollment console.
+    if (m_wizard) {
+        const std::wstring installDir = m_wizard->GetDataDir();
+        const facelogin::AppConfig config = facelogin::LoadConfig(installDir);
+        facelogin::LocaleCatalog locale;
+        if (locale.Load(installDir, config.ui_language)) {
+            auto escapeLessThan = [](std::string& s) {
+                size_t pos = 0;
+                while ((pos = s.find('<', pos)) != std::string::npos) {
+                    s.replace(pos, 1, "\\u003c");
+                    pos += 6;
+                }
+            };
+            std::string safeJson = locale.json();
+            escapeLessThan(safeJson);
+
+            // zh-CN fallback pack: t() falls back to it when the active
+            // catalog misses a key (pack drift) — a translated string instead
+            // of a raw key name such as "console.settings.exposureControl".
+            std::string zhJson = "{}";
+            facelogin::LocaleCatalog zhFallback;
+            if (zhFallback.Load(installDir, "zh-CN")) {
+                zhJson = zhFallback.json();
+                escapeLessThan(zhJson);
+            }
+
+            const std::string bootstrap =
+                "<script>window.__FACELOGIN_LOCALE__=" + safeJson +
+                ";window.__FACELOGIN_LOCALE_ZH__=" + zhJson +
+                ";window.__FACELOGIN_LOCALE_CODE__='" + locale.locale() + "';</script>";
+            const size_t head = htmlContent.find("<head>");
+            htmlContent.insert(head == std::string::npos ? 0 : head + 6, bootstrap);
+        }
     }
 
     int wlen = MultiByteToWideChar(CP_UTF8, 0, htmlContent.c_str(), -1, nullptr, 0);
     std::wstring whtml(wlen, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, htmlContent.c_str(), -1, &whtml[0], wlen);
-    self->m_webview->NavigateToString(whtml.c_str());
-
-    self->ResizeWebView(hWnd);
-    return S_OK;
+    m_webview->NavigateToString(whtml.c_str());
 }
 
 // ==========================================================================
@@ -363,6 +411,7 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"LogDiagnostic") *ids = 42;
     else if (n == L"GetCameraList") *ids = 21;
     else if (n == L"IsPasswordlessState") *ids = 22;
+    else if (n == L"GetPasswordlessState") *ids = 22; // alias (1.9.0 frontend)
     else if (n == L"SaveEnrollmentNoPassword") *ids = 23;
     else if (n == L"GetFaceCount") *ids = 24;
     else if (n == L"GetFacesJson") *ids = 25;
@@ -383,6 +432,7 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"GetConsoleVersion")   *ids = 37;
     else if (n == L"NeedsReenrollment")   *ids = 38;
     else if (n == L"IsCapturing")         *ids = 39;
+    else if (n == L"ReloadUi")            *ids = 46;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -573,6 +623,7 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
         case 37: if (res) *res = MakeStr(m_wizard->GetConsoleVersion()); break;
         case 38: if (res) *res = MakeBool(m_wizard->NeedsReenrollment()); break;
         case 39: if (res) *res = MakeBool(m_wizard->IsCapturing()); break;
+        case 46: if (m_host) m_host->ReloadUi(); break;
         default: return DISP_E_MEMBERNOTFOUND;
         }
         return S_OK;

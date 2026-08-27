@@ -362,6 +362,24 @@ bool EnrollmentWizard::StartPreview() {
     m_previewRunning = true;
     m_frameRunning = true;
     m_frameReinitCount = 0;
+    m_exposureIter = 0;
+
+    // Face-exposure auto-control (1.9.0, config-gated): attach to this
+    // camera. The frame thread steers toward the target and applies the
+    // session gain to every cached frame, so preview/capture/anti-spoof all
+    // see one normalized brightness domain — matching the service side at
+    // unlock time.
+    m_exposure.Attach(m_webcam->GetVideoProcAmp(), m_webcam->GetCameraControl());
+    m_exposure.Configure(m_config.face_exposure_control, m_config.face_exposure_target,
+                         m_config.face_exposure_band);
+    // Persistent "poisoned camera" flag (see REGVAL_EXPOSURE_HW_BROKEN): the
+    // service persisted it after a severe-overexposure demotion. Skip the
+    // hardware channel here too — the digital gain alone normalizes luma.
+    if (ReadRegDword(REGVAL_EXPOSURE_HW_BROKEN, 0) == 1) {
+        m_exposure.ForceDigitalOnly();
+        FACELOGIN_WARN(L"Face exposure control: camera marked broken "
+                       L"(ExposureHardwareBroken=1) — hardware channel disabled, digital gain only");
+    }
 
     // Single background thread: load models (if needed) → GrabFrame → JPEG
     // encode → detect → update caches. The UI thread stays completely free;
@@ -407,7 +425,14 @@ bool EnrollmentWizard::StartPreview() {
                 }
                 dlib::matrix<dlib::rgb_pixel> frame;
                 bool ok = m_webcam->GrabFrame(frame);
-                if (ok) RotateFrame(frame, m_config.camera_rotation);
+                if (ok) {
+                    RotateFrame(frame, m_config.camera_rotation);
+                    // Keep the exposure session gain (converged during
+                    // preview) on captured samples — same brightness domain
+                    // as every preview/unlock frame. Gain is constant during
+                    // capture; re-steering here would make samples fluctuate.
+                    m_exposure.ApplySessionGain(frame);
+                }
                 {
                     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
                     if (ok) {
@@ -440,10 +465,16 @@ bool EnrollmentWizard::StartPreview() {
                         break;
                     }
                     FACELOGIN_WARN(L"Preview camera stalled — re-initializing (%d/3)", m_frameReinitCount);
+                    m_exposure.Reset();   // drop the stale camera's control handles
                     m_webcam->Shutdown();
                     if (m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
                         FACELOGIN_INFO(L"Preview camera re-initialized");
                         m_frameReinitCount = 0;   // a successful re-init resets the budget
+                        m_exposure.Attach(m_webcam->GetVideoProcAmp(),
+                                          m_webcam->GetCameraControl());
+                        m_exposure.Configure(m_config.face_exposure_control,
+                                             m_config.face_exposure_target,
+                                             m_config.face_exposure_band);
                     } else {
                         FACELOGIN_ERROR(L"Preview camera re-init failed — giving up until next start");
                         break;   // exit frame loop; next StartPreview retries
@@ -472,6 +503,11 @@ bool EnrollmentWizard::StartPreview() {
                                                static_cast<long>(det->y2));
                     m_detector->DetectLandmarks(frame, fwl.rect, fwl.landmarks);
                     auto tLand = std::chrono::steady_clock::now();
+                    // Face-exposure control (1.9.0): steer toward the target —
+                    // camera first, digital gain tops up, and this frame gets
+                    // the gain applied in place so preview + cache stay in the
+                    // normalized domain. Logs only on actual corrections.
+                    m_exposure.SteerFrame(frame, fwl.rect, ++m_exposureIter);
                     faces.push_back(std::move(fwl));
                     faceJson = FacesToJson(faces);
                     // Diagnostics: frame-thread pipeline stage timing. Each
@@ -489,6 +525,9 @@ bool EnrollmentWizard::StartPreview() {
                                        grabUs, jpegUs, detUs, landUs);
                     }
                 } else {
+                    // No face this frame — keep the session gain applied so
+                    // the cached frame stays in the same brightness domain.
+                    m_exposure.ApplySessionGain(frame);
                     long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tJpeg).count();
                     long long grabUs = std::chrono::duration_cast<std::chrono::microseconds>(tGrab - itT0).count();
                     long long jpegUs = std::chrono::duration_cast<std::chrono::microseconds>(tJpeg - tGrab).count();
@@ -626,6 +665,16 @@ void EnrollmentWizard::StopPreview() {
     // from a wedged driver call sees the mismatch and exits instead of
     // touching the (possibly re-initialized) camera next to the fresh thread.
     ++m_frameGeneration;
+
+    // Restore the camera's auto controls FIRST — the borrowed control
+    // interfaces must be touched while the capture object is still alive.
+    m_exposure.Reset();
+    // Persist the "poisoned camera" flag the same way the service does.
+    if (m_exposure.WasSevereOverexposure()) {
+        WriteRegDword(REGVAL_EXPOSURE_HW_BROKEN, 1);
+        FACELOGIN_WARN(L"Face exposure control: camera poisoned by manual exposure — "
+                       L"persisted ExposureHardwareBroken=1");
+    }
 
     // Shut down the camera FIRST so a synchronous ReadSample that is blocked
     // (camera taken over by the credential provider at lock) returns an error.
@@ -1318,28 +1367,37 @@ std::wstring EnrollmentWizard::GetCurrentProcessUserSid() {
 // Detect whether the enrolled account is passwordless (no password — PIN/Hello
 // only). Layered, conservative:
 //   1. The current session identity must be the enrolled account.
-//   2. Empty-password LogonUser succeeds → definitely passwordless.
-//   3. NetUserGetInfo(23) shows an empty SAM password → passwordless.
-//   4. MSA that we can't auto-confirm → 2 (UI checkbox lets the user confirm).
+//   2. MSA/Xbox: SAM never reflects the online password → 2 (UI checkbox lets
+//      the user confirm). Never derive it from SAM/LogonUser.
+//   3. Local accounts: empty-password LogonUser succeeds → 1 (passwordless).
+//   4. NetUserGetInfo(1003) shows an empty SAM password → 1 (passwordless).
+//   5. Anything else → 0 (has a password).
 int EnrollmentWizard::GetPasswordlessState() const {
     // 1) Session identity must be the account being enrolled.
     std::wstring tokenSid = GetCurrentProcessUserSid();
     if (tokenSid.empty() || tokenSid != m_sid) {
+        FACELOGIN_WARN(L"GetPasswordlessState: identity mismatch — tokenSid='%s' vs m_sid='%s' (upn='%s' acct='%s') → state=0",
+                       tokenSid.c_str(), m_sid.c_str(), m_upn.c_str(), m_accountType.c_str());
         return 0;
     }
 
-    // 2) Empty-password LogonUser probe.
+    // 2) MSA accounts: the SAM password field / empty LogonUser probe is NEVER
+    // authoritative — the real credential is online (or a local cache of the
+    // online password), so a SAM probe can falsely report "no password" for an
+    // MSA account whose local cache was never written. Ask the user instead.
+    if (m_accountType == "msa") {
+        FACELOGIN_INFO(L"GetPasswordlessState: MSA account (upn='%s') → state=2 (user confirm)",
+                       m_upn.c_str());
+        return 2;
+    }
+
+    // 3) Local accounts only: empty-password LogonUser probe.
     HANDLE hToken = nullptr;
     BOOL okEmpty = LogonUserW(m_username.c_str(), L".", L"",
                               LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &hToken);
     if (okEmpty && hToken) { CloseHandle(hToken); return 1; }
-    if (!m_upn.empty() && m_upn.find(L'@') != std::wstring::npos) {
-        okEmpty = LogonUserW(m_upn.c_str(), L".", L"",
-                             LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &hToken);
-        if (okEmpty && hToken) { CloseHandle(hToken); return 1; }
-    }
 
-    // 3) NetUserGetInfo(1003): SAM password field empty → passwordless.
+    // 4) NetUserGetInfo(1003): SAM password field empty → passwordless.
     // (USER_INFO_1003 exposes the SAM password; 23 does not include it.)
     USER_INFO_1003* ui1003 = nullptr;
     if (NetUserGetInfo(nullptr, m_username.c_str(), 1003,
@@ -1347,13 +1405,12 @@ int EnrollmentWizard::GetPasswordlessState() const {
         bool noPw = (ui1003->usri1003_password == nullptr ||
                      ui1003->usri1003_password[0] == L'\0');
         NetApiBufferFree(ui1003);
-        if (noPw) return 1;
+        if (noPw) { FACELOGIN_INFO(L"GetPasswordlessState: SAM password empty → state=1"); return 1; }
     }
-    // Local accounts: SAM password non-empty → has a password.
-    if (m_accountType != "msa") return 0;
 
-    // 4) MSA: SAM doesn't reflect the online password; can't auto-confirm.
-    return 2;
+    // 5) Local account with a non-empty SAM password → has a password.
+    FACELOGIN_INFO(L"GetPasswordlessState: local account with password → state=0");
+    return 0;
 }
 
 bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool passwordless,
@@ -1761,7 +1818,7 @@ std::string EnrollmentWizard::GetCameraList() {
 
 // Console version — bump with each release. Used to decide whether to show the
 // About-card star hint again (it reappears on every new version).
-static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.8.0";
+static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.9.0";
 // Registry value holding the version the user last saw the About card at.
 static const wchar_t REGVAL_ABOUT_SEEN_VERSION[] = L"AboutSeenVersion";
 

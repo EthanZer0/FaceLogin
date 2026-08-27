@@ -61,5 +61,10 @@ Thumbs.db
 # 本地文档（技术文章、配图等），不发布到仓库
 docs/
 
-# 本地辅助脚本（MSA/日志诊断等临时工具），不发布到仓库
-scripts/
+# 本地辅助脚本忽略；locale 校验/同步脚本是构建输入，保留跟踪
+scripts/*
+!scripts/check-locales.mjs
+!scripts/sync-locales.mjs
+
+# ZCode CLI session data
+.zcode/

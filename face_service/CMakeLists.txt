@@ -22,6 +22,7 @@ target_link_libraries(FaceLoginService PRIVATE
     strmiids
     advapi32
     ole32
+    wtsapi32
 )
 
 target_include_directories(FaceLoginService PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -43,6 +44,7 @@ target_link_libraries(diag_glasses PRIVATE
     onnxruntime::onnxruntime
     advapi32
     ole32
+    wtsapi32
 )
 
 target_include_directories(diag_glasses PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

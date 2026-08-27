@@ -17,6 +17,7 @@ target_link_libraries(FaceLoginCredentialProvider PRIVATE
     shlwapi
     netapi32
     secur32
+    wtsapi32
 )
 
 target_include_directories(FaceLoginCredentialProvider PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

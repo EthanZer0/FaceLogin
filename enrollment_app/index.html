@@ -281,8 +281,8 @@ button{font-family:inherit}
   background:#FFFFFF;position:relative;transition:border-color .15s,background .15s}
 .check:hover .cbx{border-color:var(--live)}
 .check input:focus-visible ~ .cbx{box-shadow:0 0 0 3px rgba(14,159,110,.18)}
-.cbx::after{content:'';position:absolute;left:3.5px;top:0.5px;width:4px;height:7px;
-  border-color:#0E9F6E;border-width:0 2px 2px 0;transform:rotate(45deg) scale(0);opacity:0;
+.cbx::after{content:'';position:absolute;left:3.25px;top:1px;width:5px;height:8px;
+  border:#fff;border-width:0 2.5px 2.5px 0;border-style:solid;transform:rotate(45deg) scale(0);opacity:0;
   transition:transform .12s ease,opacity .12s}
 .check input:checked ~ .cbx{background-color:var(--live);border-color:var(--live)}
 .check input:checked ~ .cbx::after{transform:rotate(45deg) scale(1);opacity:1}
@@ -407,8 +407,8 @@ button{font-family:inherit}
 .face-card-dist{font-size:10px;color:#8A919E;font-family:var(--font-data)}
 .face-viewer-card{
   width:min(90vw,900px);display:flex;flex-direction:column;gap:14px;align-items:center;
-  background:var(--face);border-radius:var(--radius);padding:18px;
-  box-shadow:0 18px 50px rgba(15,17,21,.35);
+  background:var(--face);border-radius:8px;padding:18px;
+  box-shadow:0 18px 60px rgba(22,26,34,.2);
 }
 .face-viewer-card img{max-width:100%;max-height:70vh;border-radius:6px;background:#0F1115}
 .face-ctx-menu{
@@ -453,27 +453,45 @@ button{font-family:inherit}
    Modals (camera picker, refresh)
    ================================================================ */
 .cam-picker-overlay{
-  position:fixed;inset:0;z-index:100;display:none;
+  position:fixed;inset:0;z-index:110;
   align-items:center;justify-content:center;
-  background:rgba(22,26,34,.5);backdrop-filter:blur(2px);
+  background:rgba(22,26,34,.45);backdrop-filter:blur(2px);
+  display:flex;
+  visibility:hidden;opacity:0;pointer-events:none;
+  /* visibility swaps with a delay so the fade-out is actually visible —
+     closing: opacity animates first, then visibility flips to hidden. */
+  transition:opacity .22s ease,visibility 0s .22s;
 }
-.cam-picker-overlay.active{display:flex}
+.cam-picker-overlay.active{
+  visibility:visible;opacity:1;pointer-events:auto;
+  /* opening: visibility goes visible immediately, no delay. */
+  transition:opacity .22s ease,visibility 0s;
+}
+/* All modal cards (cam-picker / face-viewer-card) share the same entrance:
+   rise from below with a gentle overshoot + fade (matches About card). */
+.cam-picker-overlay > div{
+  opacity:0;transform:translateY(20px) scale(.96);
+  transition:opacity .24s ease,transform .30s cubic-bezier(.34,1.45,.5,1);
+}
+.cam-picker-overlay.active > div{
+  opacity:1;transform:translateY(0) scale(1);
+}
 .cam-picker{
   width:90%;max-width:420px;background:var(--face);
   border:1px solid var(--hair);border-radius:8px;
-  box-shadow:0 18px 60px rgba(22,26,34,.18);padding:24px;
+  box-shadow:0 18px 60px rgba(22,26,34,.2);padding:24px;
 }
 .cam-picker h2{
   font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
   margin-bottom:8px;text-transform:uppercase;
 }
-.cam-picker p.dim{font-size:12px;color:var(--fog);line-height:1.6;margin-bottom:18px}
-.cam-picker select{
+.cam-picker p.dim{font-size:11px;color:#8A919E;line-height:1.6;margin-bottom:18px}
+.cam-picker input{
   width:100%;border:1px solid var(--hair);border-radius:var(--radius);
   padding:9px 12px;font-size:13px;outline:none;background:var(--face);color:var(--ink);
   margin-bottom:8px;
 }
-.cam-picker select:focus{border-color:#B9C0CC;box-shadow:0 0 0 3px rgba(14,159,110,.12)}
+.cam-picker input:focus{border-color:var(--live);box-shadow:0 0 0 3px rgba(14,159,110,.12)}
 .cam-picker .btn{margin-top:0}
 .cam-picker .btn-secondary{margin-top:10px}
 
@@ -724,11 +742,12 @@ button{font-family:inherit}
     <div class="field" id="field-skip-pass" style="display:none">
       <label class="check">
         <input type="checkbox" id="fld-skip-pass">
+        <span class="cbx"></span>
         <span id="fld-skip-pass-label">该账号没有密码（仅使用 PIN/Hello），跳过密码录入</span>
       </label>
       <p class="dim">无密码账号无法用于人脸解锁，人脸识别只能完成录入。</p>
     </div>
-    <p class="dim">你的密码将使用 DPAPI 加密，仅存储在本机。</p>
+      <p class="dim">你的密码将使用 DPAPI 加密，仅存储在本机。无密码账户（空密码本地账号）人脸解锁将尝试空密码登录——Windows 默认允许空密码控制台登录（锁屏解锁），失败时请改用 PIN/Hello。</p>
     <button class="btn btn-primary" id="btn-save" onclick="onSave()" style="margin-top:8px">
       <span class="spinner" id="save-spinner"></span>
       保存并录入
@@ -853,6 +872,20 @@ button{font-family:inherit}
          dlib was dropped, the system is now pure ONNX (InsightFace + SCRFD). -->
 
     <div class="field">
+      <label class="tip"><span>界面语言 (Language)</span><span class="tip-ico">i</span><span class="tip-box">界面显示语言。"跟随系统"使用当前 Windows 登录用户的语言，无需手动选择。</span></label>
+      <div class="cs-wrap" data-cs="language">
+        <select id="cfg-language" class="cs-native">
+          <option value="auto">跟随系统</option>
+          <option value="zh-CN">简体中文</option>
+          <option value="ko-KR">한국어</option>
+          <option value="en-US">English</option>
+        </select>
+        <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false"><span class="cs-val"></span><span class="cs-arrow"></span></button>
+        <div class="cs-list" role="listbox"></div>
+      </div>
+    </div>
+
+    <div class="field">
       <label class="tip"><span>摄像头旋转 (Camera Rotation)</span><span class="tip-ico">i</span><span class="tip-box">摄像头物理安装方向不是正向上时（如竖屏安装），可在此调整。实时预览会立即反映旋转效果。</span></label>
       <div class="cs-wrap" data-cs="rotation">
         <select id="cfg-rotation" class="cs-native">
@@ -912,11 +945,21 @@ button{font-family:inherit}
 
     <div class="field">
       <label class="check tip">
+        <input type="checkbox" id="cfg-exposure">
+        <span class="cbx"></span>
+        <span>人脸曝光自动控制（过曝/欠曝导致识别不稳定时开启）</span>
+        <span class="tip-ico">i</span>
+        <span class="tip-box">自动把脸部亮度调节到目标区间：优先调用摄像头硬件曝光/增益，不支持时用数字增益兜底。录入与解锁使用同一目标，换环境/换光线不再明显影响识别。开启后请重新录入人脸。</span>
+      </label>
+    </div>
+
+    <div class="field">
+      <label class="check tip">
         <input type="checkbox" id="cfg-unload-models">
         <span class="cbx"></span>
         <span>内存优化（识别后释放模型，降低后台内存占用）</span>
         <span class="tip-ico">i</span>
-        <span class="tip-box">识别完成后释放人脸模型，服务后台内存占用从约 60MB 降至约 20MB。下次解锁时模型自动重新加载（约 0.2-0.5 秒）。对内存敏感的设备可开启。</span>
+        <span class="tip-box">识别完成后释放人脸模型并清空进程工作集，服务后台内存占用从约 60MB 降至 1MB 以内（实测约 0.6MB）。下次解锁时模型自动重新加载（约 0.2-0.5 秒），对识别速度影响很小。适合内存敏感的设备，或希望服务常驻内存极低的用户。</span>
       </label>
     </div>
 
@@ -1044,11 +1087,18 @@ button{font-family:inherit}
 <!-- ================================================================== -->
 <!-- First-run Camera Picker Modal                                        -->
 <!-- ================================================================== -->
-<div class="cam-picker-overlay" id="cam-picker-overlay">
+<div class="cam-picker-overlay" id="cam-picker-overlay" onclick="if(event.target===this)onCamPickerSkip()">
   <div class="cam-picker">
     <h2>选择摄像头</h2>
     <p class="dim">检测到多台摄像头。请选择用于人脸录入与登录的摄像头。</p>
-    <select id="cam-picker-select"></select>
+    <div class="cs-wrap">
+      <select id="cam-picker-select" class="cs-native"></select>
+      <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false">
+        <span class="cs-val">选择摄像头…</span>
+        <span class="cs-arrow"></span>
+      </button>
+      <div class="cs-list" role="listbox"></div>
+    </div>
     <button class="btn btn-primary" id="cam-picker-confirm" onclick="onCamPickerConfirm()">
       使用此摄像头
     </button>
@@ -1061,7 +1111,7 @@ button{font-family:inherit}
 <!-- ================================================================== -->
 <!-- Stale MSA→local Account Refresh Modal                               -->
 <!-- ================================================================== -->
-<div class="cam-picker-overlay" id="refresh-overlay">
+<div class="cam-picker-overlay" id="refresh-overlay" onclick="if(event.target===this)onRefreshDismiss()">
   <div class="cam-picker">
     <h2 id="refresh-title">账号身份已变更</h2>
     <p class="dim" id="refresh-info">
@@ -1069,8 +1119,7 @@ button{font-family:inherit}
       为使人脸登录继续生效，需要刷新已保存的账号信息（人脸数据将保留），
       并更新本地密码。请输入当前 Windows 登录密码。
     </p>
-    <input type="password" id="refresh-pass" placeholder="输入当前 Windows 登录密码"
-           style="width:100%;border:1px solid var(--hair);border-radius:4px;padding:9px 12px;font-size:13px;outline:none;background:#FFFFFF;color:var(--ink);margin-bottom:10px">
+    <input type="password" id="refresh-pass" placeholder="输入当前 Windows 登录密码">
     <button class="btn btn-primary" id="refresh-confirm" onclick="onRefreshConfirm()">
       <span class="spinner" id="refresh-spinner"></span>
       刷新并保留人脸
@@ -1100,6 +1149,7 @@ button{font-family:inherit}
       <div class="ab-contrib-title">Contributors</div>
       <div class="ab-contrib-row"><span class="ab-contrib-name">EthanZer0</span></div>
       <div class="ab-contrib-row"><span class="ab-contrib-name">Link2323</span></div>
+      <div class="ab-contrib-row"><span class="ab-contrib-name">yuisatomi</span></div>
     </div>
     <a class="ab-link" href="https://github.com/EthanZer0/FaceLogin" onclick="event.preventDefault();openExternal(this.href)" role="link">
       <svg class="ab-gh" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -1117,6 +1167,179 @@ button{font-family:inherit}
 </div>
 
 <script>
+// Shared locale pack injected by WebviewHost from <installDir>/locales.
+// The source-language fallback keeps the standalone HTML preview usable.
+var I18N = window.__FACELOGIN_LOCALE__ || {};
+var I18N_ZH = window.__FACELOGIN_LOCALE_ZH__ || {};
+var STATIC_TEXT_KEYS = {
+  '生物识别登录 · 录入 / 校准': 'console.subtitle',
+  '录入': 'console.tab.enroll',
+  '人脸': 'console.tab.faces',
+  '设置': 'console.tab.settings',
+  '日志': 'console.tab.logs',
+  '正在启动摄像头...': 'console.camera.starting',
+  '请将面部置于取景框内，确保光线充足。': 'console.camera.hint',
+  '开始采集': 'console.camera.capture',
+  '采集人脸样本...': 'console.camera.collecting',
+  '完成录入': 'console.enroll.complete',
+  '用户名 (UPN)': 'console.field.username',
+  '账户类型': 'console.field.accountType',
+  'Windows 密码': 'console.field.password',
+  '给这张脸命名': 'console.field.faceLabel',
+  '该账号没有密码（仅使用 PIN/Hello），跳过密码录入': 'console.passwordless.skip',
+  '无密码账号无法用于人脸解锁，人脸识别只能完成录入。': 'console.passwordless.warning',
+  '你的密码将使用 DPAPI 加密，仅存储在本机。': 'console.password.storage',
+  '保存并录入': 'console.enroll.save',
+  '人脸管理': 'console.faces.title',
+  '当前账号：': 'console.faces.currentAccount',
+  '添加新人脸': 'console.faces.add',
+  '清空全部': 'console.faces.clearAll',
+  '当前账号已有 N 张脸，将追加第 N+1 张。追加无需再次输入密码。': 'console.faces.appendInfo',
+  '确认追加': 'console.faces.appendConfirm',
+  '取消': 'console.cancel',
+  '系统设置': 'console.settings.title',
+  '修改设置后会自动通知后台服务，无需重启。': 'console.settings.autoApply',
+  '界面语言 (Language)': 'console.settings.language',
+  '界面显示语言。"跟随系统"使用当前 Windows 登录用户的语言，无需手动选择。': 'console.settings.languageHelp',
+  '跟随系统': 'console.settings.languageAuto',
+  '简体中文': 'console.settings.languageZhCN',
+  '한국어': 'console.settings.languageKoKR',
+  'English': 'console.settings.languageEnUS',
+  '摄像头旋转 (Camera Rotation)': 'console.settings.rotation',
+  '摄像头物理安装方向不是正向上时（如竖屏安装），可在此调整。实时预览会立即反映旋转效果。': 'console.settings.rotationHelp',
+  '不旋转 (0°)': 'console.settings.rotation0',
+  '顺时针 90°': 'console.settings.rotation90',
+  '顺时针 270°': 'console.settings.rotation270',
+  '摄像头 (Camera)': 'console.settings.camera',
+  '有多台或虚拟摄像头时，可在此选择用于录入与登录的摄像头。': 'console.settings.cameraHelp',
+  '默认（第一个设备）': 'console.settings.defaultCamera',
+  '活体检测 (Liveness Method)': 'console.settings.liveness',
+  '眨眼检测 (Blink)': 'console.settings.livenessBlink',
+  '反欺诈 (Anti-Spoof)': 'console.settings.livenessAntiSpoof',
+  '无 (None)': 'console.settings.livenessNone',
+  '眼镜模式（戴眼镜导致眨眼检测不稳定时开启）': 'console.settings.glasses',
+  '眼镜模式使用自适应眨眼检测，对镜框/反光更鲁棒，但可能不如默认模式稳定。非必要建议保持关闭。': 'console.settings.glassesHelp',
+  '暗光增强（暗光环境下人脸识别不稳定时开启）': 'console.settings.lowLight',
+  '暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。': 'console.settings.lowLightHelp',
+  '人脸曝光自动控制（过曝/欠曝导致识别不稳定时开启）': 'console.settings.exposureControl',
+  '自动把脸部亮度调节到目标区间：优先调用摄像头硬件曝光/增益，不支持时用数字增益兜底。录入与解锁使用同一目标，换环境/换光线不再明显影响识别。开启后请重新录入人脸。': 'console.settings.exposureControlHelp',
+  '内存优化（识别后释放模型，降低后台内存占用）': 'console.settings.memory',
+  '识别完成后释放人脸模型并清空进程工作集，服务后台内存占用从约 60MB 降至 1MB 以内（实测约 0.6MB）。下次解锁时模型自动重新加载（约 0.2-0.5 秒），对识别速度影响很小。适合内存敏感的设备，或希望服务常驻内存极低的用户。': 'console.settings.memoryHelp',
+  '记录未匹配人脸（陌生人出现在锁屏前时保存照片与记录）': 'console.settings.unknownFaces',
+  '开启后，锁屏人脸匹配失败（检测到人脸但未匹配任何已录入人脸）时，将失败画面保存为照片并记录事件，存放于安装目录 data\\unknown 文件夹（最多保留 100 张，超出自动删除最旧）。照片仅保存在本机，不会上传。涉及非本人的面部影像，请谨慎开启。': 'console.settings.unknownFacesHelp',
+  '开机登录需按键触发人脸识别（默认关闭，开机自动识别）': 'console.settings.coldBootKey',
+  '开启后，电脑开机进入登录界面时不会自动启动摄像头识别人脸，需按任意键后才开始识别（与锁屏解锁一致）。适合不希望开机时摄像头自动开启的用户。': 'console.settings.coldBootKeyHelp',
+  '反欺诈阈值 (Anti-Spoof Threshold):': 'console.settings.antiSpoofThreshold',
+  '阈值越低越宽松（容易通过），越高越严格（更难通过）。默认0.30。': 'console.settings.antiSpoofHelp',
+  '匹配严格度 (Match Strictness):': 'console.settings.matchStrictness',
+  '值越高越严格（人脸需更相似才能通过）。默认60。': 'console.settings.matchHelp',
+  '保存设置': 'console.settings.save',
+  '运行日志': 'console.logs.title',
+  '识别失败记录': 'console.logs.failedRecords',
+  '清空日志': 'console.logs.clear',
+  '清空记录': 'console.logs.clearRecords',
+  '关闭': 'console.close',
+  '删除这条记录': 'console.unknown.delete',
+  '选择摄像头': 'console.cameraPicker.title',
+  '检测到多台摄像头。请选择用于人脸录入与登录的摄像头。': 'console.cameraPicker.description',
+  '使用此摄像头': 'console.cameraPicker.use',
+  '稍后选择（使用默认第一个设备）': 'console.cameraPicker.later',
+  '账号身份已变更': 'console.refresh.title',
+  '检测到该账号曾使用微软账号（MSA）登录，现已切换为本地账号。 为使人脸登录继续生效，需要刷新已保存的账号信息（人脸数据将保留）， 并更新本地密码。请输入当前 Windows 登录密码。': 'console.refresh.description',
+  '刷新并保留人脸': 'console.refresh.confirm',
+  '暂不处理': 'console.refresh.later',
+  '查看项目 ↗': 'console.about.viewProject'
+};
+var STATIC_PLACEHOLDER_KEYS = {
+  '输入你的登录密码': 'console.field.passwordPlaceholder',
+  '可留空，默认如“脸1”': 'console.field.faceLabelPlaceholder',
+  '可留空，默认如“脸N”': 'console.faces.appendPlaceholder',
+  '输入当前 Windows 登录密码': 'console.refresh.passwordPlaceholder'
+};
+var RUNTIME_TEXT_KEYS = {
+  '设置已保存并通知后台服务。': 'console.status.settingsSaved',
+  '保存设置失败。': 'console.status.settingsSaveFailed',
+  '请保持面部正对摄像头，将进行活体检测。': 'console.status.captureLiveHint',
+  '请将面部置于取景框内，根据提示眨眼确认。': 'console.status.captureBlinkHint',
+  '正在进行活体检测...': 'console.status.livenessChecking',
+  '请眨眼以确认活体...': 'console.status.blinkNow',
+  '正在采集...': 'console.status.capturing',
+  '采集人脸样本...': 'console.camera.collecting',
+  '活体检测失败，请确保是真人并重试。': 'console.status.livenessFailed',
+  '采集超时：未能在限时内采集到足够的人脸样本。请确保面部在取景框内且光线充足后重试。': 'console.status.captureTimeout',
+  '采集未完成：未能在限时内采集到足够的人脸样本。请确保面部在取景框内且光线充足后重试。': 'console.status.captureIncomplete',
+  '微软账号密码': 'console.field.microsoftPassword',
+  'Windows 密码': 'console.field.password',
+  '已检测到该账号无密码，将跳过密码录入。': 'console.passwordless.detected',
+  '尚未录入人脸。切换到“录入”页开始录入。': 'console.faces.empty',
+  '点击“开始采集”即可为当前账号追加一张新人脸。': 'console.faces.addHint',
+  '确定删除这张脸吗？': 'console.faces.deleteConfirm',
+  '已删除。': 'console.faces.deleted',
+  '删除失败，请重试。': 'console.faces.deleteFailed',
+  '已重命名。': 'console.faces.renamed',
+  '重命名失败，请重试。': 'console.faces.renameFailed',
+  '确定清空当前账号的全部人脸吗？将无法使用人脸登录。': 'console.faces.clearConfirm',
+  '已清空全部人脸。': 'console.faces.cleared',
+  '清空失败，请重试。': 'console.faces.clearFailed',
+  '请输入当前登录密码。': 'console.refresh.passwordRequired',
+  '账号信息已刷新，人脸已保留。': 'console.refresh.success',
+  '已暂不处理。下次进入“人脸”页仍会提示刷新账号信息。': 'console.refresh.dismissed',
+  '新脸已添加成功！可按 Win+L 锁定屏幕测试人脸登录。': 'console.enroll.appendSuccess',
+  '追加失败（已达人脸上限或身份校验失败）。': 'console.enroll.appendFailed',
+  '请输入密码。': 'console.password.required',
+  '录入成功！可按 Win+L 锁定屏幕测试人脸登录。': 'console.enroll.success',
+  '密码错误，请确认是你的 Windows 登录密码。': 'console.password.incorrect',
+  '暂无日志': 'console.logs.empty',
+  '暂无识别失败记录（锁屏出现未匹配人脸且已在设置中开启「记录未匹配人脸」时才会产生）': 'console.logs.noFailedRecords',
+  '确定删除这条识别失败记录吗？': 'console.unknown.deleteConfirm',
+  '确定清空全部识别失败记录吗？照片与记录将全部删除，不可恢复。': 'console.unknown.clearConfirm',
+  '已选择摄像头，正在启动预览...': 'console.camera.selected',
+  '保存摄像头设置失败，请重试。': 'console.camera.saveFailed',
+  '已使用默认摄像头，可在设置页随时更改。': 'console.camera.defaultSelected'
+};
+function translateRuntimeText(text) {
+  return t(RUNTIME_TEXT_KEYS[text] || text);
+}
+function t(key, values) {
+  var message = I18N[key] || I18N_ZH[key] || key;
+  values = values || {};
+  Object.keys(values).forEach(function(name) {
+    message = message.split('{' + name + '}').join(String(values[name]));
+  });
+  return message;
+}
+function applyI18n(root) {
+  var walker = document.createTreeWalker(root || document.body, NodeFilter.SHOW_TEXT);
+  var node;
+  while ((node = walker.nextNode())) {
+    var source = node.nodeValue.trim().replace(/\s+/g, ' ');
+    var key = STATIC_TEXT_KEYS[source];
+    if (key) node.nodeValue = node.nodeValue.replace(node.nodeValue.trim(), t(key));
+  }
+  (root || document).querySelectorAll('[placeholder]').forEach(function(el) {
+    var key = STATIC_PLACEHOLDER_KEYS[el.getAttribute('placeholder')];
+    if (key) el.setAttribute('placeholder', t(key));
+  });
+  (root || document).querySelectorAll('[alt="未匹配人脸"]').forEach(function(el) {
+    el.setAttribute('alt', t('console.unknown.alt'));
+  });
+  (root || document).querySelectorAll('[data-i18n]').forEach(function(el) {
+    el.textContent = t(el.getAttribute('data-i18n'));
+  });
+  (root || document).querySelectorAll('[data-i18n-placeholder]').forEach(function(el) {
+    el.setAttribute('placeholder', t(el.getAttribute('data-i18n-placeholder')));
+  });
+  (root || document).querySelectorAll('[data-i18n-alt]').forEach(function(el) {
+    el.setAttribute('alt', t(el.getAttribute('data-i18n-alt')));
+  });
+  document.documentElement.lang = window.__FACELOGIN_LOCALE_CODE__ || 'zh-CN';
+}
+document.addEventListener('DOMContentLoaded', function() { applyI18n(document); });
+var nativeConfirm = window.confirm.bind(window);
+var nativeAlert = window.alert.bind(window);
+window.confirm = function(message) { return nativeConfirm(translateRuntimeText(String(message))); };
+window.alert = function(message) { nativeAlert(translateRuntimeText(String(message))); };
+
 // Host bridge. In the real WebView2 this is the injected COM host object.
 // When the page is opened in a plain browser (no host, e.g. HTML preview),
 // we install a lazy proxy so the static UI still renders and tab switching
@@ -1500,23 +1723,28 @@ function loadSettings() {
     var json = H.GetConfig();
     var cfg = JSON.parse(json);
     document.getElementById('cfg-liveness').value = cfg.liveness_method || 'none';
+    document.getElementById('cfg-language').value = cfg.ui_language || 'auto';
+    // Remember the language the page was loaded with — onSaveSettings compares
+    // against this to decide whether a reload is needed for the new pack.
+    window.__CFG_UI_LANGUAGE_INITIAL__ = cfg.ui_language || 'auto';
     document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
     document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
+    document.getElementById('cfg-exposure').checked = !!cfg.face_exposure_control;
     document.getElementById('cfg-unload-models').checked = !!cfg.unload_models_after_auth;
 
     // Populate the camera dropdown from the enumerated devices.
     var camSel = document.getElementById('cfg-camera');
     var currentCam = cfg.camera_device || '';
     // Keep the "default" option as first.
-    camSel.innerHTML = '<option value="">默认（第一个设备）</option>';
+    camSel.innerHTML = '<option value="">' + t('console.settings.defaultCamera') + '</option>';
     try {
       var camList = JSON.parse(H.GetCameraList());
       var found = false;
       for (var i = 0; i < camList.length; i++) {
         var opt = document.createElement('option');
         opt.value = camList[i].path;
-        opt.textContent = camList[i].name || ('摄像头 ' + (i + 1));
+        opt.textContent = camList[i].name || t('console.camera.device', { number: i + 1 });
         camSel.appendChild(opt);
         if (currentCam && camList[i].path === currentCam) found = true;
       }
@@ -1527,7 +1755,7 @@ function loadSettings() {
         // user knows, but fall back to default at runtime.
         var missingOpt = document.createElement('option');
         missingOpt.value = currentCam;
-        missingOpt.textContent = '(未找到: ' + currentCam + ')';
+        missingOpt.textContent = t('console.camera.missing', { name: currentCam });
         camSel.appendChild(missingOpt);
         camSel.value = currentCam;
       }
@@ -1542,6 +1770,10 @@ function loadSettings() {
     // (blink) even when config says antispoof/none.
     var livWrap = document.getElementById('cfg-liveness').closest('.cs-wrap');
     if (livWrap) csPopulate(livWrap, document.getElementById('cfg-liveness'));
+    // Same for the language dropdown — its value came from config, so the
+    // dial must reflect it instead of the page-load default.
+    var langWrap = document.getElementById('cfg-language').closest('.cs-wrap');
+    if (langWrap) csPopulate(langWrap, document.getElementById('cfg-language'));
 
     // match_threshold is stored as Euclidean distance (lower = stricter).
     // New slider mapping (1.6.0): threshold = 0.45 + (90 - strictness)/100,
@@ -1560,7 +1792,7 @@ function loadSettings() {
     rngSync(document.getElementById('cfg-antispoof-threshold'));
     document.getElementById('cfg-capture-unknown').checked = !!cfg.capture_unknown_faces;
     document.getElementById('cfg-coldboot-key').checked = !!cfg.cold_boot_key_trigger;
-  } catch(e) { showBanner('settings', '读取设置失败: ' + e.message, 'error'); }
+  } catch(e) { showBanner('settings', t('console.settings.loadFailed', { error: e.message }), 'error'); }
   // Always reconcile the liveness-dependent fields with the current select
   // value, even if loading config failed above — so the glasses / anti-spoof
   // threshold fields can never get stuck showing the wrong one.
@@ -1573,12 +1805,14 @@ function onSaveSettings() {
     // recognition_model/detector are fixed to onnx/scrfd (dlib was removed);
     // they're not sent here — the service and config defaults handle them.
     liveness_method: document.getElementById('cfg-liveness').value,
+    ui_language: document.getElementById('cfg-language').value,
     // Convert strictness back to distance threshold (1.6.0 mapping):
     // threshold = 0.45 + (90 - strictness)/100
     match_threshold: 0.45 + (90 - strictness) / 100,
     anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
     low_light_enhance: document.getElementById('cfg-low-light').checked,
+    face_exposure_control: document.getElementById('cfg-exposure').checked,
     unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
     capture_unknown_faces: document.getElementById('cfg-capture-unknown').checked,
     cold_boot_key_trigger: document.getElementById('cfg-coldboot-key').checked,
@@ -1589,19 +1823,27 @@ function onSaveSettings() {
     var ok = H.SetConfig(JSON.stringify(cfg));
     if (ok) {
       showBanner('settings', '设置已保存并通知后台服务。', 'ok');
+      // The locale pack is injected by the C++ host at navigation time —
+      // when the language changed, ask the host to rebuild the page. Plain
+      // window.location.reload() is NOT used: NavigateToString pages have no
+      // real URL, and reloading them navigates to a blank page.
+      if (document.getElementById('cfg-language').value !==
+          (window.__CFG_UI_LANGUAGE_INITIAL__ || 'auto')) {
+        setTimeout(function() { H.ReloadUi(); }, 800);
+      }
       // Update hint text based on liveness method
       var method = cfg.liveness_method;
       if (method === 'antispoof') {
-        document.getElementById('cam-hint').textContent = '请保持面部正对摄像头，将进行活体检测。';
+        document.getElementById('cam-hint').textContent = t('console.status.captureLiveHint');
       } else if (method === 'blink') {
-        document.getElementById('cam-hint').textContent = '请将面部置于取景框内，根据提示眨眼确认。';
+        document.getElementById('cam-hint').textContent = t('console.status.captureBlinkHint');
       } else {
-        document.getElementById('cam-hint').textContent = '请将面部置于取景框内，确保光线充足。';
+        document.getElementById('cam-hint').textContent = t('console.camera.hint');
       }
     } else {
       showBanner('settings', '保存设置失败。', 'error');
     }
-  } catch(e) { showBanner('settings', '保存设置失败: ' + e.message, 'error'); }
+  } catch(e) { showBanner('settings', t('console.settings.saveFailedDetail', { error: e.message }), 'error'); }
 }
 
 function onCapture() {
@@ -1624,11 +1866,11 @@ function onCapture() {
   } catch(e) {}
 
   if (liveMethod === 'antispoof') {
-    document.getElementById('cap-step').textContent = '正在进行活体检测...';
+    document.getElementById('cap-step').textContent = t('console.status.livenessChecking');
   } else if (liveMethod === 'blink') {
-    document.getElementById('cap-step').textContent = '请眨眼以确认活体...';
+    document.getElementById('cap-step').textContent = t('console.status.blinkNow');
   } else {
-    document.getElementById('cap-step').textContent = '正在采集...';
+    document.getElementById('cap-step').textContent = t('console.status.capturing');
   }
   document.getElementById('cap-pct').textContent = '';
   document.getElementById('cap-fill').style.width = '0%';
@@ -1666,7 +1908,7 @@ function onCapture() {
         prog.style.display = 'none';
         btn.disabled = false;
         spinner.style.display = 'none';
-        document.getElementById('cap-step').textContent = '采集人脸样本...';
+        document.getElementById('cap-step').textContent = t('console.camera.collecting');
         document.getElementById('cap-pct').textContent = '0%';
         // Restart the preview render chain: while captureActive was set, the
         // renderFrame timer chain broke (it returns before rescheduling), so
@@ -1676,7 +1918,7 @@ function onCapture() {
         showBanner('cam', '活体检测失败，请确保是真人并重试。', 'error');
         return;
       }
-      document.getElementById('cap-step').textContent = '采集人脸样本...';
+      document.getElementById('cap-step').textContent = t('console.camera.collecting');
       // Total capture watchdog: normal capture of 10 samples takes ~2.5s.
       // If the backend hasn't finished after 8s (backend stuck, frame thread
       // died, detection never succeeds), stop polling and tell the user —
@@ -1774,10 +2016,10 @@ function onCapture() {
             var passLabel = document.getElementById('fld-pass-label');
             var passInput = document.getElementById('fld-pass');
             if (acctType === 'msa') {
-              passLabel.textContent = '微软账号密码';
+              passLabel.textContent = t('console.field.microsoftPassword');
               passInput.placeholder = '输入你的微软账号密码';
             } else {
-              passLabel.textContent = 'Windows 密码';
+              passLabel.textContent = t('console.field.password');
               passInput.placeholder = '输入你的登录密码';
             }
           } catch(e) {}
@@ -1786,7 +2028,10 @@ function onCapture() {
           // state 2 = MSA that can't auto-confirm (user confirms via checkbox),
           // state 0 = has a password (normal flow).
           try {
-            var st = H.GetPasswordlessState();
+            var st = H.IsPasswordlessState();
+            if (typeof st !== 'number') st = parseInt(st, 10);
+            if (isNaN(st)) st = 0;
+            console.log('GetPasswordlessState -> ' + st);
             var skipField = document.getElementById('field-skip-pass');
             var skipChk = document.getElementById('fld-skip-pass');
             var passField = document.getElementById('pwd-pass-field');
@@ -1794,7 +2039,7 @@ function onCapture() {
               skipField.style.display = 'flex';
               skipChk.checked = true;
               skipChk.disabled = true;
-              document.getElementById('fld-skip-pass-label').textContent = '已检测到该账号无密码，将跳过密码录入。';
+              document.getElementById('fld-skip-pass-label').textContent = t('console.passwordless.detected');
               if (passField) passField.style.display = 'none';
             } else if (st === 2) {
               skipField.style.display = 'flex';
@@ -1804,7 +2049,7 @@ function onCapture() {
               skipField.style.display = 'none';
               skipChk.checked = false;
             }
-          } catch(e) {}
+          } catch(e) { console.log('GetPasswordlessState threw: ' + e); }
           document.getElementById('fld-pass').focus();
         } else if (H.IsCapturing && !H.IsCapturing()) {
           // Backend stopped early without reaching 10 samples — the capture
@@ -1845,11 +2090,11 @@ function loadFaces() {
     var faces = JSON.parse(H.GetFacesJson());
     var count = H.GetFaceCount();
     var list = document.getElementById('face-list');
-    document.getElementById('faces-count').textContent = count + ' / 5 张';
+    document.getElementById('faces-count').textContent = t('console.faces.count', { count: count });
     try { document.getElementById('faces-user').textContent = H.GetUsername(); } catch(e) {}
 
     if (faces.length === 0) {
-      list.innerHTML = '<div class="face-empty">尚未录入人脸。切换到“录入”页开始录入。</div>';
+      list.innerHTML = '<div class="face-empty">' + t('console.faces.empty') + '</div>';
       return;
     }
     var html = '';
@@ -1857,14 +2102,14 @@ function loadFaces() {
       var f = faces[i];
       html += '<div class="face-item' + (f.legacy ? ' legacy' : '') + '">'
         + '<span class="face-name" title="' + escapeHtml(f.label) + '">' + escapeHtml(f.label) + '</span>'
-        + (f.legacy ? '<span class="legacy-tag">旧版数据</span>' : '')
+        + (f.legacy ? '<span class="legacy-tag">' + t('console.faces.legacy') + '</span>' : '')
         + '<span class="face-id">#' + f.id + '</span>'
-        + '<button class="btn btn-secondary" onclick="onRenameFace(' + f.id + ')">重命名</button>'
-        + '<button class="btn btn-secondary" onclick="onDeleteFace(' + f.id + ')">删除</button>'
+        + '<button class="btn btn-secondary" onclick="onRenameFace(' + f.id + ')">' + t('console.faces.rename') + '</button>'
+        + '<button class="btn btn-secondary" onclick="onDeleteFace(' + f.id + ')">' + t('console.faces.delete') + '</button>'
         + '</div>';
     }
     list.innerHTML = html;
-  } catch(e) { showBanner('faces', '读取人脸失败: ' + e.message, 'error'); }
+  } catch(e) { showBanner('faces', t('console.faces.loadFailed', { error: e.message }), 'error'); }
 }
 
 function goAddFace() {
@@ -1881,11 +2126,11 @@ function onDeleteFace(id) {
     } else {
       showBanner('faces', '删除失败，请重试。', 'error');
     }
-  } catch(e) { showBanner('faces', '删除失败: ' + e.message, 'error'); }
+  } catch(e) { showBanner('faces', t('console.faces.deleteFailedDetail', { error: e.message }), 'error'); }
 }
 
 function onRenameFace(id) {
-  var name = prompt('为这张脸命名：');
+  var name = prompt(t('console.faces.renamePrompt'));
   if (name === null) return;  // cancelled
   name = name.trim();
   try {
@@ -1895,7 +2140,7 @@ function onRenameFace(id) {
     } else {
       showBanner('faces', '重命名失败，请重试。', 'error');
     }
-  } catch(e) { showBanner('faces', '重命名失败: ' + e.message, 'error'); }
+  } catch(e) { showBanner('faces', t('console.faces.renameFailedDetail', { error: e.message }), 'error'); }
 }
 
 function onClearAllFaces() {
@@ -1907,7 +2152,7 @@ function onClearAllFaces() {
     } else {
       showBanner('faces', '清空失败，请重试。', 'error');
     }
-  } catch(e) { showBanner('faces', '清空失败: ' + e.message, 'error'); }
+  } catch(e) { showBanner('faces', t('console.faces.clearFailedDetail', { error: e.message }), 'error'); }
 }
 
 // ================================================================
@@ -1939,27 +2184,20 @@ function showRefreshPrompt(state, faces, upn) {
   var info = document.getElementById('refresh-info');
   var title = document.getElementById('refresh-title');
   var dismissBtn = document.getElementById('refresh-dismiss');
-  var facesText = (faces > 0) ? '你已录入 ' + faces + ' 张人脸，' : '';
+  var facesText = (faces > 0) ? t('console.refresh.facesPrefix', { count: faces }) : '';
   if (state === 2) {
     // local→MSA: record is local-era, now signed in with a Microsoft account.
-    title.textContent = '账号身份已变更';
-    info.textContent = facesText
-      + '检测到该账号现正使用微软账号（MSA）登录。'
-      + '已保存的人脸来自切换前的本地账号，为使人脸登录继续生效，'
-      + '需要刷新已保存的账号信息（人脸数据将保留），并更新微软账号密码。'
-      + (upn ? '将绑定微软账号：' + upn + '。' : '')
-      + '请输入当前微软账号密码。';
-    dismissBtn.textContent = '暂不处理';
+    title.textContent = t('console.refresh.title');
+    info.textContent = t('console.refresh.toMicrosoft', {
+      faces: facesText,
+      account: upn ? t('console.refresh.microsoftAccount', { upn: upn }) : ''
+    });
+    dismissBtn.textContent = t('console.refresh.later');
   } else {
     // MSA→local: record still carries the old Microsoft email.
-    title.textContent = '账号身份已变更';
-    info.textContent = facesText
-      + '检测到该账号曾使用微软账号（MSA）登录，现已切换为本地账号。'
-      + '为使人脸登录继续保留，需要刷新已保存的账号信息（人脸数据将保留），'
-      + '并更新本地密码。请输入当前 Windows 登录密码。'
-      + '也可点击下方「仅清理账号邮箱」立即清除残留邮箱、恢复锁屏登录'
-      + '（保留人脸与密码，但不更新已保存的密码）。';
-    dismissBtn.textContent = '仅清理账号邮箱';
+    title.textContent = t('console.refresh.title');
+    info.textContent = t('console.refresh.toLocal', { faces: facesText });
+    dismissBtn.textContent = t('console.refresh.cleanEmail');
   }
   document.getElementById('refresh-pass').value = '';
   overlay.classList.add('active');
@@ -1969,7 +2207,7 @@ function showRefreshPrompt(state, faces, upn) {
 function onRefreshConfirm() {
   var pass = document.getElementById('refresh-pass').value;
   var info = document.getElementById('refresh-info');
-  if (!pass) { info.textContent = '请输入当前登录密码。'; return; }
+  if (!pass) { info.textContent = t('console.refresh.passwordRequired'); return; }
 
   var btn = document.getElementById('refresh-confirm');
   var spinner = document.getElementById('refresh-spinner');
@@ -1988,8 +2226,7 @@ function onRefreshConfirm() {
       showBanner('faces', '账号信息已刷新，人脸已保留。', 'ok', 6000);
       loadFaces();  // faces-user now shows the current account name
     } else {
-      info.textContent =
-        '密码验证失败或刷新失败。请确认输入的是当前登录密码（微软账号或本地账号密码），再重试。';
+      info.textContent = t('console.refresh.failed');
       setTimeout(function() { document.getElementById('refresh-pass').focus(); }, 50);
     }
   }, 50);
@@ -2021,10 +2258,10 @@ function onRefreshDismiss() {
     var ok = false;
     try { ok = H.ClearStaleAccountUpn(); } catch(e) { ok = false; }
     if (ok) {
-      showBanner('faces', '已清理残留的账号邮箱，人脸已保留，锁屏登录将改用本地账号身份。若密码已更改，请改用「刷新并保留人脸」。', 'ok', 6000);
+      showBanner('faces', t('console.refresh.cleaned'), 'ok', 6000);
       loadFaces();
     } else {
-      showBanner('faces', '清理未完成。请点击「刷新并保留人脸」验证密码，或删除该录入后重新录入。', 'error', 6000);
+      showBanner('faces', t('console.refresh.cleanFailed'), 'error', 6000);
     }
   }, 50);
 }
@@ -2061,8 +2298,11 @@ function showAppendScreen(faceCount) {
   try { document.getElementById('append-user').value = H.GetUsername(); } catch(e) {}
   try { document.getElementById('append-sid').value = H.GetUserSid(); } catch(e) {}
   try { document.getElementById('append-face-label').value = ''; } catch(e) {}
-  document.getElementById('append-info').textContent =
-    '当前账号已有 ' + faceCount + ' 张脸，将追加第 ' + (faceCount + 1) + ' 张。追加无需再次输入密码。';
+  document.getElementById('screen-append').dataset.nextFaceId = String(faceCount + 1);
+  document.getElementById('append-info').textContent = t('console.faces.appendInfo', {
+    count: faceCount,
+    next: faceCount + 1
+  });
 }
 
 function onAppendConfirm() {
@@ -2074,6 +2314,10 @@ function onAppendConfirm() {
   spinner.style.display = 'inline-block';
   var label = '';
   try { label = document.getElementById('append-face-label').value.trim(); } catch(e) {}
+  if (!label) {
+    var nextId = parseInt(document.getElementById('screen-append').dataset.nextFaceId || '1', 10);
+    label = t('face.defaultLabel', { number: nextId });
+  }
 
   // Defer the synchronous COM call so the spinner paints first.
   setTimeout(function() {
@@ -2106,6 +2350,7 @@ function onAppendCancel() {
 }
 
 function showBanner(screen, text, type, durationMs) {
+  text = translateRuntimeText(text);
   // All banners float at the same top-center position — dismiss any other
   // visible one first so they never stack/overlap.
   var all = document.querySelectorAll('.banner.show');
@@ -2139,6 +2384,7 @@ function onSave() {
     var ok = false;
     var label = '';
     try { label = document.getElementById('fld-face-label').value.trim(); } catch(e) {}
+    if (!label) label = t('face.defaultLabel', { number: 1 });
     if (skip) {
       // Passwordless account — use the current logged-on session identity.
       try { ok = H.SaveEnrollmentNoPassword(label); } catch(e) { ok = false; }
@@ -2208,7 +2454,7 @@ function refreshLogs() {
     var lines = JSON.parse(json);
     if (lines.length === 0) {
       // Valid empty array — show a friendly placeholder instead of a blank box.
-      document.getElementById('log-viewer').innerHTML = '<div class="log-warn">暂无日志</div>';
+      document.getElementById('log-viewer').innerHTML = '<div class="log-warn">' + t('console.logs.empty') + '</div>';
       return;
     }
     var html = '';
@@ -2258,18 +2504,19 @@ function renderUnknownFaces() {
   try {
     var events = JSON.parse(H.GetUnknownFaceEvents());
     if (!events.length) {
-      viewer.innerHTML = '<div class="log-warn">暂无识别失败记录（锁屏出现未匹配人脸且已在设置中开启「记录未匹配人脸」时才会产生）</div>';
+      viewer.innerHTML = '<div class="log-warn">' + t('console.logs.noFailedRecords') + '</div>';
       return;
     }
     var html = '<div class="faces-grid">';
     for (var i = 0; i < events.length; i++) {
       var e = events[i];
       var file = String(e.file).replace(/["'<>\\]/g, '');
-      var dist = (typeof e.distance === 'number' && e.distance >= 0)
-        ? '距离 ' + e.distance.toFixed(3) : '距离 -';
+      var dist = t('console.logs.distance', {
+        distance: (typeof e.distance === 'number' && e.distance >= 0) ? e.distance.toFixed(3) : '-'
+      });
       html += '<div class="face-card" onclick="viewUnknownFace(\'' + file + '\')" '
         + 'oncontextmenu="return onFaceCardCtx(event,\'' + file + '\')">'
-        + '<img src="' + FACES_BASE + file + '" alt="未匹配人脸" loading="lazy">'
+        + '<img src="' + FACES_BASE + file + '" alt="' + t('console.unknown.alt') + '" loading="lazy">'
         + '<div class="face-card-info">'
         + '<span class="face-card-ts">' + escapeHtml(String(e.ts || '')) + '</span>'
         + '<span class="face-card-dist">' + dist + '</span>'
@@ -2279,7 +2526,7 @@ function renderUnknownFaces() {
     html += '</div>';
     viewer.innerHTML = html;
   } catch(e) {
-    viewer.innerHTML = '<div class="log-error">读取失败: ' + escapeHtml(e.message) + '</div>';
+    viewer.innerHTML = '<div class="log-error">' + escapeHtml(t('console.logs.readFailed', { error: e.message })) + '</div>';
   }
 }
 
@@ -2299,7 +2546,7 @@ function onFaceCardCtx(ev, file) {
       } else {
         alert('删除失败，请重试。');
       }
-    } catch(e) { alert('删除失败: ' + e.message); }
+    } catch(e) { alert(t('console.logs.deleteFailedDetail', { error: e.message })); }
   };
   // Position near the cursor, keep inside the window.
   var x = Math.min(ev.clientX, window.innerWidth - 120);
@@ -2317,7 +2564,7 @@ function onClearUnknownFaces() {
   try {
     H.ClearUnknownFaces();
     renderUnknownFaces();
-  } catch(e) { alert('清空失败: ' + e.message); }
+  } catch(e) { alert(t('console.logs.clearFailedDetail', { error: e.message })); }
 }
 
 function viewUnknownFace(file) {
@@ -2337,7 +2584,7 @@ function closeFaceViewer() {
 // of truth for the version string (no hardcoded duplicates to bump per
 // release). In a browser preview there is no host, so fall back to a fixed
 // default so the layout still renders.
-var CONSOLE_VERSION = '1.8.0';
+var CONSOLE_VERSION = '1.9.0';
 function consoleVersion() {
   try { if (H.GetConsoleVersion) { var v = H.GetConsoleVersion(); if (v) return v; } } catch (e) {}
   return CONSOLE_VERSION;
@@ -2389,11 +2636,15 @@ function openExternal(url) {
   } catch (e) {}
   window.open(url, '_blank', 'noopener');
 }
-// ESC closes the about card too (matches other modals).
+// ESC closes every open modal consistently (about / refresh / cam-picker /
+// face-viewer: same behavior as clicking the backdrop).
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
-    var a = document.getElementById('about-overlay');
-    if (a) a.classList.remove('active');
+    var ids = ['about-overlay', 'refresh-overlay', 'cam-picker-overlay', 'face-viewer-overlay'];
+    for (var i = 0; i < ids.length; i++) {
+      var el = document.getElementById(ids[i]);
+      if (el) el.classList.remove('active');
+    }
   }
 });
 
@@ -2465,7 +2716,7 @@ document.addEventListener('keydown', function(e) {
     if (!running) { running = true; rafId = requestAnimationFrame(tick); }
   }
 
-  function tick() {
+  function tick(now) {
     var w = canvas.clientWidth, h = canvas.clientHeight;
     ctx.clearRect(0, 0, w, h);
 
@@ -2477,7 +2728,15 @@ document.addEventListener('keydown', function(e) {
       ctx.clip();
     }
 
-    var dt = 1 / 60;
+    // REAL delta time (was hard-coded 1/60): motion is expressed per-frame
+    // below (p.y += vy), so a fixed 1/60 made the drift speed proportional
+    // to the actual frame rate — 30fps ultra/low-power laptops drifted ~2×
+    // slower, 144fps gaming rigs ~2.4× faster. dt in seconds, clamped so
+    // a backgrounded rAF resume doesn't teleport all motes.
+    var dt = Math.min(0.05, Math.max(0.001, (now - (lastT || now)) / 1000));
+    lastT = now;
+    // Keep the original (1/60-designed) visual pacing across frame rates.
+    var k = dt * 60;
 
     // Continually top up with a gentle trickle so the motes appear to rise
     // and scatter gradually (no initial pile-up). ~8/s — sparse and calm.
@@ -2498,10 +2757,10 @@ document.addEventListener('keydown', function(e) {
       else a = 1;
       if (a <= 0) return false;
 
-      p.y += p.vy;
-      p.x = p.x + Math.sin(p.swayPhase) * p.swayAmp * 0.02;  // sway
-      p.swayPhase += p.swayFreq;
-      p.rot += p.vr;
+      p.y += p.vy * k;
+      p.x = p.x + Math.sin(p.swayPhase) * p.swayAmp * 0.02 * k;  // sway
+      p.swayPhase += p.swayFreq * k;
+      p.rot += p.vr * k;
 
       ctx.save();
       ctx.globalAlpha = Math.min(1, a);
@@ -2526,6 +2785,7 @@ document.addEventListener('keydown', function(e) {
 
   var animT = 0;
   var stopAt = 5.0;
+  var lastT = 0;
 
   var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var origOpen = openAbout;
@@ -2553,9 +2813,12 @@ function showCamPicker() {
   for (var i = 0; i < camList.length; i++) {
     var opt = document.createElement('option');
     opt.value = camList[i].path;
-    opt.textContent = camList[i].name || ('摄像头 ' + (i + 1));
+    opt.textContent = camList[i].name || t('console.camera.device', { number: i + 1 });
     sel.appendChild(opt);
   }
+  // Sync the custom-select label with the first (default-selected) camera.
+  var wrap = sel.closest('.cs-wrap');
+  if (wrap) csSync(wrap, sel);
   document.getElementById('cam-picker-overlay').classList.add('active');
 }
 
@@ -2578,7 +2841,7 @@ function onCamPickerConfirm() {
       showBanner('cam', '保存摄像头设置失败，请重试。', 'error');
     }
   } catch(e) {
-    showBanner('cam', '选择摄像头失败: ' + e.message, 'error');
+    showBanner('cam', t('console.camera.selectFailed', { error: e.message }), 'error');
   }
 }
 

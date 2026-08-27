@@ -10,16 +10,16 @@ export function GetUpgradeNotice() {
   return window['go']['main']['App']['GetUpgradeNotice']();
 }
 
-export function Install(arg1) {
-  return window['go']['main']['App']['Install'](arg1);
+export function Install(arg1, arg2) {
+  return window['go']['main']['App']['Install'](arg1, arg2);
 }
 
 export function IsInstalled() {
   return window['go']['main']['App']['IsInstalled']();
 }
 
-export function PickDirectory() {
-  return window['go']['main']['App']['PickDirectory']();
+export function PickDirectory(arg1) {
+  return window['go']['main']['App']['PickDirectory'](arg1);
 }
 
 export function Uninstall() {

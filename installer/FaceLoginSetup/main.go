@@ -76,37 +76,26 @@ func main() {
 	// v1.8.0: match_threshold 0.65 → 0.75 (illumination-drift fix). NOTE: this
 	// assignment OVERRIDES the config.go default — keep the two in sync and
 	// set BOTH back to false in later releases.
-	internal.ConfigUpgradeEnabled = true
+	// v1.9.0: no forced config overrides needed — reverted to OFF (threshold
+	// ship-in with 1.8.0; later releases preserve user-tuned values).
+	internal.ConfigUpgradeEnabled = false
 
 	// =========================================================================
 	// B) Upgrade notice — per-release announcement shown only on UPGRADE.
+	// Title and body are single locale keys; the body value is a newline-
+	// separated list rendered as plain bullets (see notice-zh/en.json).
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.8.0"
-	internal.NoticeTitle = "FaceLogin 1.8.0 更新说明"
-	internal.NoticeBody = "新功能：\n" +
-		"- 陌生人未匹配人脸记录（可选开启）：锁屏出现未匹配人脸时保存照片与记录，可在 Console 日志页浏览/删除（仅本机存储）\n" +
-		"- 开机登录按键触发可选：默认开机自动识别，可在设置中改为按任意键开始（与锁屏一致）\n" +
-		"识别可靠性：\n" +
-		"- 匹配阈值重校准 0.65 → 0.75：环境光照变化（如换教室/宿舍）导致解锁失败的问题显著改善，陌生人拦截不受影响\n" +
-		"- 内置 USB 摄像头帧率修复：优先压缩格式取流，720p 下稳定 30fps，人脸录入不再卡住\n" +
-		"交互完善：\n" +
-		"- 冷启动仅首次自动识别：识别失败/超时、或切换到其他登录磁贴再切回后，按任意键才重新识别\n" +
-		"- 锁屏识别失败不再循环启动摄像头，切换密码磁贴时识别立即停止，密码输入不再被打断\n" +
-		"修复：\n" +
-		"- 修复微软账户重置 PIN 时摄像头反复调用、PIN 显示不可用的问题\n" +
-		"- 修复从本地账号切换/绑定到微软账户后 Console 仍显示本地账号的问题\n" +
-		"- 修复升级安装后匹配阈值未同步为新默认值的问题\n" +
-		"提示：\n" +
-		"- 已录入的人脸数据不受影响，无需重新录入"
-
+	internal.NoticeVersion = "1.9.0"
+	internal.NoticeTitle = "installer.notice.title"
+	internal.NoticeBody = "installer.notice.body"
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
 
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:        "FaceLogin 安装程序",
+		Title:        "FaceLogin Setup",
 		Width:        640,
 		Height:       520,
 		DisableResize: true, // fixed-size window — no edge resize, no maximize

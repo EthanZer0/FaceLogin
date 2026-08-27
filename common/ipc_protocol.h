@@ -40,12 +40,30 @@ constexpr wchar_t MSG_GET_LOGS_OK_PREFIX[] = L"GET_LOGS_OK:";
 constexpr wchar_t MSG_PING[] = L"PING";
 constexpr wchar_t MSG_PONG[] = L"PONG";
 
-// Sent via AUTH_ERROR when the matched account is passwordless (MSA with no
-// password — PIN/Hello only). Face login cannot unlock such an account (no
-// password to submit to LSA), so the service degrades to this notice.
-// "该账号无密码，人脸识别无法用于解锁，请使用 PIN/Hello 登录"
-constexpr wchar_t MSG_PASSWORDLESS_NOTICE[] =
-    L"该账号无密码，人脸识别无法用于解锁，请使用 PIN/Hello 登录";
+// Locale keys carried by STATUS:/AUTH_ERROR: payloads. The values MUST match
+// keys in locales/*.json — the JSON packs are the single source of truth.
+// The credential provider translates any payload through its LocaleCatalog
+// (current pack → zh-CN pack → its own fallback), so the service never
+// embeds display text; an unknown key simply degrades to Chinese. These
+// constants keep service-side spelling in sync with the packs.
+constexpr wchar_t L10N_LOADING_MODELS[] = L"service.loadingModels";
+constexpr wchar_t L10N_RECOGNIZING[] = L"credential.recognizing";
+constexpr wchar_t L10N_NO_REGISTERED_USERS[] = L"service.noRegisteredUsers";
+constexpr wchar_t L10N_MODEL_LOAD_FAILED[] = L"service.modelLoadFailed";
+constexpr wchar_t L10N_CAMERA_UNAVAILABLE[] = L"service.cameraUnavailable";
+constexpr wchar_t L10N_NO_MATCH[] = L"credential.noMatch";
+constexpr wchar_t L10N_LIVENESS_CHECKING[] = L"service.livenessChecking";
+constexpr wchar_t L10N_BLINK_PROMPT[] = L"service.blinkPrompt";
+constexpr wchar_t L10N_ANTI_SPOOF_FAILED[] = L"service.antiSpoofFailed";
+constexpr wchar_t L10N_BLINK_FAILED[] = L"service.blinkFailed";
+constexpr wchar_t L10N_FINAL_MATCH_FAILED[] = L"service.finalMatchFailed";
+
+// Legacy AUTH_ERROR payload for a passwordless account (MSA with no password
+// — PIN/Hello only). No longer sent by the service (passwordless accounts now
+// unlock via blank-password submission), but kept so the credential provider
+// can still recognize the notice if an older service version sends it. The
+// value is a locale key, not display text.
+constexpr wchar_t MSG_PASSWORDLESS_NOTICE[] = L"credential.passwordless";
 
 // Parsed authentication result
 struct AuthResult {

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../common/secure_buffer.h"
+#include "../common/locale_util.h"
 #include "pipe_client.h"
 
 // Forward declarations
@@ -81,6 +82,7 @@ private:
         Waiting,
         Authenticating,
         Ready,
+        Submitted,  // credential packed & handed to LogonUI — no re-submit
         Failed,
         Error,
         Blocked  // Passwordless account: show notice, never submit creds
@@ -94,6 +96,14 @@ private:
 
     // Pack credentials into the serialization format
     HRESULT PackCredentials(CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs);
+
+    std::wstring Text(const char* key, const wchar_t* fallback) const {
+        return m_locale.GetWide(key, fallback);
+    }
+    // Translate a pipe payload: the service sends locale keys (ipc::L10N_*),
+    // never display text. Lookup is active pack → zh-CN pack → empty; callers
+    // fall back to their state's default text when the result is empty.
+    std::wstring LocalizeKey(const std::wstring& key) const;
 
     // Trigger re-enumeration of credentials (via CredentialsChanged)
     void TriggerReEnumeration();
@@ -133,6 +143,7 @@ private:
 
     // Live status text pushed from service (updated from background thread)
     std::wstring m_statusText;
+    facelogin::LocaleCatalog m_locale;
 
     // Auth timeout tracking (so we don't block LogonUI forever)
     LONGLONG m_authStartTime = 0;  // 100ns units, 0 = not yet started

@@ -1,0 +1,4 @@
+{
+  "installer.notice.title": "FaceLogin 1.9.0 Release Notes",
+  "installer.notice.body": "Multilingual UI: Simplified Chinese / 한국어 / English across the whole chain (lock screen, Console, installer) — follow the system language or pick manually\nFace exposure auto-control (optional): automatically normalizes face brightness to a unified target, so changing environment or lighting no longer affects recognition noticeably. Re-enroll your face after enabling\nPasswordless Microsoft-account face unlock: accounts with PIN/Hello only can now unlock directly by face\nMemory optimization: models unloaded after recognition and the working set cleared — idle service memory drops from ~60 MB to under 1 MB\nLock-screen status text fixes: no more stale \"Recognizing...\"/\"Face recognized\" after a rejected submission or a recognition timeout\nYour enrolled face data is unaffected — no re-enrollment needed"
+}

@@ -2,6 +2,8 @@
 #include "FaceLoginCredential.h"
 #include "../common/logger.h"
 #include "../common/registry_util.h"
+#include "../common/config_util.h"
+#include "../common/locale_util.h"
 #include <dsrole.h>
 #include <shlwapi.h>
 #include <shlobj.h>
@@ -17,30 +19,41 @@ extern const GUID CLSID_FaceLoginProvider;
 FaceLoginProvider::FaceLoginProvider() {
     FACELOGIN_INFO(L"FaceLoginProvider created");
 
+    const std::wstring installDir = ReadRegString(REGVAL_INSTALL_PATH, L"");
+    const std::string uiLang = facelogin::LoadConfig(installDir).ui_language;
+    facelogin::LocaleCatalog locale;
+    const bool localeOk = locale.Load(installDir, uiLang);
+    FACELOGIN_INFO(L"[l10n] Provider: installDir='%ls' ui_language='%hs' locale='%hs' loadOk=%d",
+                   installDir.c_str(), uiLang.c_str(), locale.locale().c_str(), localeOk);
+    m_fieldLabels[0] = locale.GetWide("credential.title", L"人脸登录");
+    m_fieldLabels[1] = locale.GetWide("credential.field.status", L"状态");
+    m_fieldLabels[2] = locale.GetWide("credential.field.submit", L"提交");
+    m_fieldLabels[3] = locale.GetWide("credential.switchToPassword", L"切换到密码登录");
+
     // Define fields for our credential tile (no tile image — text only)
 
     // Field 0: Large text ("人脸登录")
     m_rgFieldDescriptors[0].dwFieldID = 0;
     m_rgFieldDescriptors[0].cpft = CPFT_LARGE_TEXT;
-    m_rgFieldDescriptors[0].pszLabel = const_cast<LPWSTR>(L"人脸登录");
+    m_rgFieldDescriptors[0].pszLabel = m_fieldLabels[0].data();
     m_rgFieldDescriptors[0].guidFieldType = GUID_NULL;
 
     // Field 1: Small text (status message)
     m_rgFieldDescriptors[1].dwFieldID = 1;
     m_rgFieldDescriptors[1].cpft = CPFT_SMALL_TEXT;
-    m_rgFieldDescriptors[1].pszLabel = const_cast<LPWSTR>(L"状态");
+    m_rgFieldDescriptors[1].pszLabel = m_fieldLabels[1].data();
     m_rgFieldDescriptors[1].guidFieldType = GUID_NULL;
 
     // Field 2: Submit button (hidden, auto-logon handles submission)
     m_rgFieldDescriptors[2].dwFieldID = 2;
     m_rgFieldDescriptors[2].cpft = CPFT_SUBMIT_BUTTON;
-    m_rgFieldDescriptors[2].pszLabel = const_cast<LPWSTR>(L"提交");
+    m_rgFieldDescriptors[2].pszLabel = m_fieldLabels[2].data();
     m_rgFieldDescriptors[2].guidFieldType = GUID_NULL;
 
     // Field 3: Command link (switch to password)
     m_rgFieldDescriptors[3].dwFieldID = 3;
     m_rgFieldDescriptors[3].cpft = CPFT_COMMAND_LINK;
-    m_rgFieldDescriptors[3].pszLabel = const_cast<LPWSTR>(L"切换到密码登录");
+    m_rgFieldDescriptors[3].pszLabel = m_fieldLabels[3].data();
     m_rgFieldDescriptors[3].guidFieldType = GUID_NULL;
 }
 

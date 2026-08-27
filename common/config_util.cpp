@@ -32,7 +32,7 @@ static void jsonWriteString(std::ostringstream& ss, const std::string& s) {
 // Handles \" , \\ and \uXXXX escapes (backslash-heavy values like camera
 // device symbolic links would otherwise get corrupted by the round-trip;
 // \uXXXX is emitted by JSON.stringify for characters like '&' in WebView2).
-static std::string jsonGetString(const std::string& json, const std::string& key) {
+std::string JsonGetString(const std::string& json, const std::string& key) {
     std::string search = "\"" + key + "\"";
     auto pos = json.find(search);
     if (pos == std::string::npos) return "";
@@ -104,13 +104,13 @@ static std::string jsonGetString(const std::string& json, const std::string& key
 }
 
 static float jsonGetFloat(const std::string& json, const std::string& key, float defVal) {
-    auto s = jsonGetString(json, key);
+    auto s = JsonGetString(json, key);
     if (s.empty()) return defVal;
     try { return std::stof(s); } catch (...) { return defVal; }
 }
 
 static int jsonGetInt(const std::string& json, const std::string& key, int defVal) {
-    auto s = jsonGetString(json, key);
+    auto s = JsonGetString(json, key);
     if (s.empty()) return defVal;
     try { return std::stoi(s); } catch (...) { return defVal; }
 }
@@ -118,6 +118,7 @@ static int jsonGetInt(const std::string& json, const std::string& key, int defVa
 std::string ConfigToJson(const AppConfig& cfg) {
     std::ostringstream ss;
     ss << "{\n";
+    ss << "  "; jsonWriteString(ss, "ui_language"); ss << ": "; jsonWriteString(ss, cfg.ui_language); ss << ",\n";
     ss << "  "; jsonWriteString(ss, "recognition_model"); ss << ": "; jsonWriteString(ss, cfg.recognition_model); ss << ",\n";
     ss << "  "; jsonWriteString(ss, "detector"); ss << ": "; jsonWriteString(ss, cfg.detector); ss << ",\n";
     ss << "  "; jsonWriteString(ss, "liveness_method"); ss << ": "; jsonWriteString(ss, LivenessMethodToString(cfg.liveness_method)); ss << ",\n";
@@ -125,6 +126,9 @@ std::string ConfigToJson(const AppConfig& cfg) {
     ss << "  "; jsonWriteString(ss, "anti_spoof_threshold"); ss << ": " << cfg.anti_spoof_threshold << ",\n";
     ss << "  "; jsonWriteString(ss, "blink_glasses_mode"); ss << ": " << (cfg.blink_glasses_mode ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "low_light_enhance"); ss << ": " << (cfg.low_light_enhance ? "true" : "false") << ",\n";
+    ss << "  "; jsonWriteString(ss, "face_exposure_control"); ss << ": " << (cfg.face_exposure_control ? "true" : "false") << ",\n";
+    ss << "  "; jsonWriteString(ss, "face_exposure_target"); ss << ": " << cfg.face_exposure_target << ",\n";
+    ss << "  "; jsonWriteString(ss, "face_exposure_band"); ss << ": " << cfg.face_exposure_band << ",\n";
     ss << "  "; jsonWriteString(ss, "unload_models_after_auth"); ss << ": " << (cfg.unload_models_after_auth ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "camera_rotation"); ss << ": " << cfg.camera_rotation << ",\n";
     ss << "  "; jsonWriteString(ss, "capture_unknown_faces"); ss << ": " << (cfg.capture_unknown_faces ? "true" : "false") << ",\n";
@@ -136,17 +140,24 @@ std::string ConfigToJson(const AppConfig& cfg) {
 
 AppConfig ConfigFromJson(const std::string& json) {
     AppConfig cfg = DefaultConfig();
-    auto rec = jsonGetString(json, "recognition_model");
+    auto language = JsonGetString(json, "ui_language");
+    if (language == "auto" || language == "zh-CN" || language == "ko-KR" || language == "en-US")
+        cfg.ui_language = language;
+    auto rec = JsonGetString(json, "recognition_model");
     if (!rec.empty()) cfg.recognition_model = rec;
-    auto det = jsonGetString(json, "detector");
+    auto det = JsonGetString(json, "detector");
     if (!det.empty()) cfg.detector = det;
-    auto live = jsonGetString(json, "liveness_method");
+    auto live = JsonGetString(json, "liveness_method");
     if (!live.empty()) cfg.liveness_method = LivenessMethodFromString(live);
     cfg.match_threshold = jsonGetFloat(json, "match_threshold", 0.75f);
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
-    cfg.blink_glasses_mode = (jsonGetString(json, "blink_glasses_mode") == "true");
-    cfg.low_light_enhance = (jsonGetString(json, "low_light_enhance") == "true");
-    cfg.unload_models_after_auth = (jsonGetString(json, "unload_models_after_auth") == "true");
+    cfg.blink_glasses_mode = (JsonGetString(json, "blink_glasses_mode") == "true");
+    cfg.low_light_enhance = (JsonGetString(json, "low_light_enhance") == "true");
+    cfg.unload_models_after_auth = (JsonGetString(json, "unload_models_after_auth") == "true");
+    cfg.face_exposure_control = (JsonGetString(json, "face_exposure_control") == "true");
+    cfg.face_exposure_target = jsonGetFloat(json, "face_exposure_target", 110.0f);
+    cfg.face_exposure_band = jsonGetFloat(json, "face_exposure_band", 15.0f);
+
     int rotation = jsonGetInt(json, "camera_rotation", 0);
     // Only accept 0/90/180/270; anything else silently does nothing in
     // RotateFrame, so fall back to 0 and log it — a configured-but-ignored
@@ -157,9 +168,9 @@ AppConfig ConfigFromJson(const std::string& json) {
         rotation = 0;
     }
     cfg.camera_rotation = rotation;
-    cfg.capture_unknown_faces = (jsonGetString(json, "capture_unknown_faces") == "true");
-    cfg.cold_boot_key_trigger = (jsonGetString(json, "cold_boot_key_trigger") == "true");
-    auto cam = jsonGetString(json, "camera_device");
+    cfg.capture_unknown_faces = (JsonGetString(json, "capture_unknown_faces") == "true");
+    cfg.cold_boot_key_trigger = (JsonGetString(json, "cold_boot_key_trigger") == "true");
+    auto cam = JsonGetString(json, "camera_device");
     if (!cam.empty()) cfg.camera_device = cam;
     return cfg;
 }

@@ -3,6 +3,10 @@
 </p>
 
 <p align="center">
+  简体中文 · <a href="README.ko-KR.md">한국어</a> · <a href="README.en-US.md">English</a>
+</p>
+
+<p align="center">
   基于 Windows Credential Provider 框架的摄像头人脸识别解锁系统。<br>
   在锁屏界面集成"人脸登录"磁贴，看一眼即可解锁 — 支持本地账户和微软在线账户 (MSA)。
 </p>
@@ -11,7 +15,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="DEVELOPMENT.md"><img src="https://img.shields.io/badge/platform-Windows%2010%2B%20x64-blue" alt="Platform"></a>
   <a href="DEVELOPMENT.md"><img src="https://img.shields.io/badge/language-C%2B%2B20%20%7C%20Go-orange" alt="Language"></a>
-  <a href="https://github.com/EthanZer0/FaceLogin/releases"><img src="https://img.shields.io/badge/version-1.8.0-green" alt="Version"></a>
+  <a href="https://github.com/EthanZer0/FaceLogin/releases"><img src="https://img.shields.io/badge/version-1.9.0-green" alt="Version"></a>
 </p>
 
 ---
@@ -135,7 +139,8 @@ FaceLogin/
 ├── face_service/           # 人脸识别 Windows 服务
 ├── enrollment_app/         # 人脸录入控制台（WebView2 GUI）
 ├── installer/              # Go Wails 图形安装程序
-├── scripts/                # 辅助脚本（模型下载、诊断工具，不随安装包发布）
+├── locales/                # 独立语言包（zh-CN / ko-KR / en-US）
+├── scripts/                # 辅助脚本（模型下载、诊断工具、语言包一致性检查）
 └── assets/                 # 图标资源
 ```
 
