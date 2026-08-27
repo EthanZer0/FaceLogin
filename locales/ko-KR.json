@@ -136,7 +136,7 @@
   "console.settings.memory": "메모리 절약(인식 후 모델을 해제하여 백그라운드 메모리 감소)",
   "console.settings.memoryHelp": "인식 후 모델을 해제해 유휴 메모리를 약 60MB에서 20MB로 줄입니다. 다음 잠금 해제 시 모델을 다시 불러오느라 약 0.2~0.5초가 추가됩니다.",
   "console.settings.unknownFaces": "일치하지 않은 얼굴 기록(잠금 화면 앞의 미등록 얼굴 사진과 기록 저장)",
-  "console.settings.unknownFacesHelp": "잠금 화면에서 등록된 얼굴과 일치하지 않으면 설치 폴더의 data\\unknown에 사진과 기록을 저장합니다. 최대 100장을 이 PC에만 보관하며 업로드하지 않습니다. 다른 사람의 얼굴이 저장될 수 있으므로 주의해서 사용하세요.",
+  "console.settings.unknownFacesHelp": "켜면 잠금 화면에서 얼굴이 감지됐지만 등록된 얼굴과 일치하지 않을 때, 실패 화면을 사진으로 저장하고 이벤트를 기록해 설치 폴더의 data\\unknown에 보관합니다(최대 100장, 초과 시 오래된 것부터 자동 삭제). 사진은 이 PC에만 저장되며 업로드되지 않습니다. 본인 외 다른 사람의 얼굴 이미지가 포함되므로 주의해서 켜세요.",
   "console.settings.coldBootKey": "부팅 로그인에서 키를 누른 뒤 얼굴 인식 시작(기본값은 자동 시작)",
   "console.settings.coldBootKeyHelp": "켜면 부팅 후 로그인 화면에서 아무 키나 눌러야 얼굴 인식을 시작합니다. 부팅할 때 카메라가 자동으로 켜지는 것을 원하지 않을 때 사용하세요.",
   "console.settings.antiSpoofThreshold": "위조 방지 기준:",

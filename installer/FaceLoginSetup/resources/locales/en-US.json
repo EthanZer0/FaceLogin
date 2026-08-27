@@ -136,7 +136,7 @@
   "console.settings.memory": "Memory optimization (release models after recognition to reduce background memory)",
   "console.settings.memoryHelp": "Releases the face models after recognition, dropping the service's background memory from ~60 MB to ~20 MB. Models auto-reload on the next unlock (~0.2–0.5 s). Enable on memory-sensitive devices.",
   "console.settings.unknownFaces": "Record unmatched faces (save photo and record when a stranger appears at the lock screen)",
-  "console.settings.unknownFacesHelp": "When enabled, failed lock-screen matches save the frame and an event record under the data\\unknown folder. Keeps up to 100 photos, stored locally only and never uploaded. Involves other people's facial images — enable with care.",
+  "console.settings.unknownFacesHelp": "When enabled, a failed lock-screen match (a face detected but matching no enrolled face) saves the frame as a photo and logs an event under the data\\unknown folder in the install directory (keeps up to 100, oldest auto-removed when exceeded). Photos stay on this machine and are never uploaded. Involves facial images of people other than yourself — enable with care.",
   "console.settings.coldBootKey": "Require a key press to trigger face recognition at boot (off by default: auto-recognize at boot)",
   "console.settings.coldBootKeyHelp": "When enabled, the sign-in screen at boot waits for any key press before starting recognition. For users who don't want the camera turning on automatically at boot.",
   "console.settings.antiSpoofThreshold": "Anti-Spoof Threshold:",

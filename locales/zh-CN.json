@@ -136,7 +136,7 @@
   "console.settings.memory": "内存优化（识别后释放模型，降低后台内存占用）",
   "console.settings.memoryHelp": "识别完成后释放人脸模型，服务后台内存占用从约 60MB 降至约 20MB。下次解锁时模型自动重新加载（约 0.2-0.5 秒）。对内存敏感的设备可开启。",
   "console.settings.unknownFaces": "记录未匹配人脸（陌生人出现在锁屏前时保存照片与记录）",
-  "console.settings.unknownFacesHelp": "开启后，锁屏人脸匹配失败时将失败画面和事件记录保存在安装目录 data\\unknown 文件夹。最多保留 100 张，照片仅存于本机且不会上传。涉及他人面部影像，请谨慎开启。",
+  "console.settings.unknownFacesHelp": "开启后，锁屏人脸匹配失败（检测到人脸但未匹配任何已录入人脸）时，将失败画面保存为照片并记录事件，存放于安装目录 data\\unknown 文件夹（最多保留 100 张，超出自动删除最旧）。照片仅保存在本机，不会上传。涉及非本人的面部影像，请谨慎开启。",
   "console.settings.coldBootKey": "开机登录需按键触发人脸识别（默认关闭，开机自动识别）",
   "console.settings.coldBootKeyHelp": "开启后，开机进入登录界面时需按任意键才开始人脸识别。适合不希望开机时自动开启摄像头的用户。",
   "console.settings.antiSpoofThreshold": "反欺诈阈值 (Anti-Spoof Threshold):",
