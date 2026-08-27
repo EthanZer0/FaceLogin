@@ -68,6 +68,7 @@
   "credential.pressAnyKey": "아무 키나 누르면 얼굴 인식을 시작합니다.",
   "credential.recognizing": "얼굴을 인식하는 중...",
   "credential.success": "얼굴 인식에 성공했습니다. 잠금을 해제하는 중...",
+  "credential.submitted": "로그인을 확인하는 중입니다. Windows 확인을 기다려 주세요...",
   "credential.noMatch": "등록된 얼굴과 일치하지 않습니다. 다시 시도하거나 암호로 로그인하세요.",
   "credential.noFace": "얼굴을 찾지 못했습니다. 다시 시도하거나 암호로 로그인하세요.",
   "credential.passwordless": "이 계정에는 암호가 없어 얼굴로 잠금을 해제할 수 없습니다. PIN 또는 Windows Hello를 사용하세요.",

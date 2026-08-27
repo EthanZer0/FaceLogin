@@ -116,7 +116,10 @@ FaceLoginCredential::FaceLoginCredential() {
     }
 
     const std::wstring installDir = ReadRegString(REGVAL_INSTALL_PATH, L"");
-    m_locale.Load(installDir, facelogin::LoadConfig(installDir).ui_language);
+    const std::string uiLang = facelogin::LoadConfig(installDir).ui_language;
+    const bool localeOk = m_locale.Load(installDir, uiLang);
+    FACELOGIN_INFO(L"[l10n] Credential: installDir='%ls' ui_language='%hs' locale='%hs' loadOk=%d",
+                   installDir.c_str(), uiLang.c_str(), m_locale.locale().c_str(), localeOk);
 
     FACELOGIN_DEBUG(L"FaceLoginCredential created");
 }
