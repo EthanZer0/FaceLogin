@@ -1822,11 +1822,13 @@ function onSaveSettings() {
     var ok = H.SetConfig(JSON.stringify(cfg));
     if (ok) {
       showBanner('settings', '设置已保存并通知后台服务。', 'ok');
-      // The locale pack is injected on page navigation — when the language
-      // changed, reload so the new pack takes effect immediately.
+      // The locale pack is injected by the C++ host at navigation time —
+      // when the language changed, ask the host to rebuild the page. Plain
+      // window.location.reload() is NOT used: NavigateToString pages have no
+      // real URL, and reloading them navigates to a blank page.
       if (document.getElementById('cfg-language').value !==
           (window.__CFG_UI_LANGUAGE_INITIAL__ || 'auto')) {
-        setTimeout(function() { window.location.reload(); }, 800);
+        setTimeout(function() { H.ReloadUi(); }, 800);
       }
       // Update hint text based on liveness method
       var method = cfg.liveness_method;
