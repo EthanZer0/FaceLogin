@@ -131,6 +131,8 @@
   "console.settings.glassesHelp": "眼镜模式使用自适应眨眼检测，对镜框/反光更鲁棒，但可能不如默认模式稳定。非必要建议保持关闭。",
   "console.settings.lowLight": "暗光增强（暗光环境下人脸识别不稳定时开启）",
   "console.settings.lowLightHelp": "暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。",
+  "console.settings.exposureControl": "人脸曝光自动控制（过曝/欠曝导致识别不稳定时开启）",
+  "console.settings.exposureControlHelp": "自动把脸部亮度调节到目标区间：优先调用摄像头硬件曝光/增益，不支持时用数字增益兜底。录入与解锁使用同一目标，换环境/换光线不再明显影响识别。开启后请重新录入人脸。",
   "console.settings.memory": "内存优化（识别后释放模型，降低后台内存占用）",
   "console.settings.memoryHelp": "识别完成后释放人脸模型，服务后台内存占用从约 60MB 降至约 20MB。下次解锁时模型自动重新加载（约 0.2-0.5 秒）。对内存敏感的设备可开启。",
   "console.settings.unknownFaces": "记录未匹配人脸（陌生人出现在锁屏前时保存照片与记录）",
