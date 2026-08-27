@@ -57,3 +57,24 @@ set_target_properties(diag_glasses PROPERTIES
 # set_target_properties(FaceLoginService PROPERTIES
 #     WIN32_EXECUTABLE TRUE
 # )
+
+# Diagnostic: standalone camera diagnostic tool (issue #16-class reports).
+# Self-contained (no dlib / no project logger) — built for distribution to
+# users; produces diag_camera_report.txt next to the exe.
+add_executable(diag_camera
+    diag_camera.cpp
+)
+
+target_link_libraries(diag_camera PRIVATE
+    mfplat
+    mf
+    mfreadwrite
+    mfuuid
+    strmiids
+    ole32
+    oleaut32
+)
+
+set_target_properties(diag_camera PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+)
