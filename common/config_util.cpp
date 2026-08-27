@@ -141,7 +141,7 @@ std::string ConfigToJson(const AppConfig& cfg) {
 AppConfig ConfigFromJson(const std::string& json) {
     AppConfig cfg = DefaultConfig();
     auto language = JsonGetString(json, "ui_language");
-    if (language == "auto" || language == "zh-CN" || language == "ko-KR")
+    if (language == "auto" || language == "zh-CN" || language == "ko-KR" || language == "en-US")
         cfg.ui_language = language;
     auto rec = JsonGetString(json, "recognition_model");
     if (!rec.empty()) cfg.recognition_model = rec;

@@ -71,7 +71,7 @@ func EnsureConfigDefaults(configPath string, uiLanguage string) error {
 		}
 	}
 
-	if uiLanguage == "auto" || uiLanguage == "zh-CN" || uiLanguage == "ko-KR" {
+	if uiLanguage == "auto" || uiLanguage == "zh-CN" || uiLanguage == "ko-KR" || uiLanguage == "en-US" {
 		cfg["ui_language"] = uiLanguage
 	}
 

@@ -48,6 +48,7 @@ std::string NormalizeTag(std::string locale) {
     std::replace(locale.begin(), locale.end(), '_', '-');
     std::transform(locale.begin(), locale.end(), locale.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (locale == "en" || locale.rfind("en-", 0) == 0) return "en-US";
     if (locale == "ko" || locale.rfind("ko-", 0) == 0) return "ko-KR";
     if (locale == "zh" || locale.rfind("zh-", 0) == 0) return "zh-CN";
     return "zh-CN";

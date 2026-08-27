@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { WindowSetTitle } from '../wailsjs/runtime/runtime'
 import zhCNText from '../../../../locales/zh-CN.json?raw'
 import koKRText from '../../../../locales/ko-KR.json?raw'
+import enUSText from '../../../../locales/en-US.json?raw'
 
 type Catalog = Record<string, string>
 
@@ -9,6 +10,7 @@ const FALLBACK_LOCALE = 'zh-CN'
 const catalogs: Record<string, Catalog> = {
   'zh-CN': JSON.parse(zhCNText),
   'ko-KR': JSON.parse(koKRText),
+  'en-US': JSON.parse(enUSText),
 }
 
 function normalizeLocale(locale: string | null | undefined): string {
@@ -16,6 +18,7 @@ function normalizeLocale(locale: string | null | undefined): string {
     locale = navigator.language
   }
   const normalized = locale.replace('_', '-').toLowerCase()
+  if (normalized === 'en' || normalized.startsWith('en-')) return 'en-US'
   if (normalized === 'ko' || normalized.startsWith('ko-')) return 'ko-KR'
   if (normalized === 'zh' || normalized.startsWith('zh-')) return 'zh-CN'
   return FALLBACK_LOCALE
