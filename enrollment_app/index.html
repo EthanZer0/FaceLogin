@@ -937,9 +937,9 @@ button{font-family:inherit}
       <label class="check tip">
         <input type="checkbox" id="cfg-low-light">
         <span class="cbx"></span>
-        <span>暗光增强（暗光环境下人脸识别不稳定时开启）</span>
+        <span>暗光增强（已由统一光照管线自动处理）</span>
         <span class="tip-ico">i</span>
-        <span class="tip-box">暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。</span>
+        <span class="tip-box">新版本统一光照管线会自动处理必要的亮度归一化，此旧开关仅为兼容保留。</span>
       </label>
     </div>
 
@@ -947,9 +947,9 @@ button{font-family:inherit}
       <label class="check tip">
         <input type="checkbox" id="cfg-exposure">
         <span class="cbx"></span>
-        <span>人脸曝光自动控制（过曝/欠曝导致识别不稳定时开启）</span>
+        <span>统一光照归一化（推荐开启）</span>
         <span class="tip-ico">i</span>
-        <span class="tip-box">自动把脸部亮度调节到目标区间：优先调用摄像头硬件曝光/增益，不支持时用数字增益兜底。录入与解锁使用同一目标，换环境/换光线不再明显影响识别。开启后请重新录入人脸。</span>
+        <span class="tip-box">录入、预览、活体和解锁使用同一套逐帧光照处理。开启后优先验证摄像头硬件粗调，失败时当前会话自动降级为软件归一化；不需要重新录入人脸。</span>
       </label>
     </div>
 
@@ -1219,10 +1219,10 @@ var STATIC_TEXT_KEYS = {
   '无 (None)': 'console.settings.livenessNone',
   '眼镜模式（戴眼镜导致眨眼检测不稳定时开启）': 'console.settings.glasses',
   '眼镜模式使用自适应眨眼检测，对镜框/反光更鲁棒，但可能不如默认模式稳定。非必要建议保持关闭。': 'console.settings.glassesHelp',
-  '暗光增强（暗光环境下人脸识别不稳定时开启）': 'console.settings.lowLight',
-  '暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。': 'console.settings.lowLightHelp',
-  '人脸曝光自动控制（过曝/欠曝导致识别不稳定时开启）': 'console.settings.exposureControl',
-  '自动把脸部亮度调节到目标区间：优先调用摄像头硬件曝光/增益，不支持时用数字增益兜底。录入与解锁使用同一目标，换环境/换光线不再明显影响识别。开启后请重新录入人脸。': 'console.settings.exposureControlHelp',
+  '暗光增强（已由统一光照管线自动处理）': 'console.settings.lowLight',
+  '新版本统一光照管线会自动处理必要的亮度归一化，此旧开关仅为兼容保留。': 'console.settings.lowLightHelp',
+  '统一光照归一化（推荐开启）': 'console.settings.exposureControl',
+  '录入、预览、活体和解锁使用同一套逐帧光照处理。开启后优先验证摄像头硬件粗调，失败时当前会话自动降级为软件归一化；不需要重新录入人脸。': 'console.settings.exposureControlHelp',
   '内存优化（识别后释放模型，降低后台内存占用）': 'console.settings.memory',
   '识别完成后释放人脸模型并清空进程工作集，服务后台内存占用从约 60MB 降至 1MB 以内（实测约 0.6MB）。下次解锁时模型自动重新加载（约 0.2-0.5 秒），对识别速度影响很小。适合内存敏感的设备，或希望服务常驻内存极低的用户。': 'console.settings.memoryHelp',
   '记录未匹配人脸（陌生人出现在锁屏前时保存照片与记录）': 'console.settings.unknownFaces',
@@ -1730,7 +1730,10 @@ function loadSettings() {
     document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
     document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
-    document.getElementById('cfg-exposure').checked = !!cfg.face_exposure_control;
+    // v2 defaults to hybrid. The legacy checkbox now selects hybrid versus
+    // software-only while the explicit photometric_mode remains authoritative.
+    document.getElementById('cfg-exposure').checked =
+      (cfg.photometric_mode || (cfg.face_exposure_control ? 'hybrid' : 'software')) === 'hybrid';
     document.getElementById('cfg-unload-models').checked = !!cfg.unload_models_after_auth;
 
     // Populate the camera dropdown from the enumerated devices.
@@ -1812,6 +1815,9 @@ function onSaveSettings() {
     anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
     low_light_enhance: document.getElementById('cfg-low-light').checked,
+    photometric_mode: document.getElementById('cfg-exposure').checked ? 'hybrid' : 'software',
+    photometric_target_luma: 110,
+    photometric_band: 15,
     face_exposure_control: document.getElementById('cfg-exposure').checked,
     unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
     capture_unknown_faces: document.getElementById('cfg-capture-unknown').checked,

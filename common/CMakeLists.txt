@@ -6,13 +6,13 @@ add_library(facelogin_common STATIC
     config_util.cpp
     locale_util.cpp
     account_identity.cpp
-    exposure_control.cpp
+    photometric_pipeline.cpp
 )
 
 target_include_directories(facelogin_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-# dlib is PUBLIC: exposure_control.h uses dlib::matrix in its interface, and
-# both face_service and enrollment_app include it through facelogin_common.
+# dlib is PUBLIC because the shared photometric frame types and pipeline use
+# dlib images in their interface, and both vision applications include them.
 target_link_libraries(facelogin_common PUBLIC
     advapi32
     kernel32

@@ -495,9 +495,8 @@ bool WebcamCaptureDS::Initialize(int preferredWidth, int preferredHeight,
         return false;
     }
 
-    // Camera control interfaces for face-exposure auto-tuning (1.9.0): QI the
-    // legacy UVC control interfaces off the capture filter. Best effort —
-    // null just means the exposure loop runs on digital gain alone.
+    // Camera control interfaces for the common photometric adapter. Best
+    // effort — null means this camera will use software-only normalization.
     m_pCapture->QueryInterface(IID_IAMVideoProcAmp, reinterpret_cast<void**>(&m_vpa));
     m_pCapture->QueryInterface(IID_IAMCameraControl, reinterpret_cast<void**>(&m_cc));
 
@@ -604,9 +603,9 @@ void WebcamCaptureDS::Shutdown() {
         m_pCapture->Release();
         m_pCapture = nullptr;
     }
-    // Camera-control interfaces are independent refs — release them after the
-    // filter they were QI'd from (the exposure controller must have been
-    // Reset() before this point).
+    // Camera-control interfaces are independent refs. The common photometric
+    // adapter owns its own AddRef'd copies, so its session can be ended before
+    // this capture-owned reference is released.
     if (m_vpa) { m_vpa->Release(); m_vpa = nullptr; }
     if (m_cc)  { m_cc->Release();  m_cc = nullptr; }
     if (m_pGraph) {

@@ -117,6 +117,9 @@ static int jsonGetInt(const std::string& json, const std::string& key, int defVa
 
 std::string ConfigToJson(const AppConfig& cfg) {
     std::ostringstream ss;
+    // Keep the legacy aliases semantically aligned for rollback to an older
+    // release. The v2 fields remain authoritative in this release.
+    const bool legacyExposureEnabled = cfg.photometric_mode == PhotometricMode::Hybrid;
     ss << "{\n";
     ss << "  "; jsonWriteString(ss, "ui_language"); ss << ": "; jsonWriteString(ss, cfg.ui_language); ss << ",\n";
     ss << "  "; jsonWriteString(ss, "recognition_model"); ss << ": "; jsonWriteString(ss, cfg.recognition_model); ss << ",\n";
@@ -126,9 +129,12 @@ std::string ConfigToJson(const AppConfig& cfg) {
     ss << "  "; jsonWriteString(ss, "anti_spoof_threshold"); ss << ": " << cfg.anti_spoof_threshold << ",\n";
     ss << "  "; jsonWriteString(ss, "blink_glasses_mode"); ss << ": " << (cfg.blink_glasses_mode ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "low_light_enhance"); ss << ": " << (cfg.low_light_enhance ? "true" : "false") << ",\n";
-    ss << "  "; jsonWriteString(ss, "face_exposure_control"); ss << ": " << (cfg.face_exposure_control ? "true" : "false") << ",\n";
-    ss << "  "; jsonWriteString(ss, "face_exposure_target"); ss << ": " << cfg.face_exposure_target << ",\n";
-    ss << "  "; jsonWriteString(ss, "face_exposure_band"); ss << ": " << cfg.face_exposure_band << ",\n";
+    ss << "  "; jsonWriteString(ss, "photometric_mode"); ss << ": "; jsonWriteString(ss, PhotometricModeToString(cfg.photometric_mode)); ss << ",\n";
+    ss << "  "; jsonWriteString(ss, "photometric_target_luma"); ss << ": " << cfg.photometric_target_luma << ",\n";
+    ss << "  "; jsonWriteString(ss, "photometric_band"); ss << ": " << cfg.photometric_band << ",\n";
+    ss << "  "; jsonWriteString(ss, "face_exposure_control"); ss << ": " << (legacyExposureEnabled ? "true" : "false") << ",\n";
+    ss << "  "; jsonWriteString(ss, "face_exposure_target"); ss << ": " << cfg.photometric_target_luma << ",\n";
+    ss << "  "; jsonWriteString(ss, "face_exposure_band"); ss << ": " << cfg.photometric_band << ",\n";
     ss << "  "; jsonWriteString(ss, "unload_models_after_auth"); ss << ": " << (cfg.unload_models_after_auth ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "camera_rotation"); ss << ": " << cfg.camera_rotation << ",\n";
     ss << "  "; jsonWriteString(ss, "capture_unknown_faces"); ss << ": " << (cfg.capture_unknown_faces ? "true" : "false") << ",\n";
@@ -157,6 +163,22 @@ AppConfig ConfigFromJson(const std::string& json) {
     cfg.face_exposure_control = (JsonGetString(json, "face_exposure_control") == "true");
     cfg.face_exposure_target = jsonGetFloat(json, "face_exposure_target", 110.0f);
     cfg.face_exposure_band = jsonGetFloat(json, "face_exposure_band", 15.0f);
+    const auto photometricMode = JsonGetString(json, "photometric_mode");
+    if (!photometricMode.empty()) {
+        cfg.photometric_mode = PhotometricModeFromString(photometricMode);
+        cfg.photometric_target_luma = jsonGetFloat(json, "photometric_target_luma", cfg.face_exposure_target);
+        cfg.photometric_band = jsonGetFloat(json, "photometric_band", cfg.face_exposure_band);
+    } else {
+        // Existing installations have no v2 key. Preserve the old user's
+        // intent without reviving the old controller: enabled -> hybrid,
+        // disabled -> software-only.
+        cfg.photometric_mode = cfg.face_exposure_control
+            ? PhotometricMode::Hybrid : PhotometricMode::SoftwareOnly;
+        cfg.photometric_target_luma = cfg.face_exposure_target;
+        cfg.photometric_band = cfg.face_exposure_band;
+    }
+    cfg.photometric_target_luma = std::max(40.0f, std::min(210.0f, cfg.photometric_target_luma));
+    cfg.photometric_band = std::max(5.0f, std::min(60.0f, cfg.photometric_band));
 
     int rotation = jsonGetInt(json, "camera_rotation", 0);
     // Only accept 0/90/180/270; anything else silently does nothing in

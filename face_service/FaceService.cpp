@@ -417,15 +417,10 @@ FACELOGIN_INFO(L"Camera pipeline: MF preferred, DirectShow fallback — initiali
                        m_config.camera_device.empty() ? L"" : L" (configured device)");
     }
 
-    if (m_config.face_exposure_control) {
-        // Enrolled embeddings live in the pre-gain brightness domain;
-        // switching the input domain on requires fresh anchors (same rule as
-        // the V5 alignment change).
-        FACELOGIN_WARN(L"Face exposure control ENABLED (target=%.0f band=%.0f) — "
-                       L"re-enroll faces afterwards: old embeddings are in the "
-                       L"pre-normalization brightness domain",
-                       m_config.face_exposure_target, m_config.face_exposure_band);
-    }
+    FACELOGIN_INFO(L"Photometric pipeline: mode=%hs target=%.0f band=%.0f; "
+                   L"old templates remain in the original 512-D input domain",
+                   PhotometricModeToString(m_config.photometric_mode).c_str(),
+                   m_config.photometric_target_luma, m_config.photometric_band);
 
     m_pipeServer = std::make_unique<PipeServer>();
 
@@ -462,7 +457,7 @@ FACELOGIN_INFO(L"Camera pipeline: MF preferred, DirectShow fallback — initiali
 //     EnsureModelsLoaded(), which blocks until ready (or fails/stop).
 // ============================================================================
 
-bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
+bool FaceService::LoadHeavyModels() {
     FACELOGIN_INFO(L"Loading heavy models in background...");
 
     // 0. SCRFD face detector (det_500m, ~22MB? — actually ~2.5MB). Moved into
@@ -503,7 +498,6 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
             FACELOGIN_ERROR(L"ONNX recognizer failed to load — recognition unavailable");
             return false;
         }
-        recognizer->SetLowLightEnhance(lowLightEnhance);
         std::lock_guard<std::mutex> lock(m_modelMutex);
         m_onnxRecognizer = std::move(recognizer);
     }
@@ -514,7 +508,6 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
         auto antiSpoof = std::make_unique<OnnxAntiSpoof>();
         std::wstring path = m_modelsDir + L"\\minifas_quantized.onnx";
         if (antiSpoof->Initialize(path)) {
-            antiSpoof->SetLowLightEnhance(lowLightEnhance);
             std::lock_guard<std::mutex> lock(m_modelMutex);
             m_antiSpoof = std::move(antiSpoof);
             FACELOGIN_INFO(L"Anti-spoof model loaded (facenox MiniFAS)");
@@ -523,7 +516,6 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
             std::wstring ouluPath = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
             auto oulu = std::make_unique<OnnxAntiSpoof>();
             if (oulu->Initialize(ouluPath)) {
-                oulu->SetLowLightEnhance(lowLightEnhance);
                 std::lock_guard<std::mutex> lock(m_modelMutex);
                 m_antiSpoof = std::move(oulu);
                 FACELOGIN_INFO(L"Anti-spoof fallback: DeepPixBiS/OULU loaded");
@@ -591,14 +583,8 @@ void FaceService::TrimWorkingSet() {
 }
 
 void FaceService::StartBackgroundModelLoad() {
-    // Capture the config values the loader needs NOW. The main thread can
-    // rewrite m_config via CONFIG_RELOAD while the loader is running; reading
-    // the struct here avoids a data race and the loader's low-light toggle is
-    // overridden by CONFIG_RELOAD afterward anyway.
-    const bool lowLightEnhance = m_config.low_light_enhance;
-
     m_modelsLoading.store(true);
-    m_modelLoadThread = std::thread([this, lowLightEnhance]() {
+    m_modelLoadThread = std::thread([this]() {
         // Load under a scoped RAII so the flags are cleared on every exit path
         // (including exceptions).
         struct LoadGuard {
@@ -613,7 +599,7 @@ void FaceService::StartBackgroundModelLoad() {
         };
         bool ok = false;
         try {
-            ok = LoadHeavyModels(lowLightEnhance);
+            ok = LoadHeavyModels();
         } catch (const std::exception& e) {
             FACELOGIN_ERROR(L"Model loader threw: %hs", e.what());
         }
@@ -660,8 +646,7 @@ bool FaceService::EnsureModelsLoaded() {
     }
 
     // No load in flight and not ready — load synchronously on this thread.
-    const bool lowLightEnhance = m_config.low_light_enhance;
-    bool ok = LoadHeavyModels(lowLightEnhance);
+    bool ok = LoadHeavyModels();
     m_modelsLoading.store(false);
     m_modelsReady.store(ok);
     m_modelsFailed.store(!ok);
@@ -728,6 +713,20 @@ void FaceService::Run() {
             // Now that the models are ready (loader finished), the pointer
             // mutations below are safe on the main thread.
 
+            // Apply photometric configuration at a safe session boundary. If
+            // an auth session is already holding the camera, restart only the
+            // small hardware controller state; recognition keeps the same
+            // frame/model domain.
+            PhotometricConfig photometricCfg;
+            photometricCfg.mode = m_config.photometric_mode;
+            photometricCfg.targetLuma = m_config.photometric_target_luma;
+            photometricCfg.toleranceBand = m_config.photometric_band;
+            m_photometric.Configure(photometricCfg);
+            if (m_cameraPipeline != CameraPipeline::None) {
+                m_photometric.End();
+                m_photometric.Begin();
+            }
+
             // Retry loading anti-spoof model if configured and not yet loaded
             if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
                 m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
@@ -740,9 +739,8 @@ void FaceService::Run() {
                     m_antiSpoof.reset();
                 }
             }
-            // Propagate the low-light enhancement toggle to the models (hot reload).
-            m_onnxRecognizer->SetLowLightEnhance(m_config.low_light_enhance);
-            if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(m_config.low_light_enhance);
+            // The photometric session above now owns all brightness handling;
+            // there is no model-side low-light toggle to propagate.
             m_pipeServer->WriteMessage(ipc::MSG_CONFIG_RELOAD_OK);
             m_pipeServer->Disconnect();
             FACELOGIN_INFO(L"Configuration reloaded: rec=%hs det=%hs live=%hs thr=%.2f rotation=%d",
@@ -812,7 +810,7 @@ void FaceService::Run() {
 
 void FaceService::Stop() {
     m_running = false;
-    m_exposure.Reset();   // restore camera auto controls while they're alive
+    m_photometric.End();  // restore only this session's hardware state
     if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
         m_webcamMF->Shutdown();
         m_webcamMF.reset();
@@ -859,7 +857,7 @@ bool FaceService::EnsureCameraForAuth() {
         if (m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
             m_cameraPipeline = CameraPipeline::MF;
             FACELOGIN_INFO(L"MF camera initialized on demand for auth (preferred pipeline)");
-            AttachExposureControl();
+            AttachPhotometricSession();
             return true;
         }
         FACELOGIN_WARN(L"MF camera init failed in service mode — falling back to DirectShow");
@@ -870,7 +868,7 @@ bool FaceService::EnsureCameraForAuth() {
         if (m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
             m_cameraPipeline = CameraPipeline::DS;
             FACELOGIN_INFO(L"DS camera initialized on demand for auth (fallback pipeline)");
-            AttachExposureControl();
+            AttachPhotometricSession();
             return true;
         }
         FACELOGIN_ERROR(L"Both MF and DS camera init failed in service mode");
@@ -885,6 +883,7 @@ bool FaceService::EnsureCameraForAuth() {
     // instead of reusing the one that stalled.
     if (m_resumedFlag.exchange(false) && m_webcamMF) {
         FACELOGIN_INFO(L"Resume detected — rebuilding MF camera");
+        m_photometric.End();
         m_webcamMF->Shutdown();
         m_webcamMF.reset();
     }
@@ -899,44 +898,29 @@ bool FaceService::EnsureCameraForAuth() {
         FACELOGIN_INFO(L"MF camera initialized on demand for auth (standalone)");
     }
     m_cameraPipeline = CameraPipeline::MF;
-    AttachExposureControl();
+    AttachPhotometricSession();
     return true;
 }
 
-void FaceService::AttachExposureControl() {
+void FaceService::AttachPhotometricSession() {
+    m_photometric.End();
     if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
-        m_exposure.Attach(m_webcamMF->GetVideoProcAmp(), m_webcamMF->GetCameraControl());
+        m_photometric.Attach(m_webcamMF->GetVideoProcAmp(), m_webcamMF->GetCameraControl());
     } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
-        m_exposure.Attach(m_webcamDS->GetVideoProcAmp(), m_webcamDS->GetCameraControl());
+        m_photometric.Attach(m_webcamDS->GetVideoProcAmp(), m_webcamDS->GetCameraControl());
     } else {
-        m_exposure.Attach(nullptr, nullptr);
+        m_photometric.Attach(nullptr, nullptr);
     }
-    m_exposure.Configure(m_config.face_exposure_control, m_config.face_exposure_target,
-                         m_config.face_exposure_band);
-    // Persistent "poisoned camera" flag (see REGVAL_EXPOSURE_HW_BROKEN): a
-    // previous session caught this camera in a broken manual exposure state
-    // that Set(Auto) could not undo. Never touch its controls again — the
-    // digital gain alone keeps the effective luma normalized.
-    if (ReadRegDword(REGVAL_EXPOSURE_HW_BROKEN, 0) == 1) {
-        m_exposure.ForceDigitalOnly();
-        FACELOGIN_WARN(L"Face exposure control: camera marked broken "
-                       L"(ExposureHardwareBroken=1) — hardware channel disabled, digital gain only");
-    }
+    PhotometricConfig cfg;
+    cfg.mode = m_config.photometric_mode;
+    cfg.targetLuma = m_config.photometric_target_luma;
+    cfg.toleranceBand = m_config.photometric_band;
+    m_photometric.Configure(cfg);
+    m_photometric.Begin();
 }
 
 void FaceService::ReleaseCamera() {
-    // Restore the camera's auto controls FIRST — the borrowed control
-    // interfaces must be touched while the capture object is still alive.
-    m_exposure.Reset();
-    // Persist the "poisoned camera" flag: severe overexposure with an
-    // un-recoverable manual state is a driver bug, not a lighting condition —
-    // blacklist the hardware channel so no future session re-poisons it.
-    if (m_exposure.WasSevereOverexposure()) {
-        WriteRegDword(REGVAL_EXPOSURE_HW_BROKEN, 1);
-        FACELOGIN_WARN(L"Face exposure control: camera poisoned by manual exposure — "
-                       L"persisted ExposureHardwareBroken=1 (restart the machine to "
-                       L"recover the camera, then delete the value to re-enable)");
-    }
+    m_photometric.End();
     if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
         m_webcamMF->Shutdown();
         m_webcamMF.reset();
@@ -960,10 +944,9 @@ bool FaceService::ProcessAuthRequest() {
     // applied in the match loop, leaving the liveness/verify stages to process
     // unrotated frames — with 90/270 rotation the face was sideways there and
     // detection/landmarks/EAR failed, blocking unlock.
-    // grabRaw: one frame straight from the active camera + rotation, WITHOUT
-    // the exposure session gain — the steer loop must measure the camera's
-    // true output. grabFrame wraps it with the session gain so every auth
-    // stage (match/liveness/verify) sees the normalized domain.
+    // grabRaw: one frame straight from the active camera + rotation. Every
+    // auth stage now applies the same face-aware photometric processing after
+    // detection; no fixed session gain is reused between frames.
     auto grabRaw = [this](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
         bool ok = false;
         if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
@@ -974,10 +957,45 @@ bool FaceService::ProcessAuthRequest() {
         if (ok) RotateFrame(f, m_config.camera_rotation);
         return ok;
     };
-    auto grabFrame = [this, &grabRaw](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
-        if (!grabRaw(f)) return false;
-        m_exposure.ApplySessionGain(f);
-        return true;
+    auto grabFrame = [&grabRaw](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
+        return grabRaw(f);
+    };
+
+    // First try detection on the camera frame. In a dark scene, normalize a
+    // temporary copy and retry once. Once a face is available, the very same
+    // session updates hardware feedback and normalizes the frame consumed by
+    // recognition, liveness and final verification.
+    auto prepareFaceFrame = [this](dlib::matrix<dlib::rgb_pixel>& f,
+                                   dlib::rectangle& rect,
+                                   dlib::full_object_detection& landmarks) -> bool {
+        auto detect = [this, &f, &rect, &landmarks]() -> bool {
+            auto det = m_onnxDetector->DetectLargestFace(f);
+            if (!det) return false;
+            rect = dlib::rectangle(static_cast<long>(det->x1),
+                                   static_cast<long>(det->y1),
+                                   static_cast<long>(det->x2),
+                                   static_cast<long>(det->y2));
+            landmarks = dlib::full_object_detection();
+            return m_detector->DetectLandmarks(f, rect, landmarks);
+        };
+        dlib::matrix<dlib::rgb_pixel> rawForRetry;
+        bool usedNormalizedRetry = false;
+        if (!detect()) {
+            rawForRetry = f;
+            m_photometric.NormalizeForDetection(f);
+            usedNormalizedRetry = true;
+            if (!detect()) return false;
+        }
+        UnifiedFaceFrame unified;
+        UnifiedFacePipeline pipeline(m_photometric);
+        const auto& photometricSource = usedNormalizedRetry ? rawForRetry : f;
+        const bool accepted = pipeline.ProcessFrame(photometricSource, rect, landmarks, unified);
+        if (unified.normalizedFrame.size() != 0) {
+            f = std::move(unified.normalizedFrame);
+            rect = unified.faceRect;
+            landmarks = std::move(unified.landmarks);
+        }
+        return accepted && unified.qualityAccepted;
     };
 
     if (m_store->GetUserCount() == 0) {
@@ -1111,45 +1129,23 @@ bool FaceService::ProcessAuthRequest() {
         }
     }
 
-    // Face-exposure convergence (1.9.0, config-gated): after the whole-frame
-    // AE warmup, steer the FACE's own brightness to the configured target —
-    // whole-frame luma hides a blown-out face in a dark scene (the observed
-    // failure mode: face region 12-25% clipped at 255 while the frame reads
-    // "dim"). Camera manual exposure/gain is preferred (physical exposure
-    // reduction prevents clipping that no digital gain can undo); the digital
-    // session gain always tops up the residual, so the match loop runs in a
-    // fixed brightness domain regardless of the camera's settling.
-    if (m_exposure.Enabled()) {
-        // Iterations are paced by the camera-step interval (400ms) — 9
-        // iterations ≈ 1.4-2s gives a responsive camera ~4 steps to converge
-        // while a camera that ignores manual mode demotes after 3 no-response
-        // steps and the digital gain carries the normalization.
-        constexpr int kMaxSteerIters = 9;
-        int steerIters = 0;
-        for (; steerIters < kMaxSteerIters; steerIters++) {
-            dlib::matrix<dlib::rgb_pixel> steerFrame;
-            if (!grabRaw(steerFrame)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                continue;
+    // Bounded hardware head-start. The same processing continues in every
+    // later auth stage, so this is only a latency optimization—not a separate
+    // exposure state machine and not a one-time session gain calculation.
+    if (m_photometric.Enabled()) {
+        constexpr int kMaxPhotometricWarmupFrames = 18;
+        int processed = 0;
+        for (; processed < kMaxPhotometricWarmupFrames && m_photometric.HardwareActive(); ++processed) {
+            dlib::matrix<dlib::rgb_pixel> warmFace;
+            dlib::rectangle warmRect;
+            dlib::full_object_detection warmLandmarks;
+            if (grabRaw(warmFace)) {
+                prepareFaceFrame(warmFace, warmRect, warmLandmarks);
             }
-            auto steerDet = m_onnxDetector->DetectLargestFace(steerFrame);
-            if (!steerDet) break;   // no face in view — nothing to steer
-            dlib::rectangle steerRect(static_cast<long>(steerDet->x1),
-                                      static_cast<long>(steerDet->y1),
-                                      static_cast<long>(steerDet->x2),
-                                      static_cast<long>(steerDet->y2));
-            if (m_exposure.SteerFrame(steerFrame, steerRect, steerIters + 1)) {
-                break;   // face luma in band — camera settled
-            }
-            // Demoted (broken/unresponsive camera driver): further iterations
-            // cannot fix the RAW brightness — the digital gain inside
-            // SteerFrame already normalized the effective luma. Move on to
-            // the match loop instead of burning the auth budget.
-            if (!m_exposure.HardwareActive()) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        FACELOGIN_INFO(L"Exposure control: face convergence phase done (%d iteration(s))",
-                       steerIters);
+        FACELOGIN_INFO(L"Photometric warmup complete: %d frame(s), state=%d",
+                       processed, static_cast<int>(m_photometric.State()));
     }
 
     // STATUS: Notify credential provider that recognition has started. The
@@ -1206,7 +1202,7 @@ bool FaceService::ProcessAuthRequest() {
             // spinning on a dead SourceReader until timeout.
             if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF &&
                 !m_webcamMF->IsInitialized()) {
-                m_exposure.Reset();   // drop the stale camera's control handles
+                m_photometric.End();   // drop the stale camera's control session
                 FACELOGIN_INFO(L"MF camera stalled — re-initializing");
                 m_webcamMF->Shutdown();
                 m_webcamMF.reset();
@@ -1219,10 +1215,10 @@ bool FaceService::ProcessAuthRequest() {
                     // the unlock — fall back to the DirectShow pipeline.
                     if (m_isServiceMode) EnsureCameraForAuth();
                 }
-                AttachExposureControl();   // re-attach to the fresh camera (or the DS fallback)
+                AttachPhotometricSession();   // re-attach to the fresh camera (or DS fallback)
             } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS &&
                        !m_webcamDS->IsInitialized()) {
-                m_exposure.Reset();
+                m_photometric.End();
                 FACELOGIN_INFO(L"DS camera stalled — re-initializing");
                 m_webcamDS->Shutdown();
                 m_webcamDS.reset();
@@ -1232,72 +1228,37 @@ bool FaceService::ProcessAuthRequest() {
                     m_webcamDS.reset();
                     m_cameraPipeline = CameraPipeline::None;
                 }
-                AttachExposureControl();
+                AttachPhotometricSession();
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
 
-        // Face detection + landmarks: SCRFD detects, 2d106det extracts the
-        // 106 points for alignment + blink.
+        // Unified face preparation: raw detection, dark-frame retry, robust
+        // photometric statistics, and per-frame normalization.
         std::optional<CredentialStore::MatchResult> match;
         dlib::full_object_detection landmarks;
-        bool haveLandmarks = false;
-
-        auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
-        if (onnxDet) {
-            // SCRFD gives bbox — 2d106det extracts 106 landmarks.
-            dlib::rectangle dlibRect(static_cast<long>(onnxDet->x1),
-                                     static_cast<long>(onnxDet->y1),
-                                     static_cast<long>(onnxDet->x2),
-                                     static_cast<long>(onnxDet->y2));
-            haveLandmarks = m_detector->DetectLandmarks(frame, dlibRect, landmarks);
-        }
-
-        if (!haveLandmarks) {
+        dlib::rectangle faceRect;
+        if (!prepareFaceFrame(frame, faceRect, landmarks)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
 
-        // Embedding + match: ONNX (the only recognizer). Light-robust
-        // fallback chain: if the ORIGINAL embedding misses, re-embed the same
-        // face under photometric corrections (white balance for color
-        // temperature shifts, brightness for exposure) and try again. This
-        // keeps recognition working when the ambient light changes between
-        // enrollment and unlock (dorm vs classroom) WITHOUT re-enrolling.
-        // Variant matches use a STRICTER threshold so the wider search space
-        // cannot loosen the stranger rejection.
-        constexpr float kVariantThreshold = 0.55f;
-        auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
-        std::vector<float> emb1, emb2;   // kept for failure diagnostics
-        const char* matchedVariant = nullptr;
+        // Recognition always consumes the normalized frame. There is one
+        // embedding path for old templates; no alternate photometric variant
+        // gets a separate, looser threshold.
+        auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(
+            frame, landmarks, m_photometric.Enabled());
         if (!onnxEmb.empty()) {
             match = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
-            if (match) matchedVariant = "orig";
-        }
-        if (!match) {
-            emb1 = m_onnxRecognizer->ComputeEmbedding(frame, landmarks,
-                                                      facelogin::LightVariant::WhiteBalance);
-            if (!emb1.empty()) {
-                match = m_store->FindBestMatch(emb1.data(), emb1.size(), kVariantThreshold);
-                if (match) matchedVariant = "wb";
-            }
-        }
-        if (!match) {
-            emb2 = m_onnxRecognizer->ComputeEmbedding(frame, landmarks,
-                                                      facelogin::LightVariant::Brightness);
-            if (!emb2.empty()) {
-                match = m_store->FindBestMatch(emb2.data(), emb2.size(), kVariantThreshold);
-                if (match) matchedVariant = "bright";
-            }
         }
 
         if (match) {
             consecutiveMatches++;
             consecutiveNoMatch = 0;   // a match resets the no-match counter
-            FACELOGIN_INFO(L"Face matched: %s (distance=%.4f, variant=%hs) [%d/%d]",
+            FACELOGIN_INFO(L"Face matched: %s (distance=%.4f, photometric=%d) [%d/%d]",
                           match->username.c_str(), match->distance,
-                          matchedVariant ? matchedVariant : "?",
+                          static_cast<int>(m_photometric.State()),
                           consecutiveMatches, CONSENSUS_FRAMES);
 
             if (consecutiveMatches < CONSENSUS_FRAMES) {
@@ -1310,17 +1271,11 @@ bool FaceService::ProcessAuthRequest() {
             // face-less frames or embedding failures.
             if (!onnxEmb.empty()) {
                 if (++consecutiveNoMatch >= kNoMatchFailFrames) {
-                    // Diagnostics: how far was each light variant from the
-                    // nearest enrolled face? Distinguishes "edge drift"
-                    // (0.55–0.9 → tuning may help) from "total mismatch"
-                    // (>1.0 → photometric correction insufficient).
+                    // Diagnostics: report the nearest distance in the single
+                    // normalized input domain used by the recognizer.
                     float d0 = m_store->FindNearestDistance(onnxEmb.data(), onnxEmb.size());
-                    float d1 = emb1.empty() ? -1.0f
-                                            : m_store->FindNearestDistance(emb1.data(), emb1.size());
-                    float d2 = emb2.empty() ? -1.0f
-                                            : m_store->FindNearestDistance(emb2.data(), emb2.size());
-                    FACELOGIN_WARN(L"No match for %d frames — nearest distances: orig=%.3f wb=%.3f bright=%.3f",
-                                   consecutiveNoMatch, d0, d1, d2);
+                    FACELOGIN_WARN(L"No match for %d frames — nearest normalized distance=%.3f",
+                                   consecutiveNoMatch, d0);
                     FACELOGIN_INFO(L"No match for %d consecutive frames — reporting failure to CP",
                                    consecutiveNoMatch);
                     // Opt-in unknown-face capture: save the failing frame +
@@ -1425,18 +1380,12 @@ bool FaceService::ProcessAuthRequest() {
                         dlib::matrix<dlib::rgb_pixel> asFrame;
                         if (!grabFrame(asFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
 
-                        // Detect with SCRFD, extract 106-point landmarks.
                         dlib::full_object_detection asLandmarks;
-                        auto asDet = m_onnxDetector->DetectLargestFace(asFrame);
-                        asLandmarks = dlib::full_object_detection();  // reset for this frame
-                        if (asDet) {
-                            dlib::rectangle asRect(static_cast<long>(asDet->x1),
-                                                   static_cast<long>(asDet->y1),
-                                                   static_cast<long>(asDet->x2),
-                                                   static_cast<long>(asDet->y2));
-                            m_detector->DetectLandmarks(asFrame, asRect, asLandmarks);
+                        dlib::rectangle asRect;
+                        if (!prepareFaceFrame(asFrame, asRect, asLandmarks)) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
                         }
-                        if (asLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
 
                         float score = m_antiSpoof->Predict(asFrame, asLandmarks);
                         totalChecked++;
@@ -1480,17 +1429,12 @@ bool FaceService::ProcessAuthRequest() {
                         }
                         dlib::matrix<dlib::rgb_pixel> livenessFrame;
                         if (!grabFrame(livenessFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
-                        // Detect with SCRFD, extract 106-point landmarks for EAR.
                         dlib::full_object_detection livenessLandmarks;
-                        auto livenessDet = m_onnxDetector->DetectLargestFace(livenessFrame);
-                        if (livenessDet) {
-                            dlib::rectangle lRect(static_cast<long>(livenessDet->x1),
-                                                  static_cast<long>(livenessDet->y1),
-                                                  static_cast<long>(livenessDet->x2),
-                                                  static_cast<long>(livenessDet->y2));
-                            m_detector->DetectLandmarks(livenessFrame, lRect, livenessLandmarks);
+                        dlib::rectangle lRect;
+                        if (!prepareFaceFrame(livenessFrame, lRect, livenessLandmarks)) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
                         }
-                        if (livenessLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
                         if (liveness.ProcessFrame(livenessLandmarks)) {
                             blinked = true;
                             FACELOGIN_INFO(L"Blink detected");
@@ -1542,41 +1486,19 @@ bool FaceService::ProcessAuthRequest() {
                             continue;
                         }
 
-                        // Detect with SCRFD (primary), same as the recognition loop.
+                        // Same normalized frame pipeline as the recognition loop.
                         dlib::full_object_detection verifyLandmarks;
-                        auto det = m_onnxDetector->DetectLargestFace(verifyFrame);
-                        if (det) {
-                            dlib::rectangle r(static_cast<long>(det->x1),
-                                              static_cast<long>(det->y1),
-                                              static_cast<long>(det->x2),
-                                              static_cast<long>(det->y2));
-                            m_detector->DetectLandmarks(verifyFrame, r, verifyLandmarks);
-                        }
-                        if (verifyLandmarks.num_parts() == 0) {
+                        dlib::rectangle verifyRect;
+                        if (!prepareFaceFrame(verifyFrame, verifyRect, verifyLandmarks)) {
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
 
                         std::optional<CredentialStore::MatchResult> verifyMatch;
-                        auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(verifyFrame, verifyLandmarks);
+                        auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(
+                            verifyFrame, verifyLandmarks, m_photometric.Enabled());
                         if (!onnxEmb.empty()) {
                             verifyMatch = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
-                        }
-                        // Same light-robust fallback chain as the recognition
-                        // loop (stricter threshold for variants).
-                        if (!verifyMatch) {
-                            auto e1 = m_onnxRecognizer->ComputeEmbedding(
-                                verifyFrame, verifyLandmarks, facelogin::LightVariant::WhiteBalance);
-                            if (!e1.empty()) {
-                                verifyMatch = m_store->FindBestMatch(e1.data(), e1.size(), kVariantThreshold);
-                            }
-                        }
-                        if (!verifyMatch) {
-                            auto e2 = m_onnxRecognizer->ComputeEmbedding(
-                                verifyFrame, verifyLandmarks, facelogin::LightVariant::Brightness);
-                            if (!e2.empty()) {
-                                verifyMatch = m_store->FindBestMatch(e2.data(), e2.size(), kVariantThreshold);
-                            }
                         }
 
                         if (verifyMatch) {

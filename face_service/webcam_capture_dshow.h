@@ -95,7 +95,7 @@ public:
     void Resume();   // restart graph for next auth session
     void Shutdown();
 
-    // Camera control interfaces for the face-exposure controller (1.9.0).
+    // Camera control interfaces for the common photometric adapter.
     // QI'd off the capture filter during Initialize; null when the device
     // does not expose them. Borrowed pointers — valid until Shutdown().
     IAMVideoProcAmp* GetVideoProcAmp() const { return m_vpa; }

@@ -60,7 +60,7 @@ FaceLogin/
 │   ├── config_util.cpp/h           # 应用配置 JSON 序列化
 │   ├── registry_util.h             # 注册表读写工具
 │   ├── locale_util.cpp/h           # 语言包加载/解析 (ResolveLocale, LocaleCatalog)
-│   └── exposure_control.cpp/h      # 人脸曝光自动控制 (FaceExposureController)
+│   └── photometric_pipeline.cpp/h  # 统一逐帧光照管线与硬件控制适配
 ├── face_service/                   # 人脸识别 Windows 服务
 │   ├── CMakeLists.txt
 │   ├── main.cpp                    # 服务入口 (SCM / standalone)
@@ -369,13 +369,16 @@ struct AppConfig {
     float          match_threshold        = 0.75f;    // 欧氏距离; 0.45(严格)…1.15(宽松)
     float          anti_spoof_threshold   = 0.30f;    // 反欺诈阈值
     bool           blink_glasses_mode     = false;    // 眼镜模式 (自适应眨眼)
-    bool           low_light_enhance      = false;    // 暗光增强
+    bool           low_light_enhance      = false;    // 旧字段，仅兼容保留
+    PhotometricMode photometric_mode      = PhotometricMode::Hybrid; // hybrid/software/off
+    float          photometric_target_luma = 110.0f;
+    float          photometric_band       = 15.0f;
     bool           unload_models_after_auth = false;  // 内存优化 (识别后释放模型)
     std::string    camera_device          = "";       // 摄像头符号链接; 空=第一个
     int            camera_rotation        = 0;        // 0/90/180/270 顺时针
-    bool           face_exposure_control  = false;    // 人脸曝光自动控制 (1.9.0, 默认关)
-    float          face_exposure_target   = 110.0f;   // 曝光目标亮度
-    float          face_exposure_band     = 15.0f;    // 曝光收敛带 (±)
+    bool           face_exposure_control  = false;    // 旧字段迁移别名（写出时与新模式同步）
+    float          face_exposure_target   = 110.0f;   // 旧字段迁移别名
+    float          face_exposure_band     = 15.0f;    // 旧字段迁移别名
     std::string    ui_language            = "auto";   // 界面语言: auto/zh-CN/ko-KR/en-US
     bool           capture_unknown_faces  = false;    // 记录未匹配人脸 (1.8.0)
     bool           cold_boot_key_trigger  = false;    // 开机需按键触发识别 (1.8.0)
@@ -470,12 +473,12 @@ ServiceMain()
 1. 检查注册用户数 > 0
 2. 根据配置选择检测器/识别器/活体方法
 3. 延时初始化摄像头 (仅在收到认证请求时打开，避免摄像头占用)
-4. 丢弃前10帧 (自动曝光调整)
+4. 丢弃前10帧 (摄像头自动曝光预热)
 5. 重置活体检测器
-6. 人脸曝光收敛段 (face_exposure_control 开启时): 抓帧 → SCRFD 检测 → 有脸则
-   SteerFrame 迭代收敛 (最多 6 帧; 相机硬件曝光/增益优先, 数字增益兜底)
+6. 统一光照处理: SCRFD 检测 → 106点地标 → 鲁棒人脸统计 →
+   硬件曝光/增益慢速、可验证粗调 + 软件逐帧 Y 通道归一化；硬件失败只在当前会话降级
 7. 循环 (最长时间 m_authTimeoutSeconds = 15秒):
-   a. 抓取一帧 (grabFrame 统一应用会话数字增益 ApplySessionGain)
+   a. 抓取一帧并进入统一 `UnifiedFaceFrame`（没有固定 session gain）
    b. 人脸检测 (SCRFD ONNX)
    c. 检测最大人脸
    d. 提取106点地标
@@ -485,8 +488,7 @@ ServiceMain()
    h. 匹配成功 → 发送 STATUS: 识别成功 → 构建 AUTH_SUCCESS → 发送凭据 → 退出
    i. 匹配失败 → 继续循环
 8. 超时 → 发送 AUTH_TIMEOUT
-9. ReleaseCamera: 关闭摄像头 + 曝光控制器 Reset() (恢复相机自动 AE/AWB flags,
-   严重过曝设备持久化 ExposureHardwareBroken 黑名单防污染)
+9. ReleaseCamera: 结束当前 `PhotometricSession`，读回并恢复原始硬件控制状态，再关闭摄像头
 ```
 
 **摄像头双模式（1.9.0 起 MF 优先，DS 仅回退）**:
@@ -499,9 +501,9 @@ ServiceMain()
 | Session 0 支持 | ✅ (1.9.0 起服务可用) | ✅ |
 | 分辨率 | 1280×720 | 1280×720 |
 
-> 1.9.0 之前服务模式固定走 DS；`5752f0e` 起 `EnsureCameraForAuth` 先试 MF、失败回退 DS，录入与解锁采集行为完全一致（两者均暴露 `IAMVideoProcAmp`/`IAMCameraControl` 供曝光控制使用）。
+> 1.9.0 之前服务模式固定走 DS；`5752f0e` 起 `EnsureCameraForAuth` 先试 MF、失败回退 DS，录入与解锁采集行为完全一致（两者均向公共适配器提供 `IAMVideoProcAmp`/`IAMCameraControl`）。
 
-**人脸曝光控制（`common/exposure_control.h/cpp`）**：`FaceExposureController` 反馈环——测量**人脸区域**亮度（BT.601 加权 + 4px 子采样，非整帧），目标默认 110 ± 15。硬件通道每次最多 ±1/3 档防振荡（驱动范围 `GetRange` 探测，span<1000 判定单位为 stops）；数字增益 0.5–2.0 兜底并作为会话稳态。无响应/反向移动/严重过曝均触发降级，最终黑名单 `ExposureHardwareBroken`（注册表）持久化。默认关闭，启用时建议重新录入人脸。
+**统一光照管线（`common/photometric_pipeline.h/cpp`）**：录入预览、录入采样、认证匹配、活体和最终校验共用同一套逐帧处理。使用关键点轮廓的腐蚀区域计算 trimmed mean、median、P10/P90、裁剪比例、暗部比例、左右差异和均匀度；硬件控制只按驱动报告的离散步长运行，并用实际帧亮度验证方向。硬件无响应或方向反转时恢复原始状态并仅在当前会话降级为软件归一化，不写全局黑名单。正常亮度输入保持恒等变换；局部不均匀只在 112×112 识别 chip 上做受限低频照明校正，防伪仍使用全帧归一化结果，旧 `users.dat` 模板直接匹配。
 
 **配置项** (通过 config.json + `CONFIG_RELOAD` 热加载):
 
@@ -512,9 +514,10 @@ ServiceMain()
 | `liveness_method` | `"none"` | 活体方法: blink / antispoof / none |
 | `match_threshold` | 0.75 | 欧氏距离阈值 (越小越严格; 1.8.0 从 0.65 重校准) |
 | `anti_spoof_threshold` | 0.30 | 反欺诈阈值 (越高越严格) |
-| `face_exposure_control` | false | 人脸曝光自动控制 (默认关) |
-| `face_exposure_target` | 110.0 | 曝光目标亮度 |
-| `face_exposure_band` | 15.0 | 曝光收敛带 |
+| `photometric_mode` | `"hybrid"` | `hybrid`=硬件验证粗调+逐帧软件归一化，`software`=仅软件，`off`=诊断用 |
+| `photometric_target_luma` | 110.0 | 鲁棒人脸亮度目标 |
+| `photometric_band` | 15.0 | 目标容差带 |
+| `face_exposure_control` / `face_exposure_target` / `face_exposure_band` | 旧值 | 仅用于老配置迁移，不再驱动旧控制器 |
 | `unload_models_after_auth` | false | 内存优化：识别后卸载模型 + 清空工作集 (1.9.0 起含 SCRFD) |
 | `capture_unknown_faces` | false | 记录未匹配人脸 (1.8.0) |
 | `cold_boot_key_trigger` | false | 开机需按键触发识别 (1.8.0) |

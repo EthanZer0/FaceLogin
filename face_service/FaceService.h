@@ -15,7 +15,7 @@
 #include "onnx_models.h"
 #include "webcam_capture.h"
 #include "webcam_capture_dshow.h"
-#include "../common/exposure_control.h"
+#include "../common/photometric_pipeline.h"
 #include "pipe_server.h"
 #include "credential_store.h"
 #include "../common/config_util.h"
@@ -41,8 +41,8 @@ enum class CameraPipeline { None, MF, DS };
 //   3. Run() is the main loop: accept pipe connections, process auth requests
 //
 // The face recognition pipeline:
-//   Webcam -> HOG face detection -> 68-point landmarks -> 128-D embedding
-//   -> Match against stored DB -> EAR blink liveness check -> Send credentials
+//   Webcam -> SCRFD/106-point landmarks -> unified photometric frame
+//   -> 512-D ONNX embedding -> DB match -> liveness -> credentials
 
 class FaceService {
 public:
@@ -71,14 +71,14 @@ private:
     // MF preferred, DS fallback; standalone: MF) and release it afterwards.
     bool EnsureCameraForAuth();
     void ReleaseCamera();
-    // Attach the exposure controller to the active camera + apply config
-    // (called after every camera (re)init).
-    void AttachExposureControl();
+    // Attach the unified photometric session to the active camera (called
+    // after every camera (re)init).
+    void AttachPhotometricSession();
 
     // Lazy model loading (1.5.0)
     void StartBackgroundModelLoad();   // spawn the async loader thread
     bool EnsureModelsLoaded();         // block until heavy models are ready
-    bool LoadHeavyModels(bool lowLightEnhance);  // shape pred + recognizer + anti-spoof
+    bool LoadHeavyModels();                      // shape pred + recognizer + anti-spoof
     void UnloadHeavyModels();          // release model memory after auth (1.6.0)
     void TrimWorkingSet();             // empty process working set after unload (1.9.0)
     void ValidateLivenessMethod();     // anti-spoof → blink fallback (main thread only)
@@ -110,10 +110,10 @@ private:
     std::unique_ptr<WebcamCapture>   m_webcamMF;   // Media Foundation (standalone / service MF-first)
     std::unique_ptr<WebcamCaptureDS> m_webcamDS;   // DirectShow (service fallback)
     CameraPipeline m_cameraPipeline = CameraPipeline::None;  // active backend
-    // Face exposure auto-control; declared after the cameras so it is
-    // destroyed FIRST (its Reset() must run while the camera handles are
-    // still valid).
-    FaceExposureController m_exposure;
+    // Shared photometric session. Its COM adapter owns its interface refs, so
+    // it can be ended after frame processing has stopped without dangling
+    // borrowed pointers.
+    PhotometricSession m_photometric;
     std::unique_ptr<CredentialStore> m_store;
 
     // Configuration

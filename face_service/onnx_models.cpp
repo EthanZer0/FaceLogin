@@ -8,44 +8,6 @@
 namespace facelogin {
 
 // ============================================================================
-// Low-light enhancement (shared by recognizer + anti-spoof)
-// ============================================================================
-
-// A chip is "dark" when its mean luma is below ~40/255 (0.157). Normal indoor
-// faces are 100-180; genuinely dark scenes fall well below 40.
-static constexpr float kLowLightMeanThreshold = 40.0f;
-// Reference mean luma we stretch dark chips toward. ~110/255 ≈ mid-brightness,
-// close to what InsightFace/DeepPixBiS were trained on.
-static constexpr float kLowLightTargetMean   = 110.0f;
-
-void ApplyLowLightEnhance(dlib::matrix<dlib::rgb_pixel>& chip) {
-    const long n = static_cast<long>(chip.size());
-    if (n == 0) return;
-
-    // Mean luma over the chip.
-    double sum = 0.0;
-    for (long i = 0; i < n; i++) {
-        const auto& p = chip(i);
-        sum += 0.299 * p.red + 0.587 * p.green + 0.114 * p.blue;
-    }
-    float mean = static_cast<float>(sum / n);
-    if (mean >= kLowLightMeanThreshold) return;  // not dark — no-op
-
-    // Stretch brightness: gain brings the mean up to the target, clamped so a
-    // bright pixel can't overflow past 255.
-    float gain = kLowLightTargetMean / mean;
-    for (long i = 0; i < n; i++) {
-        auto& p = chip(i);
-        int r = static_cast<int>(p.red   * gain + 0.5f);
-        int g = static_cast<int>(p.green * gain + 0.5f);
-        int b = static_cast<int>(p.blue  * gain + 0.5f);
-        p.red   = static_cast<unsigned char>(r > 255 ? 255 : r);
-        p.green = static_cast<unsigned char>(g > 255 ? 255 : g);
-        p.blue  = static_cast<unsigned char>(b > 255 ? 255 : b);
-    }
-}
-
-// ============================================================================
 // OnnxRecognizer
 // ============================================================================
 
@@ -111,10 +73,6 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
         // resize_image into the reusable buffer (same fixed size every call).
         dlib::resize_image(faceChip, m_faceChip);
 
-        // Optional low-light enhancement (config-gated): normalize brightness
-        // of dark chips so the embedding isn't distorted by a dark scene.
-        if (m_lowLightEnhance) ApplyLowLightEnhance(m_faceChip);
-
         // Convert to NCHW float tensor: [1, 3, 112, 112] normalized to [-1, 1]
         constexpr int N = 112;
         constexpr int plane = N * N;
@@ -165,13 +123,29 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
 std::vector<float> OnnxRecognizer::ComputeEmbedding(
     const dlib::matrix<dlib::rgb_pixel>& image,
     const dlib::full_object_detection& landmarks) {
-    return ComputeEmbedding(image, landmarks, AlignMode::OuterEye);
+    return ComputeEmbeddingAligned(image, landmarks, AlignMode::OuterEye, false);
 }
 
 std::vector<float> OnnxRecognizer::ComputeEmbedding(
     const dlib::matrix<dlib::rgb_pixel>& image,
     const dlib::full_object_detection& landmarks,
     AlignMode mode) {
+    return ComputeEmbeddingAligned(image, landmarks, mode, false);
+}
+
+std::vector<float> OnnxRecognizer::ComputeEmbedding(
+    const dlib::matrix<dlib::rgb_pixel>& image,
+    const dlib::full_object_detection& landmarks,
+    bool applyLocalPhotometricCorrection) {
+    return ComputeEmbeddingAligned(image, landmarks, AlignMode::OuterEye,
+                                   applyLocalPhotometricCorrection);
+}
+
+std::vector<float> OnnxRecognizer::ComputeEmbeddingAligned(
+    const dlib::matrix<dlib::rgb_pixel>& image,
+    const dlib::full_object_detection& landmarks,
+    AlignMode mode,
+    bool applyLocalPhotometricCorrection) {
     // Align face using a 5-point similarity transform (arcface template) and
     // the 106-point landmark indices, then ONNX infer. The 106-point model's
     // "subject-first-person" eye layout:
@@ -209,97 +183,7 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
     dlib::point_transform_affine tform = dlib::find_similarity_transform(src, dst);
     dlib::matrix<dlib::rgb_pixel> faceChip(112, 112);
     dlib::transform_image(image, faceChip, dlib::interpolate_bilinear(), dlib::inv(tform));
-    return ComputeEmbedding(faceChip);
-}
-
-// ---------------------------------------------------------------------------
-// Photometric variants (light-robust recognition fallback)
-// ---------------------------------------------------------------------------
-
-// Gray-World white balance: scale the R/G/B channel means to be equal so a
-// warm (dorm) vs cool (classroom) light source no longer tints the chip.
-// Gains are clamped to [0.5, 2.0] so a pathological single-color frame cannot
-// blow the correction out of proportion.
-static void ApplyWhiteBalance(dlib::matrix<dlib::rgb_pixel>& chip) {
-    long n = static_cast<long>(chip.size());
-    if (n == 0) return;
-    double sumR = 0, sumG = 0, sumB = 0;
-    for (long i = 0; i < n; i++) {
-        const auto& p = chip(i);
-        sumR += p.red; sumG += p.green; sumB += p.blue;
-    }
-    double meanR = sumR / n, meanG = sumG / n, meanB = sumB / n;
-    if (meanR < 1e-6 || meanG < 1e-6 || meanB < 1e-6) return;
-    double avg = (meanR + meanG + meanB) / 3.0;
-    double gr = avg / meanR, gg = avg / meanG, gb = avg / meanB;
-    auto clampGain = [](double g) { return g < 0.5 ? 0.5 : (g > 2.0 ? 2.0 : g); };
-    gr = clampGain(gr); gg = clampGain(gg); gb = clampGain(gb);
-    for (long i = 0; i < n; i++) {
-        auto& p = chip(i);
-        int r = static_cast<int>(p.red   * gr);
-        int g = static_cast<int>(p.green * gg);
-        int b = static_cast<int>(p.blue  * gb);
-        p.red   = static_cast<unsigned char>(r < 0 ? 0 : (r > 255 ? 255 : r));
-        p.green = static_cast<unsigned char>(g < 0 ? 0 : (g > 255 ? 255 : g));
-        p.blue  = static_cast<unsigned char>(b < 0 ? 0 : (b > 255 ? 255 : b));
-    }
-}
-
-// Brightness normalization: map the chip's mean luma to 128 so exposure
-// differences (dark vs bright rooms) no longer shift the embedding. Gain is
-// clamped to [0.5, 2.0].
-static void ApplyBrightnessNorm(dlib::matrix<dlib::rgb_pixel>& chip) {
-    long n = static_cast<long>(chip.size());
-    if (n == 0) return;
-    double sum = 0;
-    for (long i = 0; i < n; i++) {
-        const auto& p = chip(i);
-        sum += (p.red + p.green + p.blue) / 3.0;
-    }
-    double mean = sum / n;
-    if (mean < 1e-6) return;
-    double gain = 128.0 / mean;
-    if (gain < 0.5) gain = 0.5;
-    if (gain > 2.0) gain = 2.0;
-    for (long i = 0; i < n; i++) {
-        auto& p = chip(i);
-        int r = static_cast<int>(p.red   * gain);
-        int g = static_cast<int>(p.green * gain);
-        int b = static_cast<int>(p.blue  * gain);
-        p.red   = static_cast<unsigned char>(r > 255 ? 255 : r);
-        p.green = static_cast<unsigned char>(g > 255 ? 255 : g);
-        p.blue  = static_cast<unsigned char>(b > 255 ? 255 : b);
-    }
-}
-
-std::vector<float> OnnxRecognizer::ComputeEmbedding(
-    const dlib::matrix<dlib::rgb_pixel>& image,
-    const dlib::full_object_detection& landmarks,
-    LightVariant variant) {
-    if (variant == LightVariant::Original) {
-        return ComputeEmbedding(image, landmarks);
-    }
-    // Align exactly like the baseline path (OuterEye anchors), then correct
-    // the light on the 112×112 chip.
-    dlib::matrix<dlib::rgb_pixel> faceChip(112, 112);
-    {
-        const int kArc[5] = {39, 93, 80, 52, 69};
-        std::vector<dlib::vector<double, 2>> src, dst;
-        src.reserve(5); dst.reserve(5);
-        const double arcface_dst[5][2] = {
-            {38.2946, 51.6963}, {73.5318, 51.5014}, {56.0252, 71.7366},
-            {41.5493, 92.3655}, {70.7299, 92.2041}
-        };
-        for (int i = 0; i < 5; i++) {
-            auto& p = landmarks.part(kArc[i]);
-            src.emplace_back(static_cast<double>(p.x()), static_cast<double>(p.y()));
-            dst.emplace_back(arcface_dst[i][0], arcface_dst[i][1]);
-        }
-        dlib::point_transform_affine tform = dlib::find_similarity_transform(src, dst);
-        dlib::transform_image(image, faceChip, dlib::interpolate_bilinear(), dlib::inv(tform));
-    }
-    if (variant == LightVariant::WhiteBalance) ApplyWhiteBalance(faceChip);
-    else if (variant == LightVariant::Brightness) ApplyBrightnessNorm(faceChip);
+    ApplyLocalIlluminationCorrection(faceChip, applyLocalPhotometricCorrection);
     return ComputeEmbedding(faceChip);
 }
 
@@ -702,10 +586,6 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
     try {
         int isize = m_inputSize; // 128 (MiniFAS) or 224 (DeepPixBiS)
         dlib::resize_image(faceChip, m_resized);
-
-        // Optional low-light enhancement (config-gated): normalize brightness
-        // of dark chips so anti-spoof scores don't drop in dark scenes.
-        if (m_lowLightEnhance) ApplyLowLightEnhance(m_resized);
 
         // facenox MiniFAS expects RGB NCHW normalized to [0,1].
         // DeepPixBiS expects ImageNet normalization: (pixel/255 - mean) / std.

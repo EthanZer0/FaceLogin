@@ -43,9 +43,10 @@ public:
     bool IsFrameReady();
     void Shutdown();
 
-    // Camera control interfaces for the face-exposure controller (1.9.0).
+    // Camera control interfaces consumed by the common photometric adapter.
     // QI'd off the media source during Initialize; null when the device does
-    // not expose them. Borrowed pointers — valid until Shutdown().
+    // not expose them. Borrowed pointers — valid until Shutdown(). The common
+    // adapter AddRefs them before the camera lifecycle can release these refs.
     IAMVideoProcAmp* GetVideoProcAmp() const { return m_vpa; }
     IAMCameraControl* GetCameraControl() const { return m_cc; }
 
