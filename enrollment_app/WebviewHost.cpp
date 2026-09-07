@@ -212,12 +212,12 @@ int WebviewHost::Run() {
     // --- Compute window size with DPI-aware content fitting ---
     int scrW = GetSystemMetrics(SM_CXSCREEN), scrH = GetSystemMetrics(SM_CYSCREEN);
 
-    // Get the monitor DPI so we can convert CSS pixels to physical pixels.
     // CSS layout needs ~600 CSS px vertically (viewport 360 + chrome ~240).
-    HDC hdc = GetDC(nullptr);
-    int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
-    ReleaseDC(nullptr, hdc);
-    float dpiScale = dpiY / 96.0f;
+    // The process is PerMonitorV2-aware, so use the system DPI only for the
+    // initial placement. WM_DPICHANGED replaces the fixed size when the
+    // window moves to a monitor with a different scale.
+    UINT dpi = GetDpiForSystem();
+    float dpiScale = static_cast<float>(dpi) / 96.0f;
 
     // Desired client area in CSS pixels:
     //   Width: just above content max-width (640px) for comfortable margin
@@ -306,6 +306,14 @@ LRESULT WebviewHost::HandleMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
 
+    case WM_DPICHANGED: {
+        const RECT* suggested = reinterpret_cast<const RECT*>(lp);
+        if (suggested) {
+            ApplyDpiChange(hWnd, *suggested);
+        }
+        return 0;
+    }
+
     // Fixed-size window: clamp min/max tracking size to the fixed size captured
     // at creation, so neither dragging the edge (already disabled) nor the
     // system menu can resize the window. Using the stored m_fixedW/H — NOT
@@ -363,6 +371,19 @@ void WebviewHost::ResizeWebView(HWND hWnd) {
         RECT rc; GetClientRect(hWnd, &rc);
         m_controller->put_Bounds(rc);
     }
+}
+
+void WebviewHost::ApplyDpiChange(HWND hWnd, const RECT& suggestedRect) {
+    // Windows supplies a correctly scaled window rectangle. Use it instead
+    // of recomputing the non-client area, which keeps the title bar and the
+    // WebView2 client area aligned at 125/150/200% scaling.
+    m_fixedW = suggestedRect.right - suggestedRect.left;
+    m_fixedH = suggestedRect.bottom - suggestedRect.top;
+    SetWindowPos(hWnd, nullptr,
+                 suggestedRect.left, suggestedRect.top,
+                 m_fixedW, m_fixedH,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    ResizeWebView(hWnd);
 }
 
 // ==========================================================================

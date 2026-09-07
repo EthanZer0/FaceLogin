@@ -46,6 +46,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
     UNREFERENCED_PARAMETER(nCmdShow);
 
+    // Keep WebView2 and the native window in the same physical-pixel space.
+    // The manifest is the primary declaration; this call also makes the
+    // intended mode explicit before any HWND is created.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     if (EnsureAdmin()) return 0;
 
     // Check models exist
