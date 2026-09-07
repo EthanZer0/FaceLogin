@@ -127,9 +127,9 @@ int main(int argc, char** argv) {
             long w = img.nc(), h = img.nr();
             if (std::max(w, h) > maxSide) {
                 double s = static_cast<double>(maxSide) / std::max(w, h);
-                dlib::matrix<dlib::rgb_pixel> small(static_cast<long>(h * s), static_cast<long>(w * s));
-                dlib::resize_image(img, small);
-                img = small;
+                dlib::matrix<dlib::rgb_pixel> resized(static_cast<long>(h * s), static_cast<long>(w * s));
+                dlib::resize_image(img, resized);
+                img = resized;
             }
 
             auto det = detector.DetectLargestFace(img);

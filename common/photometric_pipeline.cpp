@@ -260,7 +260,7 @@ private:
         if (!m_cc || FAILED(m_cc->Get(CameraControl_Exposure, &m_originalExposure,
                                      &m_originalExposureFlags))) return false;
         if (FAILED(m_cc->Set(CameraControl_Exposure, m_originalExposure,
-                             CameraControl_Flags_Manual)) {
+                             CameraControl_Flags_Manual))) {
             return false;
         }
         long value = 0, flags = 0;
@@ -282,7 +282,7 @@ private:
         if (!m_vpa || FAILED(m_vpa->Get(VideoProcAmp_Gain, &m_originalGain,
                                        &m_originalGainFlags))) return false;
         if (FAILED(m_vpa->Set(VideoProcAmp_Gain, m_originalGain,
-                              VideoProcAmp_Flags_Manual)) {
+                              VideoProcAmp_Flags_Manual))) {
             return false;
         }
         long value = 0, flags = 0;
