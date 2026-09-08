@@ -507,6 +507,7 @@ void PhotometricSession::SetAdapterForTesting(
 bool PhotometricSession::Begin() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_started = true;
+    m_manualPrepared = false;
     m_lastHardwareStep = {};
     m_pendingResponse = false;
     m_noResponseCount = 0;
@@ -529,16 +530,15 @@ bool PhotometricSession::Begin() {
         return true;
     }
     m_state = HardwareControlState::Probing;
-    if (!m_adapter->Probe() || !m_adapter->PrepareManualControl()) {
+    if (!m_adapter->Probe()) {
         m_state = HardwareControlState::SoftwareOnly;
         FACELOGIN_WARN(L"Photometric hardware control unavailable; using software-only normalization for this session");
         return true;
     }
-    // Manual control has been prepared and read back, but the driver has not
-    // yet proved that a real frame responds in the requested direction. Keep
-    // the session in Probing until the first feedback-verified step.
-    m_state = HardwareControlState::Probing;
-    FACELOGIN_INFO(L"Photometric hardware control probing; software normalization remains enabled");
+    // Keep the camera in automatic exposure/gain at session start. Manual
+    // control is prepared lazily after sustained dark/bright evidence asks for
+    // the first hardware step.
+    FACELOGIN_INFO(L"Photometric hardware capabilities detected; manual control deferred until abnormal luma");
     return true;
 }
 
@@ -550,6 +550,7 @@ void PhotometricSession::End() {
         }
     }
     m_started = false;
+    m_manualPrepared = false;
     if (m_state != HardwareControlState::Disabled) m_state = HardwareControlState::Restored;
     m_pendingResponse = false;
 }
@@ -578,6 +579,7 @@ FramePhotometricTransform PhotometricSession::LastTransform() const {
 
 void PhotometricSession::Demote(HardwareControlState state, const wchar_t* reason) {
     if (m_adapter) m_adapter->RestoreOriginalState();
+    m_manualPrepared = false;
     m_state = state;
     m_pendingResponse = false;
     FACELOGIN_WARN(L"Photometric hardware control demoted for current session: %s", reason);
@@ -655,6 +657,16 @@ void PhotometricSession::UpdateHardware(const FacePhotometricStats& stats) {
         m_brightEvidence = 0;
     }
     if (direction == 0) return;
+
+    if (!m_manualPrepared) {
+        if (!m_adapter->PrepareManualControl()) {
+            Demote(HardwareControlState::SoftwareOnly,
+                   L"manual control preparation failed after abnormal luma");
+            return;
+        }
+        m_manualPrepared = true;
+        FACELOGIN_INFO(L"Photometric abnormal luma confirmed; manual camera control enabled");
+    }
 
     bool stepped = m_adapter->StepExposure(direction);
     if (!stepped) stepped = m_adapter->StepGain(direction);

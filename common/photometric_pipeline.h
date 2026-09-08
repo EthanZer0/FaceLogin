@@ -93,6 +93,10 @@ private:
     std::unique_ptr<CameraControlAdapter> m_adapter;
     HardwareControlState m_state = HardwareControlState::Disabled;
     bool m_started = false;
+    // Hybrid mode probes capabilities at session start but keeps automatic
+    // exposure/gain untouched until sustained dark/bright evidence requires
+    // a real hardware step.
+    bool m_manualPrepared = false;
 
     std::chrono::steady_clock::time_point m_lastHardwareStep{};
     bool m_pendingResponse = false;

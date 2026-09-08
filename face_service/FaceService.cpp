@@ -1102,115 +1102,28 @@ bool FaceService::ProcessAuthRequest() {
     // touches liveness method), so no race with CONFIG_RELOAD.
     ValidateLivenessMethod();
 
-    // C: Warm up the camera exposure ADAPTIVELY instead of a fixed 5-frame
-    // delay. Dropping frames until the mean luma settles lets us exit the
-    // moment the exposure is stable (usually after 2-3 frames) instead of
-    // always waiting 5\u00d750ms \u2248 250ms. The saved time goes straight to the
-    // "press key \u2192 camera ready" latency.
+    // Keep only a minimal camera-readiness guard. Exposure convergence is not
+    // a prerequisite for recognition: normal light proceeds immediately and
+    // abnormal light is handled by the per-frame photometric pipeline.
     //
-    // Safety: the very first frames after camera start can be dark or
-    // saturated. We require at least 2 frames and keep a short rolling window
-    // so a single outlier (a hand passing the lens, a light flicker) doesn't
-    // prematurely declare the exposure stable. If the camera never settles
-    // (e.g. extreme backlight), the MAX cap (10 frames) bounds the wait and we
-    // proceed anyway \u2014 a slightly under-exposed frame still detects a face.
+    // The first two frames only allow the capture backend to become readable;
+    // their brightness is deliberately not used to delay recognition.
     {
-        constexpr int kWarmupMinFrames = 2;    // never exit before this many
-        constexpr int kWarmupMaxFrames = 10;   // hard cap \u2014 proceed regardless
-        constexpr int kWarmupWindow     = 3;   // rolling window size
-        // Stability tolerance (mean-luma delta counted as "stable"). Raised
-        // 12 \u2192 20: a camera's auto-exposure converges gradually, so "continuous
-        // 3 frames within \u00b112" rarely fires and the warmup burns the full 10
-        // frames (~400ms) waiting for near-perfect stillness. \u00b120 still
-        // separates a genuinely dark scene (mean < 40) from a lit one (100+),
-        // so the adaptive behavior (wait in the dark, proceed fast in light) is
-        // preserved \u2014 it just stops waiting for a flat line that AGC never gives.
-        constexpr float kLumaTol        = 20.0f;
-        // Consecutive stable frames to exit. 3 \u2192 2: with a wider tolerance, two
-        // consistent windows are enough to trust the exposure has settled;
-        // recognition itself still runs several frames, so a marginal third
-        // window adds latency without meaningful protection.
-        constexpr int kStableFrames     = 2;   // consecutive stable frames to exit
-
+        constexpr int kWarmupMaxFrames = 2;
         dlib::matrix<dlib::rgb_pixel> warmFrame;
         int dropped = 0;
-        int stableRun = 0;
-        std::vector<float> window;      // rolling mean-luma window
-        window.reserve(kWarmupWindow);
 
         for (; dropped < kWarmupMaxFrames; dropped++) {
             if (!grabFrame(warmFrame)) {
-                // No frame yet \u2014 the camera is still starting. Wait and retry.
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
-
-            if (dropped >= kWarmupMinFrames) {
-                // Compute mean luma over a subsampled grid (every 4th pixel in
-                // each direction \u2014 180\u00d7101 samples for 1280\u00d7720) to keep the
-                // warmup cheap; full-frame mean luma would cost ~2ms per frame
-                // and we already know the exposure within \u00b1few percent.
-                double sum = 0.0;
-                long count = 0;
-                const long rows = warmFrame.nr();
-                const long cols = warmFrame.nc();
-                for (long r = 0; r < rows; r += 4) {
-                    for (long c = 0; c < cols; c += 4) {
-                        const auto& px = warmFrame(r, c);
-                        sum += 0.299 * px.red + 0.587 * px.green + 0.114 * px.blue;
-                        count++;
-                    }
-                }
-                float luma = static_cast<float>(sum / count);
-
-                // Rolling window: stable if all entries stay within tolerance.
-                window.push_back(luma);
-                if (static_cast<long>(window.size()) > kWarmupWindow) {
-                    window.erase(window.begin());
-                }
-                if (static_cast<long>(window.size()) == kWarmupWindow) {
-                    float minV = *std::min_element(window.begin(), window.end());
-                    float maxV = *std::max_element(window.begin(), window.end());
-                    if (maxV - minV <= kLumaTol) {
-                        stableRun++;
-                    } else {
-                        stableRun = 0;
-                    }
-                    if (stableRun >= kStableFrames) {
-                        FACELOGIN_INFO(L"Warmup: exposure stable after %d frames (luma=%.0f)", dropped + 1, luma);
-                        break;
-                    }
-                }
-            }
-
-            // Slow the polling to ~30ms once we've dropped the minimum, so the
-            // warmup doesn't spin the CPU at full grab rate while it waits.
-            std::this_thread::sleep_for(std::chrono::milliseconds(
-                dropped < kWarmupMinFrames ? 30 : 50));
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         if (dropped >= kWarmupMaxFrames) {
-            FACELOGIN_INFO(L"Warmup: max %d frames dropped, proceeding (exposure not settled)",
+            FACELOGIN_INFO(L"Camera readiness guard complete after %d frame attempts",
                            kWarmupMaxFrames);
         }
-    }
-
-    // Bounded hardware head-start. The same processing continues in every
-    // later auth stage, so this is only a latency optimization—not a separate
-    // exposure state machine and not a one-time session gain calculation.
-    if (m_photometric.Enabled()) {
-        constexpr int kMaxPhotometricWarmupFrames = 18;
-        int processed = 0;
-        for (; processed < kMaxPhotometricWarmupFrames && m_photometric.HardwareActive(); ++processed) {
-            dlib::matrix<dlib::rgb_pixel> warmFace;
-            dlib::rectangle warmRect;
-            dlib::full_object_detection warmLandmarks;
-            if (grabRaw(warmFace)) {
-                prepareFaceFrame(warmFace, warmRect, warmLandmarks);
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        FACELOGIN_INFO(L"Photometric warmup complete: %d frame(s), state=%d",
-                       processed, static_cast<int>(m_photometric.State()));
     }
 
     // STATUS: Notify credential provider that recognition has started. The
