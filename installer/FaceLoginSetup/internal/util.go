@@ -6,9 +6,20 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/windows/registry"
 )
+
+// hiddenCommand starts a native Windows helper without creating a transient
+// console window. The installer is a GUI application, so every command-line
+// helper must use this wrapper; otherwise Windows may briefly attach a new
+// console while the helper runs.
+func hiddenCommand(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return cmd
+}
 
 // ReadRegString reads a REG_SZ from HKLM\SOFTWARE\FaceLogin.
 // Returns defaultValue if missing.
@@ -101,7 +112,6 @@ func GetDefaultInstallDir() string {
 	return filepath.Join(os.Getenv("ProgramFiles"), "FaceLogin")
 }
 
-
 // FileExists checks if a file exists and is not a directory.
 func FileExists(path string) bool {
 	info, err := os.Stat(path)
@@ -154,7 +164,7 @@ func CopyFile(src, dst string) error {
 
 // RunCommand runs a command and returns stdout+stderr combined.
 func RunCommand(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := hiddenCommand(name, args...)
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
