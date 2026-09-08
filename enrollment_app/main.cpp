@@ -37,6 +37,26 @@ static bool EnsureAdmin() {
     return false; // already elevated, continue
 }
 
+// Keep the Console single-instance. Create this after elevation so the
+// unelevated launcher can hand off to the elevated process without owning the
+// mutex first.
+static HANDLE AcquireSingleInstanceMutex() {
+    constexpr wchar_t kMutexName[] = L"Global\\FaceLoginConsole_SingleInstance";
+    HANDLE mutex = CreateMutexW(nullptr, TRUE, kMutexName);
+    if (!mutex) {
+        MessageBoxW(nullptr,
+                    L"无法创建 FaceLogin Console 单实例锁。",
+                    L"FaceLogin Console",
+                    MB_ICONERROR | MB_OK);
+        return nullptr;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(mutex);
+        return nullptr;
+    }
+    return mutex;
+}
+
 // ============================================================================
 // WinMain
 // ============================================================================
@@ -52,6 +72,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     if (EnsureAdmin()) return 0;
+
+    HANDLE singleInstanceMutex = AcquireSingleInstanceMutex();
+    if (!singleInstanceMutex) return 0;
 
     // Check models exist
     std::wstring modelsDir;
@@ -76,6 +99,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         std::wstring msg = L"Face recognition models are missing.\n\n"
             L"Expected files:\n  " + shapePath + L"\n  " + recPath;
         MessageBoxW(nullptr, msg.c_str(), L"Models Not Found", MB_ICONERROR);
+        CloseHandle(singleInstanceMutex);
         return 1;
     }
 
@@ -88,5 +112,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     int result = host.Run();
 
     CoUninitialize();
+    CloseHandle(singleInstanceMutex);
     return result;
 }
