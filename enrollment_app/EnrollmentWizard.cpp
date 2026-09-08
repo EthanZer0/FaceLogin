@@ -1936,7 +1936,7 @@ std::string EnrollmentWizard::GetCameraList() {
 
 // Console version — bump with each release. Used to decide whether to show the
 // About-card star hint again (it reappears on every new version).
-static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.9.0";
+static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"2.0.0";
 // Registry value holding the version the user last saw the About card at.
 static const wchar_t REGVAL_ABOUT_SEEN_VERSION[] = L"AboutSeenVersion";
 
@@ -1967,7 +1967,7 @@ void EnrollmentWizard::SetAboutSeen(bool seen) {
 }
 
 std::string EnrollmentWizard::GetConsoleVersion() const {
-    // Version string is ASCII ("1.6.0"); narrow conversion is lossless.
+    // Version string is ASCII; narrow conversion is lossless.
     std::wstring wv = FACELOGIN_CONSOLE_VERSION;
     return std::string(wv.begin(), wv.end());
 }

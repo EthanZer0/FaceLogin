@@ -86,7 +86,7 @@ func main() {
 	// separated list rendered as plain bullets (see notice-zh/en.json).
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.9.0"
+	internal.NoticeVersion = "2.0.0"
 	internal.NoticeTitle = "installer.notice.title"
 	internal.NoticeBody = "installer.notice.body"
 	// Initialize the embedded resource filesystem in the internal package

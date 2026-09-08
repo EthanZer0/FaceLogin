@@ -1,6 +1,6 @@
 {
     "name": "facelogin",
-    "version-string": "1.1.0",
+    "version-string": "2.0.0",
     "builtin-baseline": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
     "description": "Custom face recognition login for Windows 11",
     "homepage": "https://github.com/your-org/facelogin",
