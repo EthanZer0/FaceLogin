@@ -1497,9 +1497,13 @@ function drawHeadPoseHud(ctx, pose, canvasWidth) {
   ctx.save();
   ctx.fillStyle = 'rgba(16,20,27,.80)';
   ctx.fillRect(x, y, w, 74);
-  ctx.fillStyle = pose.valid ? '#33D69F' : '#F4B860';
+  var range = String(pose.range || 'invalid').toLowerCase();
+  var rangeLabel = range === 'normal' ? 'NORMAL' :
+                   range === 'wide' ? 'WIDE  APPROX' : 'INVALID';
+  ctx.fillStyle = range === 'normal' ? '#33D69F' :
+                  range === 'wide' ? '#F4B860' : '#F16B6B';
   ctx.font = '600 10px Plex, Consolas, monospace';
-  ctx.fillText('POSE/MOBILENETV2' + (pose.valid ? '' : '  INVALID'), x + 10, y + 16);
+  ctx.fillText('POSE/MOBILENETV2  ' + rangeLabel, x + 10, y + 16);
   ctx.fillStyle = '#F3F5F7';
   ctx.font = '10px Plex, Consolas, monospace';
   ctx.fillText('YAW ' + signedAngle(pose.yaw) + '   PITCH ' + signedAngle(pose.pitch),

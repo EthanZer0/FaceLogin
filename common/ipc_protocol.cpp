@@ -87,6 +87,11 @@ AuthResult ParseAuthMessage(const std::wstring& message) {
         return result;
     }
 
+    if (message == MSG_AUTH_POSE_TIMEOUT) {
+        result.status = AuthResult::Status::PoseTimeout;
+        return result;
+    }
+
     if (message == MSG_AUTH_NO_FACE) {
         result.status = AuthResult::Status::NoFace;
         return result;

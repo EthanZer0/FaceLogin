@@ -1320,6 +1320,16 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
             m_state = State::Failed;
             LeaveCriticalSection(&m_cs);
             notifyChanged = true;
+        } else if (result.status == facelogin::ipc::AuthResult::Status::PoseTimeout) {
+            FACELOGIN_INFO(L"OnPipeResponse: Auth timed out without a legal head pose");
+            statusToNotify = LocalizeKey(facelogin::ipc::L10N_POSE_TIMEOUT);
+            EnterCriticalSection(&m_cs);
+            m_statusText = statusToNotify;
+            m_noMatchFailed = false;
+            m_authDeadlineTick = 0;
+            m_state = State::Failed;
+            LeaveCriticalSection(&m_cs);
+            notifyChanged = true;
         } else if (result.status == facelogin::ipc::AuthResult::Status::NoMatch) {
             // A face was seen but did not match any enrolled face. Show the
             // specific wording (and keep it — the timeout case below shows the

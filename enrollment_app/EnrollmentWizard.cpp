@@ -383,6 +383,8 @@ bool EnrollmentWizard::StartPreview() {
     // running alongside the next StartPreview's fresh thread.
     int myGen = ++m_frameGeneration;
     m_frameThread = std::thread([this, myGen]() {
+        bool poseDisplayInitialized = false;
+        HeadPoseStats poseDisplay;
         if (!EnsureModelsLoaded()) {
             FACELOGIN_ERROR(L"Model loading failed — no frames will be produced");
             return;
@@ -496,10 +498,37 @@ bool EnrollmentWizard::StartPreview() {
                 const bool prepared = PrepareFaceFrame(
                     frame, fwl.rect, fwl.landmarks, &pose);
                 if (prepared) {
+                    // Smooth only the preview overlay. Recognition, liveness
+                    // and service logs keep the raw model result unchanged.
+                    static constexpr float kPoseDisplayAlpha = 0.35f;
+                    if (pose.range == HeadPoseRange::Invalid) {
+                        poseDisplay = pose;
+                        poseDisplayInitialized = false;
+                    } else if (!poseDisplayInitialized) {
+                        poseDisplay = pose;
+                        poseDisplayInitialized = true;
+                    } else {
+                        poseDisplay.yaw += kPoseDisplayAlpha *
+                                           (pose.yaw - poseDisplay.yaw);
+                        poseDisplay.pitch += kPoseDisplayAlpha *
+                                             (pose.pitch - poseDisplay.pitch);
+                        poseDisplay.roll += kPoseDisplayAlpha *
+                                            (pose.roll - poseDisplay.roll);
+                        poseDisplay.inferenceMs = pose.inferenceMs;
+                        poseDisplay.faceWidth = pose.faceWidth;
+                        poseDisplay.faceHeight = pose.faceHeight;
+                        poseDisplay.faceAspect = pose.faceAspect;
+                        poseDisplay.cropWidth = pose.cropWidth;
+                        poseDisplay.cropHeight = pose.cropHeight;
+                        poseDisplay.cropAspect = pose.cropAspect;
+                        poseDisplay.valid = pose.valid;
+                        poseDisplay.quality = pose.quality;
+                        poseDisplay.range = pose.range;
+                    }
                     tDet = std::chrono::steady_clock::now();
                     tLand = tDet;
                     faces.push_back(std::move(fwl));
-                    faceJson = FacesToJson(faces, &pose);
+                    faceJson = FacesToJson(faces, &poseDisplay);
                 }
             }
             if (faceJson == "[]" && (!m_onnxDetector || !m_detector)) {
@@ -927,6 +956,10 @@ std::string EnrollmentWizard::FacesToJson(
                << ",\"cropWidth\":" << pose->cropWidth
                << ",\"cropHeight\":" << pose->cropHeight
                << ",\"cropAspect\":" << pose->cropAspect
+               << ",\"range\":\""
+               << (pose->range == HeadPoseRange::Normal ? "normal" :
+                   pose->range == HeadPoseRange::Wide ? "wide" : "invalid")
+               << "\""
                << "}";
         } else {
             js << "null";

@@ -1221,9 +1221,48 @@ bool FaceService::ProcessAuthRequest() {
         m_pipeServer->WriteMessage(statusMsg);
     }
 
+    // Intermediate status payloads are locale keys, never display text. Keep
+    // the last key so a stable pose does not cause a STATUS write on every
+    // camera frame.
+    auto sendStatusKey = [this, lastStatusKey = std::wstring(ipc::L10N_RECOGNIZING)](
+                              const wchar_t* key) mutable {
+        if (!key || lastStatusKey == key) return;
+        lastStatusKey = key;
+        m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + key);
+    };
+
+    auto poseStatusKey = [](const HeadPoseStats& pose,
+                            const HeadPoseEvaluation& evaluation) -> const wchar_t* {
+        if (evaluation.legality == HeadPoseLegality::Invalid) {
+            return ipc::L10N_POSE_INVALID;
+        }
+        if (evaluation.legality == HeadPoseLegality::Front) {
+            return ipc::L10N_RECOGNIZING;
+        }
+        if (evaluation.legality == HeadPoseLegality::Acceptable) {
+            return ipc::L10N_POSE_ACCEPTABLE;
+        }
+
+        const float yawScore = std::abs(pose.yaw) / 25.0f;
+        const float pitchScore = std::abs(pose.pitch) / 18.0f;
+        const float rollScore = std::abs(pose.roll) / 18.0f;
+        if (yawScore >= pitchScore && yawScore >= rollScore) {
+            return pose.yaw > 0.0f ? ipc::L10N_POSE_YAW_LEFT
+                                   : ipc::L10N_POSE_YAW_RIGHT;
+        }
+        if (pitchScore >= rollScore) {
+            return pose.pitch > 0.0f ? ipc::L10N_POSE_PITCH_DOWN
+                                     : ipc::L10N_POSE_PITCH_UP;
+        }
+        return pose.roll > 0.0f ? ipc::L10N_POSE_ROLL_RIGHT
+                                : ipc::L10N_POSE_ROLL_LEFT;
+    };
+
     dlib::matrix<dlib::rgb_pixel> frame;  // reused by the match loop below
     auto startTime = std::chrono::steady_clock::now();
     bool authSent = false;
+    bool acceptedPoseSeen = false;
+    bool poseRejectedSeen = false;
     int consecutiveMatches = 0;
     // Consecutive frames where a face WAS detected (and its embedding was
     // computed) but no enrolled face matched. After kNoMatchFailFrames such
@@ -1254,7 +1293,9 @@ bool FaceService::ProcessAuthRequest() {
         auto elapsed = std::chrono::steady_clock::now() - startTime;
         if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= m_authTimeoutSeconds) {
             FACELOGIN_INFO(L"Authentication timed out");
-            SendAuthTerminal(ipc::MSG_AUTH_TIMEOUT);
+            SendAuthTerminal(poseRejectedSeen && !acceptedPoseSeen
+                                 ? ipc::MSG_AUTH_POSE_TIMEOUT
+                                 : ipc::MSG_AUTH_TIMEOUT);
             return false;
         }
 
@@ -1304,9 +1345,23 @@ bool FaceService::ProcessAuthRequest() {
         dlib::rectangle faceRect;
         HeadPoseStats pose;
         if (!prepareFaceFrame(frame, faceRect, landmarks, &pose)) {
+            sendStatusKey(ipc::L10N_POSE_INVALID);
+            consecutiveMatches = 0;
+            consecutiveNoMatch = 0;
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
+
+        const HeadPoseEvaluation poseEvaluation = EvaluateHeadPose(pose);
+        sendStatusKey(poseStatusKey(pose, poseEvaluation));
+        if (!poseEvaluation.accepted) {
+            poseRejectedSeen = true;
+            consecutiveMatches = 0;
+            consecutiveNoMatch = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            continue;
+        }
+        acceptedPoseSeen = true;
 
         // Recognition always consumes the normalized frame. There is one
         // embedding path for old templates; no alternate photometric variant
@@ -1321,11 +1376,12 @@ bool FaceService::ProcessAuthRequest() {
             consecutiveMatches++;
             consecutiveNoMatch = 0;   // a match resets the no-match counter
             FACELOGIN_INFO(L"Face matched: %s (distance=%.4f, photometric=%d, "
-                           L"pose=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
+                           L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
                            L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f) [%d/%d]",
                           match->username.c_str(), match->distance,
                           static_cast<int>(m_photometric.State()),
-                          static_cast<int>(pose.quality), pose.yaw, pose.pitch,
+                          static_cast<int>(pose.quality), static_cast<int>(pose.range),
+                          pose.yaw, pose.pitch,
                           pose.roll, pose.inferenceMs, pose.faceWidth,
                           pose.faceHeight, pose.faceAspect, pose.cropWidth,
                           pose.cropHeight, pose.cropAspect,
@@ -1345,10 +1401,11 @@ bool FaceService::ProcessAuthRequest() {
                     // normalized input domain used by the recognizer.
                     float d0 = m_store->FindNearestDistance(onnxEmb.data(), onnxEmb.size());
                     FACELOGIN_WARN(L"No match for %d frames — nearest normalized distance=%.3f, "
-                                   L"pose=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
+                                   L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
                                    L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f",
                                    consecutiveNoMatch, d0, static_cast<int>(pose.quality),
-                                   pose.yaw, pose.pitch, pose.roll, pose.inferenceMs,
+                                   static_cast<int>(pose.range), pose.yaw, pose.pitch,
+                                   pose.roll, pose.inferenceMs,
                                    pose.faceWidth, pose.faceHeight, pose.faceAspect,
                                    pose.cropWidth, pose.cropHeight, pose.cropAspect);
                     FACELOGIN_INFO(L"No match for %d consecutive frames — reporting failure to CP",
@@ -1420,15 +1477,17 @@ bool FaceService::ProcessAuthRequest() {
 
                 // Determine status text
                 if (method == LivenessMethod::AntiSpoof) {
-                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_LIVENESS_CHECKING);
+                    sendStatusKey(ipc::L10N_LIVENESS_CHECKING);
                 } else if (method == LivenessMethod::Blink) {
-                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_BLINK_PROMPT);
+                    sendStatusKey(ipc::L10N_BLINK_PROMPT);
                 }
                 if (method != LivenessMethod::None) {
                     FlushFileBuffers(m_pipeServer->GetHandle());
                 }
 
                 bool livenessPassed = false;
+                bool livenessAcceptedPoseSeen = false;
+                bool livenessPoseRejected = false;
 
                 if (method == LivenessMethod::None) {
                     livenessPassed = true;
@@ -1455,10 +1514,22 @@ bool FaceService::ProcessAuthRequest() {
 
                         dlib::full_object_detection asLandmarks;
                         dlib::rectangle asRect;
-                        if (!prepareFaceFrame(asFrame, asRect, asLandmarks)) {
+                        HeadPoseStats asPose;
+                        if (!prepareFaceFrame(asFrame, asRect, asLandmarks, &asPose)) {
+                            sendStatusKey(ipc::L10N_POSE_INVALID);
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
+
+                        const HeadPoseEvaluation asPoseEvaluation = EvaluateHeadPose(asPose);
+                        if (!asPoseEvaluation.accepted) {
+                            sendStatusKey(poseStatusKey(asPose, asPoseEvaluation));
+                            livenessPoseRejected = true;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        livenessAcceptedPoseSeen = true;
+                        sendStatusKey(ipc::L10N_LIVENESS_CHECKING);
 
                         float score = m_antiSpoof->Predict(asFrame, asLandmarks);
                         totalChecked++;
@@ -1504,10 +1575,23 @@ bool FaceService::ProcessAuthRequest() {
                         if (!grabFrame(livenessFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
                         dlib::full_object_detection livenessLandmarks;
                         dlib::rectangle lRect;
-                        if (!prepareFaceFrame(livenessFrame, lRect, livenessLandmarks)) {
+                        HeadPoseStats livenessPose;
+                        if (!prepareFaceFrame(livenessFrame, lRect, livenessLandmarks,
+                                              &livenessPose)) {
+                            sendStatusKey(ipc::L10N_POSE_INVALID);
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
+                        const HeadPoseEvaluation livenessEvaluation =
+                            EvaluateHeadPose(livenessPose);
+                        if (!livenessEvaluation.accepted) {
+                            sendStatusKey(poseStatusKey(livenessPose, livenessEvaluation));
+                            livenessPoseRejected = true;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        livenessAcceptedPoseSeen = true;
+                        sendStatusKey(ipc::L10N_BLINK_PROMPT);
                         if (liveness.ProcessFrame(livenessLandmarks)) {
                             blinked = true;
                             FACELOGIN_INFO(L"Blink detected");
@@ -1521,9 +1605,11 @@ bool FaceService::ProcessAuthRequest() {
                 if (!livenessPassed) {
                     FACELOGIN_WARN(L"Liveness check failed");
                     SendAuthTerminal(ipc::BuildAuthErrorMessage(
-                        method == LivenessMethod::AntiSpoof ?
-                        ipc::L10N_ANTI_SPOOF_FAILED :
-                        ipc::L10N_BLINK_FAILED));
+                        livenessPoseRejected && !livenessAcceptedPoseSeen
+                            ? ipc::L10N_POSE_TIMEOUT
+                            : method == LivenessMethod::AntiSpoof
+                                ? ipc::L10N_ANTI_SPOOF_FAILED
+                                : ipc::L10N_BLINK_FAILED));
                     SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                     return false;
                 }
@@ -1541,6 +1627,8 @@ bool FaceService::ProcessAuthRequest() {
                 if (method != LivenessMethod::None) {
                     auto verifyStart = std::chrono::steady_clock::now();
                     bool verifyOk = false;
+                    bool verifyAcceptedPoseSeen = false;
+                    bool verifyPoseRejected = false;
                     while (m_running && !verifyOk) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during final verify — aborting");
@@ -1563,9 +1651,21 @@ bool FaceService::ProcessAuthRequest() {
                         HeadPoseStats verifyPose;
                         if (!prepareFaceFrame(verifyFrame, verifyRect, verifyLandmarks,
                                               &verifyPose)) {
+                            sendStatusKey(ipc::L10N_POSE_INVALID);
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
+
+                        const HeadPoseEvaluation verifyEvaluation =
+                            EvaluateHeadPose(verifyPose);
+                        if (!verifyEvaluation.accepted) {
+                            sendStatusKey(poseStatusKey(verifyPose, verifyEvaluation));
+                            verifyPoseRejected = true;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        verifyAcceptedPoseSeen = true;
+                        sendStatusKey(poseStatusKey(verifyPose, verifyEvaluation));
 
                         std::optional<CredentialStore::MatchResult> verifyMatch;
                         auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(
@@ -1577,10 +1677,11 @@ bool FaceService::ProcessAuthRequest() {
                         if (verifyMatch) {
                             verifyOk = true;
                             FACELOGIN_INFO(L"Final match verified: distance=%.4f, "
-                                           L"pose=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
+                                           L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
                                            L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f",
                                            verifyMatch->distance,
                                            static_cast<int>(verifyPose.quality),
+                                           static_cast<int>(verifyPose.range),
                                            verifyPose.yaw, verifyPose.pitch,
                                            verifyPose.roll, verifyPose.inferenceMs,
                                            verifyPose.faceWidth, verifyPose.faceHeight,
@@ -1596,7 +1697,9 @@ bool FaceService::ProcessAuthRequest() {
                     if (!verifyOk) {
                         FACELOGIN_WARN(L"Final match verify failed \u2014 face swap detected");
                         SendAuthTerminal(ipc::BuildAuthErrorMessage(
-                            ipc::L10N_FINAL_MATCH_FAILED));
+                            verifyPoseRejected && !verifyAcceptedPoseSeen
+                                ? ipc::L10N_POSE_TIMEOUT
+                                : ipc::L10N_FINAL_MATCH_FAILED));
                         SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                         return false;
                     }

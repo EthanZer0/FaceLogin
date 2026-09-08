@@ -22,6 +22,7 @@ constexpr DWORD AUTH_TIMEOUT_SECONDS = 15;
 constexpr wchar_t MSG_AUTH_REQUEST[] = L"AUTH_REQUEST";
 constexpr wchar_t MSG_AUTH_SUCCESS_PREFIX[] = L"AUTH_SUCCESS:";
 constexpr wchar_t MSG_AUTH_TIMEOUT[] = L"AUTH_TIMEOUT";
+constexpr wchar_t MSG_AUTH_POSE_TIMEOUT[] = L"AUTH_POSE_TIMEOUT";
 constexpr wchar_t MSG_AUTH_NO_FACE[] = L"AUTH_NO_FACE";
 // A face WAS detected (embedding computed) but no enrolled face matched it —
 // distinct from AUTH_TIMEOUT (nothing useful seen for the whole window) and
@@ -48,6 +49,15 @@ constexpr wchar_t MSG_PONG[] = L"PONG";
 // constants keep service-side spelling in sync with the packs.
 constexpr wchar_t L10N_LOADING_MODELS[] = L"service.loadingModels";
 constexpr wchar_t L10N_RECOGNIZING[] = L"credential.recognizing";
+constexpr wchar_t L10N_POSE_ACCEPTABLE[] = L"credential.poseAcceptable";
+constexpr wchar_t L10N_POSE_INVALID[] = L"credential.poseInvalid";
+constexpr wchar_t L10N_POSE_YAW_LEFT[] = L"credential.poseYawLeft";
+constexpr wchar_t L10N_POSE_YAW_RIGHT[] = L"credential.poseYawRight";
+constexpr wchar_t L10N_POSE_PITCH_DOWN[] = L"credential.posePitchDown";
+constexpr wchar_t L10N_POSE_PITCH_UP[] = L"credential.posePitchUp";
+constexpr wchar_t L10N_POSE_ROLL_RIGHT[] = L"credential.poseRollRight";
+constexpr wchar_t L10N_POSE_ROLL_LEFT[] = L"credential.poseRollLeft";
+constexpr wchar_t L10N_POSE_TIMEOUT[] = L"credential.poseTimeout";
 constexpr wchar_t L10N_NO_REGISTERED_USERS[] = L"service.noRegisteredUsers";
 constexpr wchar_t L10N_MODEL_LOAD_FAILED[] = L"service.modelLoadFailed";
 constexpr wchar_t L10N_CAMERA_UNAVAILABLE[] = L"service.cameraUnavailable";
@@ -70,6 +80,7 @@ struct AuthResult {
     enum class Status {
         Success,
         Timeout,
+        PoseTimeout,
         NoFace,
         NoMatch,
         Error,
@@ -90,6 +101,7 @@ struct AuthResult {
 //   "AUTH_SUCCESS:SID:UPN:USERNAME:PASSWORD"
 //   "AUTH_SUCCESS:SID::DOMAIN\\USER:PASSWORD"  (no UPN, e.g. local account)
 //   "AUTH_TIMEOUT"
+//   "AUTH_POSE_TIMEOUT"
 //   "AUTH_NO_FACE"
 //   "AUTH_ERROR:some error message"
 //   "AUTH_CANCELLED"

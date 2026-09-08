@@ -3,6 +3,8 @@
 #include <dlib/image_processing.h>
 #include <dlib/matrix.h>
 #include <dlib/pixel.h>
+#include <cmath>
+#include <cstdint>
 #include <string>
 
 namespace facelogin {
@@ -55,6 +57,34 @@ enum class HeadPoseQuality {
     Valid,
 };
 
+enum class HeadPoseRange {
+    Invalid,
+    Normal, // Approximate yaw is within the reliable <=45 degree range.
+    Wide,   // Large-angle estimate; direction is useful, exact value is not.
+};
+
+enum class HeadPoseLegality {
+    Invalid,
+    Front,
+    Acceptable,
+    AdjustRequired,
+    Severe,
+};
+
+enum class HeadPoseViolation : uint32_t {
+    None      = 0,
+    YawLeft   = 1u << 0,
+    YawRight  = 1u << 1,
+    PitchUp   = 1u << 2,
+    PitchDown = 1u << 3,
+    RollLeft  = 1u << 4,
+    RollRight = 1u << 5,
+};
+
+inline constexpr uint32_t PoseViolationBit(HeadPoseViolation value) {
+    return static_cast<uint32_t>(value);
+}
+
 // Appearance-based pose shared by Console and service. Signs are
 // subject-centric: subject-right yaw is positive, looking up is positive, and
 // subject-left roll is positive.
@@ -66,7 +96,7 @@ struct HeadPoseStats {
     float inferenceMs = 0.0f;
     // Diagnostics for the detector-to-pose crop. They are intentionally
     // separate from the angle result so we can distinguish model error from
-    // an extreme side-face input without using either value for auth gating.
+    // an extreme side-face input.
     float faceWidth = 0.0f;
     float faceHeight = 0.0f;
     float faceAspect = 0.0f;
@@ -74,7 +104,64 @@ struct HeadPoseStats {
     float cropHeight = 0.0f;
     float cropAspect = 0.0f;
     HeadPoseQuality quality = HeadPoseQuality::Invalid;
+    HeadPoseRange range = HeadPoseRange::Invalid;
 };
+
+struct HeadPoseEvaluation {
+    HeadPoseLegality legality = HeadPoseLegality::Invalid;
+    uint32_t violations = PoseViolationBit(HeadPoseViolation::None);
+    bool accepted = false;
+    bool front = false;
+};
+
+// The pose model is reliable enough for a bounded quality gate, not for an
+// exact large-angle measurement. Keep all policy thresholds in one shared
+// evaluator so the service, Console and enrollment cannot drift apart.
+inline HeadPoseEvaluation EvaluateHeadPose(const HeadPoseStats& pose) {
+    HeadPoseEvaluation result;
+    if (!pose.valid || !std::isfinite(pose.yaw) ||
+        !std::isfinite(pose.pitch) || !std::isfinite(pose.roll)) {
+        return result;
+    }
+
+    const float yaw = std::abs(pose.yaw);
+    const float pitch = std::abs(pose.pitch);
+    const float roll = std::abs(pose.roll);
+
+    if (yaw <= 15.0f && pitch <= 12.0f && roll <= 12.0f) {
+        result.legality = HeadPoseLegality::Front;
+        result.accepted = true;
+        result.front = true;
+        return result;
+    }
+
+    if (yaw <= 25.0f && pitch <= 18.0f && roll <= 18.0f) {
+        result.legality = HeadPoseLegality::Acceptable;
+        result.accepted = true;
+        return result;
+    }
+
+    if (pose.yaw > 25.0f) {
+        result.violations |= PoseViolationBit(HeadPoseViolation::YawLeft);
+    } else if (pose.yaw < -25.0f) {
+        result.violations |= PoseViolationBit(HeadPoseViolation::YawRight);
+    }
+    if (pose.pitch > 18.0f) {
+        result.violations |= PoseViolationBit(HeadPoseViolation::PitchDown);
+    } else if (pose.pitch < -18.0f) {
+        result.violations |= PoseViolationBit(HeadPoseViolation::PitchUp);
+    }
+    if (pose.roll > 18.0f) {
+        result.violations |= PoseViolationBit(HeadPoseViolation::RollRight);
+    } else if (pose.roll < -18.0f) {
+        result.violations |= PoseViolationBit(HeadPoseViolation::RollLeft);
+    }
+
+    const bool severe = yaw > 30.0f || pitch > 25.0f || roll > 25.0f;
+    result.legality = severe ? HeadPoseLegality::Severe
+                             : HeadPoseLegality::AdjustRequired;
+    return result;
+}
 
 enum class HardwareControlState {
     Disabled,

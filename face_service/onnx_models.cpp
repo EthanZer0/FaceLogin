@@ -656,6 +656,13 @@ HeadPoseStats OnnxHeadPose::Estimate(
                        std::abs(result.roll) <= 90.5f;
         result.quality = result.valid ? HeadPoseQuality::Valid
                                       : HeadPoseQuality::Invalid;
+        if (std::isfinite(result.yaw) && std::abs(result.yaw) <= 90.5f) {
+            result.range = std::abs(result.yaw) <= 45.0f
+                ? HeadPoseRange::Normal
+                : HeadPoseRange::Wide;
+        } else {
+            result.range = HeadPoseRange::Invalid;
+        }
         return result;
     } catch (const std::exception& e) {
         FACELOGIN_WARN(L"Head-pose inference failed: %hs", e.what());
