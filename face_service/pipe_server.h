@@ -4,6 +4,7 @@
 #include <string>
 #include <accctrl.h>
 #include <aclapi.h>
+#include <atomic>
 
 namespace facelogin {
 
@@ -47,10 +48,14 @@ public:
     // Close the pipe entirely. Unblocks any pending I/O.
     void Close();
 
-    // Get the raw pipe handle (for FlushFileBuffers, etc.)
-    HANDLE GetHandle() const { return m_hPipe; }
+    // Called by the service control callback. Signals the owner thread to
+    // stop and closes the current handle without touching camera/model state.
+    void RequestStop();
 
-    bool IsConnected() const { return m_connected; }
+    // Get the raw pipe handle (for FlushFileBuffers, etc.)
+    HANDLE GetHandle() const { return m_hPipe.load(); }
+
+    bool IsConnected() const { return m_connected.load(); }
 
     // Non-blocking: returns true if the connected client has closed its end
     // of the pipe (or the pipe is otherwise broken). Uses PeekNamedPipe so it
@@ -60,8 +65,9 @@ public:
 private:
     PSECURITY_DESCRIPTOR CreateSecurityDescriptor();
 
-    HANDLE m_hPipe = INVALID_HANDLE_VALUE;
-    bool m_connected = false;
+    std::atomic<HANDLE> m_hPipe{INVALID_HANDLE_VALUE};
+    std::atomic<bool> m_connected{false};
+    std::atomic<bool> m_stopRequested{false};
 };
 
 } // namespace facelogin

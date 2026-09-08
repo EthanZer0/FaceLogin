@@ -64,8 +64,11 @@ public:
 private:
     void Run();          // Main service loop
     void Stop();
+    void CleanupSessionResources();
     bool Initialize();   // Load DB, config, lightweight SCRFD; queue heavy models
     bool ProcessAuthRequest();  // Handle one auth session
+    void BeginAuthSession();
+    bool SendAuthTerminal(const std::wstring& message);
 
     // Camera lifecycle for one auth session: pick the backend (service mode:
     // MF preferred, DS fallback; standalone: MF) and release it afterwards.
@@ -99,6 +102,8 @@ private:
     SERVICE_STATUS_HANDLE m_hStatus = nullptr;
     SERVICE_STATUS m_status = {};
     std::atomic<bool> m_running{false};
+    std::atomic<bool> m_stopRequested{false};
+    bool m_authTerminalSent = false;
     static FaceService* s_pInstance;
 
     // Components

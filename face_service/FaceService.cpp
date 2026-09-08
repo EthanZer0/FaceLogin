@@ -38,6 +38,8 @@ FaceService::FaceService() {
 }
 
 FaceService::~FaceService() {
+    m_running.store(false);
+    CleanupSessionResources();
     if (m_wicFactory) m_wicFactory->Release();
     m_wicFactory = nullptr;
     s_pInstance = nullptr;
@@ -665,11 +667,12 @@ void FaceService::AbortModelLoadWait() {
 }
 
 void FaceService::Run() {
-    m_running = true;
+    m_stopRequested.store(false);
+    m_running.store(true);
 
-    while (m_running) {
+    while (m_running.load() && !m_stopRequested.load()) {
         if (!m_pipeServer->WaitForClient(60000)) {
-            if (!m_running) break;
+            if (!m_running.load() || m_stopRequested.load()) break;
             continue;
         }
 
@@ -764,12 +767,11 @@ void FaceService::Run() {
             FACELOGIN_DEBUG(L"Sent %zu log lines to client", lines.size());
         }
         else if (request == ipc::MSG_AUTH_REQUEST) {
+            BeginAuthSession();
             // Lazy-init camera: create + start on demand, then fully shutdown
             // after auth to free the device for other processes.
             if (!EnsureCameraForAuth()) {
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_CAMERA_UNAVAILABLE));
-                FlushFileBuffers(m_pipeServer->GetHandle());
-                m_pipeServer->DrainOutput(5000);
+                SendAuthTerminal(ipc::BuildAuthErrorMessage(ipc::L10N_CAMERA_UNAVAILABLE));
                 m_pipeServer->Disconnect();
                 continue;            }            ProcessAuthRequest();
             ReleaseCamera();
@@ -799,6 +801,8 @@ void FaceService::Run() {
             m_pipeServer->Disconnect();
         }
     }
+
+    CleanupSessionResources();
 }
 
 // Session events arrive via HandlerEx → SERVICE_CONTROL_SESSIONCHANGE.
@@ -807,24 +811,22 @@ void FaceService::Run() {
 // We only care about the console session (session 1).
 
 void FaceService::Stop() {
-    m_running = false;
-    m_photometric.End();  // restore only this session's hardware state
-    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
-        m_webcamMF->Shutdown();
-        m_webcamMF.reset();
-    }
-    if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
-        m_webcamDS->Shutdown();
-        m_webcamDS.reset();
-    }
-    m_cameraPipeline = CameraPipeline::None;
-    // Signal the model loader to stop and join it. If an auth request was
-    // blocked in EnsureModelsLoaded(), the abort flag releases it so it can
-    // exit cleanly (m_running is false → ProcessAuthRequest returns false).
+    m_stopRequested.store(true);
+    m_running.store(false);
+    // The SCM callback only requests cancellation. Camera, photometric and
+    // model objects are owned and released by the Run() thread after the
+    // active request has unwound.
+    m_modelsAbort.store(true);
+    m_modelCv.notify_all();
+    if (m_pipeServer) m_pipeServer->RequestStop();
+}
+
+void FaceService::CleanupSessionResources() {
+    // Called by the Run/destructor owner thread only. It is intentionally
+    // idempotent so every exit path has one cleanup boundary.
+    ReleaseCamera();
     AbortModelLoadWait();
-    if (m_pipeServer) {
-        m_pipeServer->Close();
-    }
+    if (m_pipeServer) m_pipeServer->Close();
 }
 
 // ============================================================================
@@ -931,6 +933,25 @@ void FaceService::ReleaseCamera() {
     m_cameraPipeline = CameraPipeline::None;
 }
 
+void FaceService::BeginAuthSession() {
+    m_authTerminalSent = false;
+}
+
+bool FaceService::SendAuthTerminal(const std::wstring& message) {
+    if (m_authTerminalSent) {
+        FACELOGIN_WARN(L"Ignoring duplicate authentication terminal response");
+        return false;
+    }
+    m_authTerminalSent = true;
+
+    if (!m_pipeServer || !m_pipeServer->IsConnected()) return false;
+    const bool written = m_pipeServer->WriteMessage(message);
+    HANDLE pipe = m_pipeServer->GetHandle();
+    if (written && pipe != INVALID_HANDLE_VALUE) FlushFileBuffers(pipe);
+    if (written) m_pipeServer->DrainOutput(5000);
+    return written;
+}
+
 bool FaceService::ProcessAuthRequest() {
     const char* camName = m_cameraPipeline == CameraPipeline::MF ? "MF" :
                           m_cameraPipeline == CameraPipeline::DS ? "DS" : "none";
@@ -1001,9 +1022,7 @@ bool FaceService::ProcessAuthRequest() {
 
     if (m_store->GetUserCount() == 0) {
         FACELOGIN_WARN(L"No registered users");
-        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_NO_REGISTERED_USERS));
-        FlushFileBuffers(m_pipeServer->GetHandle());
-        m_pipeServer->DrainOutput(5000);
+        SendAuthTerminal(ipc::BuildAuthErrorMessage(ipc::L10N_NO_REGISTERED_USERS));
         return false;
     }
 
@@ -1026,9 +1045,7 @@ bool FaceService::ProcessAuthRequest() {
     // connected, so this only ever costs the tail of the boot time.
     if (!EnsureModelsLoaded()) {
         FACELOGIN_ERROR(L"Required models not loaded \u2014 cannot authenticate");
-        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_MODEL_LOAD_FAILED));
-        FlushFileBuffers(m_pipeServer->GetHandle());
-        m_pipeServer->DrainOutput(5000);
+        SendAuthTerminal(ipc::BuildAuthErrorMessage(ipc::L10N_MODEL_LOAD_FAILED));
         return false;
     }
 
@@ -1190,9 +1207,7 @@ bool FaceService::ProcessAuthRequest() {
         auto elapsed = std::chrono::steady_clock::now() - startTime;
         if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= m_authTimeoutSeconds) {
             FACELOGIN_INFO(L"Authentication timed out");
-            m_pipeServer->WriteMessage(ipc::MSG_AUTH_TIMEOUT);
-            FlushFileBuffers(m_pipeServer->GetHandle());
-            m_pipeServer->DrainOutput(5000);
+            SendAuthTerminal(ipc::MSG_AUTH_TIMEOUT);
             return false;
         }
 
@@ -1295,9 +1310,7 @@ bool FaceService::ProcessAuthRequest() {
                     m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) +
                         ipc::L10N_NO_MATCH);
                     FlushFileBuffers(m_pipeServer->GetHandle());
-                    m_pipeServer->WriteMessage(ipc::MSG_AUTH_NO_MATCH);
-                    FlushFileBuffers(m_pipeServer->GetHandle());
-                    m_pipeServer->DrainOutput(5000);
+                    SendAuthTerminal(ipc::MSG_AUTH_NO_MATCH);
                     return false;
                 }
             }
@@ -1448,12 +1461,10 @@ bool FaceService::ProcessAuthRequest() {
 
                 if (!livenessPassed) {
                     FACELOGIN_WARN(L"Liveness check failed");
-                    m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
+                    SendAuthTerminal(ipc::BuildAuthErrorMessage(
                         method == LivenessMethod::AntiSpoof ?
                         ipc::L10N_ANTI_SPOOF_FAILED :
                         ipc::L10N_BLINK_FAILED));
-                    FlushFileBuffers(m_pipeServer->GetHandle());
-                    m_pipeServer->DrainOutput(5000);
                     SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                     return false;
                 }
@@ -1513,21 +1524,23 @@ bool FaceService::ProcessAuthRequest() {
 
                     if (!verifyOk) {
                         FACELOGIN_WARN(L"Final match verify failed \u2014 face swap detected");
-                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
+                        SendAuthTerminal(ipc::BuildAuthErrorMessage(
                             ipc::L10N_FINAL_MATCH_FAILED));
-                        FlushFileBuffers(m_pipeServer->GetHandle());
-                        m_pipeServer->DrainOutput(5000);
                         SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                         return false;
                     }
                 }
             }
 
-            m_pipeServer->WriteMessage(msg);
-            FlushFileBuffers(m_pipeServer->GetHandle());
+            const bool credentialsSent = SendAuthTerminal(msg);
 
             SecureZeroMemory(match->password.data(),
                            match->password.size() * sizeof(wchar_t));
+
+            if (!credentialsSent) {
+                FACELOGIN_WARN(L"Credentials could not be delivered to the credential provider");
+                return false;
+            }
 
             authSent = true;
             FACELOGIN_INFO(L"Credentials sent for %s\\%s",

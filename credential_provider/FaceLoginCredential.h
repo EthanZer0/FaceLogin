@@ -77,6 +77,8 @@ public:
                               CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon) override;
 
 private:
+    using AuthAttemptId = unsigned long long;
+
     // State enum
     enum class State {
         Waiting,
@@ -108,6 +110,15 @@ private:
     // Trigger re-enumeration of credentials (via CredentialsChanged)
     void TriggerReEnumeration();
 
+    State GetState() const;
+    bool TransitionState(State expected, State next);
+    bool IsAttemptActive(AuthAttemptId attemptId) const;
+    void SetStatusText(const std::wstring& text);
+    void NotifyFieldString(const std::wstring& text);
+    void NotifyCredentialsChanged();
+    void ClearCredentials();
+    void CancelActiveAttempt(bool resetToWaiting);
+
     // Start the authentication pipeline (connect pipe + send AUTH_REQUEST).
     // Called from Advise() (cold boot) or input-detection thread (unlock).
     void StartAuth();
@@ -117,8 +128,8 @@ private:
     void StopInputDetectionThread();
 
     // Pipe callbacks — called from background read thread
-    void OnPipeResponse(bool success, const std::wstring& message);
-    void OnPipeStatus(const std::wstring& message);
+    void OnPipeResponse(AuthAttemptId attemptId, bool success, const std::wstring& message);
+    void OnPipeStatus(AuthAttemptId attemptId, const std::wstring& message);
 
     LONG m_refCount = 1;
     FaceLoginProvider* m_pProvider = nullptr;
@@ -131,7 +142,9 @@ private:
     // face matched). The Failed-state status text then shows "人脸匹配失败"
     // instead of the generic timeout wording. Cleared at each StartAuth.
     bool m_noMatchFailed = false;
-    std::unique_ptr<facelogin::PipeClient> m_pipeClient;
+    std::shared_ptr<facelogin::PipeClient> m_pipeClient;
+    AuthAttemptId m_nextAttemptId = 0;
+    AuthAttemptId m_activeAttemptId = 0;
 
     // Received credentials (zeroed after serialization)
     facelogin::SecureBuffer m_authData;
@@ -145,8 +158,9 @@ private:
     std::wstring m_statusText;
     facelogin::LocaleCatalog m_locale;
 
-    // Auth timeout tracking (so we don't block LogonUI forever)
-    LONGLONG m_authStartTime = 0;  // 100ns units, 0 = not yet started
+    // Auth timeout tracking uses the monotonic tick count so a system clock
+    // adjustment cannot extend or prematurely end an authentication attempt.
+    ULONGLONG m_authDeadlineTick = 0;
 
     // On unlock: baseline tick recorded in Advise(). A background thread
     // polls GetLastInputInfo() and calls StartAuth() when NEW input arrives
@@ -160,6 +174,6 @@ private:
 
     // Synchronization
     HANDLE m_hCredsReady = nullptr;  // Set when auth result received
-    CRITICAL_SECTION m_cs;
+    mutable CRITICAL_SECTION m_cs;
     bool m_csInitialized = false;
 };

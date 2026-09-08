@@ -10,9 +10,9 @@ namespace facelogin {
 // Connects to the FaceLogin service to send/receive authentication messages.
 //
 // Runs in LogonUI.exe (SYSTEM context on Secure Desktop).
-// Uses a background thread with blocking synchronous ReadFile so the
-// message is captured immediately when the server sends it — no race
-// with GetSerialization() polling or server-side DisconnectNamedPipe.
+// Uses a background polling thread so terminal messages are delivered once
+// and the owning credential can deterministically join the thread before the
+// PipeClient object is destroyed.
 //
 // OnResponseCallback: called from the background read thread when a
 // response arrives (or the pipe breaks).  The credential uses this to
@@ -49,15 +49,11 @@ public:
     // STATUS: messages trigger onStatus (if set).
     // Terminal messages (AUTH_SUCCESS/AUTH_TIMEOUT/AUTH_ERROR/etc.) trigger
     // onResponse and the thread exits.
-    void StartBackgroundRead(OnResponseCallback onResponse = nullptr,
+    bool StartBackgroundRead(OnResponseCallback onResponse = nullptr,
                              OnStatusCallback onStatus = nullptr);
 
-    // Check whether the background read has completed.  Non-blocking.
-    // Returns true and sets outMessage when the server response was received.
-    bool CheckResponse(std::wstring& outMessage);
-
     // Check if connected
-    bool IsConnected() const { return m_connected; }
+    bool IsConnected() const;
 
     // Close the connection (closes the pipe handle, which unblocks the
     // background read thread, then joins the thread).
@@ -66,6 +62,8 @@ public:
 private:
     static DWORD WINAPI ReadThreadProc(LPVOID param);
     void CleanupReadThread();
+    bool IsStopping() const;
+    void MarkDisconnected();
 
     // Returns true if msg is a terminal (non-status) message
     static bool IsTerminalMessage(const std::wstring& msg);
@@ -75,15 +73,12 @@ private:
 
     // Background blocking read
     HANDLE m_hReadThread = nullptr;
-    HANDLE m_hDataReady = nullptr;       // manual-reset: set when response arrives
     HANDLE m_hReadStop = nullptr;        // manual-reset: signaled to stop the read thread
-    wchar_t m_readBuffer[4096] = {};
-    DWORD  m_bytesRead = 0;
-    bool   m_readSuccess = false;
 
     // Callbacks
     OnResponseCallback m_onResponse;
     OnStatusCallback   m_onStatus;
+    bool m_terminalDelivered = false;
 
     CRITICAL_SECTION m_cs;
     bool m_csInitialized = false;
