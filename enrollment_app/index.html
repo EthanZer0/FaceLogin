@@ -1477,48 +1477,7 @@ function drawOverlay(json) {
     for (var i = 0; i < f.landmarks.length; i += 2) {
       ctx.fillRect(f.landmarks[i] * sx + ox - 0.75, f.landmarks[i + 1] * sy + oy - 0.75, 1.5, 1.5);
     }
-    if (fi === 0 && f.pose) drawHeadPoseHud(ctx, f.pose, cw);
   }
-}
-
-// Observer-only MobileNetV2/6DRepNet pose output. These values do not gate
-// enrollment, liveness or recognition while camera-specific calibration is
-// still being evaluated.
-function drawHeadPoseHud(ctx, pose, canvasWidth) {
-  var x = 12, y = 12;
-  var w = Math.min(232, Math.max(190, canvasWidth - 24));
-  var signedAngle = function(value) {
-    var number = Number(value);
-    if (!Number.isFinite(number)) return '--';
-    return (number >= 0 ? '+' : '') + number.toFixed(1) + '\u00b0';
-  };
-  var inference = Number(pose.inferenceMs);
-
-  ctx.save();
-  ctx.fillStyle = 'rgba(16,20,27,.80)';
-  ctx.fillRect(x, y, w, 74);
-  var range = String(pose.range || 'invalid').toLowerCase();
-  var rangeLabel = range === 'normal' ? 'NORMAL' :
-                   range === 'wide' ? 'WIDE  APPROX' : 'INVALID';
-  ctx.fillStyle = range === 'normal' ? '#33D69F' :
-                  range === 'wide' ? '#F4B860' : '#F16B6B';
-  ctx.font = '600 10px Plex, Consolas, monospace';
-  ctx.fillText('POSE/MOBILENETV2  ' + rangeLabel, x + 10, y + 16);
-  ctx.fillStyle = '#F3F5F7';
-  ctx.font = '10px Plex, Consolas, monospace';
-  ctx.fillText('YAW ' + signedAngle(pose.yaw) + '   PITCH ' + signedAngle(pose.pitch),
-               x + 10, y + 34);
-  ctx.fillStyle = '#AEB5C0';
-  ctx.fillText('ROLL ' + signedAngle(pose.roll) + '   ' +
-               (Number.isFinite(inference) ? inference.toFixed(1) + ' ms' : '--'),
-               x + 10, y + 50);
-  ctx.fillStyle = '#AEB5C0';
-  var aspect = Number(pose.faceAspect);
-  var cropAspect = Number(pose.cropAspect);
-  ctx.fillText('FACE ' + (Number.isFinite(aspect) ? aspect.toFixed(2) : '--') +
-               '   CROP ' + (Number.isFinite(cropAspect) ? cropAspect.toFixed(2) : '--'),
-               x + 10, y + 66);
-  ctx.restore();
 }
 
 // Keyboard activation for the mode tabs (a11y). Mouse path is unchanged.
