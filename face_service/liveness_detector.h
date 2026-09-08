@@ -127,6 +127,11 @@ public:
     // Reset the detector state for a new authentication session.
     void Reset();
 
+    // Clear only the in-progress blink gesture while retaining any adaptive
+    // baseline. Used when the pose gate is settling so a closed-eye frame
+    // before head movement cannot be paired with an open-eye frame after it.
+    void ResetBlinkProgress();
+
 private:
     // Compute EAR for a single eye from its 3 upper + 3 lower lid points
     // and inner/outer corner indices (106-point layout).

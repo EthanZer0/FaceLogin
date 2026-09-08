@@ -50,6 +50,7 @@ constexpr wchar_t MSG_PONG[] = L"PONG";
 constexpr wchar_t L10N_LOADING_MODELS[] = L"service.loadingModels";
 constexpr wchar_t L10N_RECOGNIZING[] = L"credential.recognizing";
 constexpr wchar_t L10N_POSE_ACCEPTABLE[] = L"credential.poseAcceptable";
+constexpr wchar_t L10N_POSE_SETTLING[] = L"credential.poseSettling";
 constexpr wchar_t L10N_POSE_INVALID[] = L"credential.poseInvalid";
 constexpr wchar_t L10N_POSE_YAW_LEFT[] = L"credential.poseYawLeft";
 constexpr wchar_t L10N_POSE_YAW_RIGHT[] = L"credential.poseYawRight";

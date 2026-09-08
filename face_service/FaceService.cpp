@@ -1258,11 +1258,56 @@ bool FaceService::ProcessAuthRequest() {
                                 : ipc::L10N_POSE_ROLL_LEFT;
     };
 
+    constexpr int kPoseSettleRequiredFrames = 3;
+    constexpr int kPoseSettleRequiredMs = 200;
+    // The frame loop includes SCRFD, 106-point landmarks, photometric
+    // normalization and MobileNetV2 inference. On a normal lock-screen
+    // session the gap between two usable pose observations can exceed 80ms;
+    // using that value caused the legal-frame counter to reset forever and
+    // left the UI stuck at "pose settling". This is only a guard against a
+    // genuinely stale observation, not the stability requirement itself.
+    constexpr int kPoseSettleMaxFrameGapMs = 500;
+
+    struct PoseSettleTracker {
+
+        bool ready = false;
+        int legalFrames = 0;
+        std::chrono::steady_clock::time_point firstLegal{};
+        std::chrono::steady_clock::time_point lastLegal{};
+
+        void Reset() {
+            ready = false;
+            legalFrames = 0;
+            firstLegal = {};
+            lastLegal = {};
+        }
+
+        bool Observe(std::chrono::steady_clock::time_point now) {
+            if (ready) return true;
+
+            if (legalFrames > 0 &&
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - lastLegal).count() > kPoseSettleMaxFrameGapMs) {
+                legalFrames = 0;
+                firstLegal = {};
+            }
+            if (legalFrames == 0) firstLegal = now;
+            lastLegal = now;
+            ++legalFrames;
+
+            ready = legalFrames >= kPoseSettleRequiredFrames &&
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - firstLegal).count() >= kPoseSettleRequiredMs;
+            return ready;
+        }
+    };
+
     dlib::matrix<dlib::rgb_pixel> frame;  // reused by the match loop below
     auto startTime = std::chrono::steady_clock::now();
     bool authSent = false;
     bool acceptedPoseSeen = false;
     bool poseRejectedSeen = false;
+    PoseSettleTracker matchPoseTracker;
     int consecutiveMatches = 0;
     // Consecutive frames where a face WAS detected (and its embedding was
     // computed) but no enrolled face matched. After kNoMatchFailFrames such
@@ -1301,6 +1346,7 @@ bool FaceService::ProcessAuthRequest() {
 
         if (!grabFrame(frame)) {
             if (!m_running) return false;
+            matchPoseTracker.Reset();
             // A stalled camera (e.g. after resume) self-shut-down in
             // GrabFrame. Rebuild it here so auth can continue instead of
             // spinning on a dead SourceReader until timeout.
@@ -1346,6 +1392,7 @@ bool FaceService::ProcessAuthRequest() {
         HeadPoseStats pose;
         if (!prepareFaceFrame(frame, faceRect, landmarks, &pose)) {
             sendStatusKey(ipc::L10N_POSE_INVALID);
+            matchPoseTracker.Reset();
             consecutiveMatches = 0;
             consecutiveNoMatch = 0;
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -1353,15 +1400,27 @@ bool FaceService::ProcessAuthRequest() {
         }
 
         const HeadPoseEvaluation poseEvaluation = EvaluateHeadPose(pose);
-        sendStatusKey(poseStatusKey(pose, poseEvaluation));
         if (!poseEvaluation.accepted) {
+            sendStatusKey(poseStatusKey(pose, poseEvaluation));
+            matchPoseTracker.Reset();
             poseRejectedSeen = true;
             consecutiveMatches = 0;
             consecutiveNoMatch = 0;
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
+
+        if (!matchPoseTracker.Observe(std::chrono::steady_clock::now())) {
+            sendStatusKey(ipc::L10N_POSE_SETTLING);
+            poseRejectedSeen = true;
+            consecutiveMatches = 0;
+            consecutiveNoMatch = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            continue;
+        }
+
         acceptedPoseSeen = true;
+        sendStatusKey(poseStatusKey(pose, poseEvaluation));
 
         // Recognition always consumes the normalized frame. There is one
         // embedding path for old templates; no alternate photometric variant
@@ -1488,6 +1547,7 @@ bool FaceService::ProcessAuthRequest() {
                 bool livenessPassed = false;
                 bool livenessAcceptedPoseSeen = false;
                 bool livenessPoseRejected = false;
+                PoseSettleTracker livenessPoseTracker;
 
                 if (method == LivenessMethod::None) {
                     livenessPassed = true;
@@ -1510,13 +1570,19 @@ bool FaceService::ProcessAuthRequest() {
                         if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= 5) break;
 
                         dlib::matrix<dlib::rgb_pixel> asFrame;
-                        if (!grabFrame(asFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
+                        if (!grabFrame(asFrame)) {
+                            if (!m_running) break;
+                            livenessPoseTracker.Reset();
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
 
                         dlib::full_object_detection asLandmarks;
                         dlib::rectangle asRect;
                         HeadPoseStats asPose;
                         if (!prepareFaceFrame(asFrame, asRect, asLandmarks, &asPose)) {
                             sendStatusKey(ipc::L10N_POSE_INVALID);
+                            livenessPoseTracker.Reset();
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
@@ -1524,10 +1590,19 @@ bool FaceService::ProcessAuthRequest() {
                         const HeadPoseEvaluation asPoseEvaluation = EvaluateHeadPose(asPose);
                         if (!asPoseEvaluation.accepted) {
                             sendStatusKey(poseStatusKey(asPose, asPoseEvaluation));
+                            livenessPoseTracker.Reset();
                             livenessPoseRejected = true;
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
+
+                        if (!livenessPoseTracker.Observe(std::chrono::steady_clock::now())) {
+                            sendStatusKey(ipc::L10N_POSE_SETTLING);
+                            livenessPoseRejected = true;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+
                         livenessAcceptedPoseSeen = true;
                         sendStatusKey(ipc::L10N_LIVENESS_CHECKING);
 
@@ -1572,13 +1647,21 @@ bool FaceService::ProcessAuthRequest() {
                             break;
                         }
                         dlib::matrix<dlib::rgb_pixel> livenessFrame;
-                        if (!grabFrame(livenessFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
+                        if (!grabFrame(livenessFrame)) {
+                            if (!m_running) break;
+                            livenessPoseTracker.Reset();
+                            liveness.ResetBlinkProgress();
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
                         dlib::full_object_detection livenessLandmarks;
                         dlib::rectangle lRect;
                         HeadPoseStats livenessPose;
                         if (!prepareFaceFrame(livenessFrame, lRect, livenessLandmarks,
                                               &livenessPose)) {
                             sendStatusKey(ipc::L10N_POSE_INVALID);
+                            livenessPoseTracker.Reset();
+                            liveness.ResetBlinkProgress();
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
@@ -1586,10 +1669,21 @@ bool FaceService::ProcessAuthRequest() {
                             EvaluateHeadPose(livenessPose);
                         if (!livenessEvaluation.accepted) {
                             sendStatusKey(poseStatusKey(livenessPose, livenessEvaluation));
+                            livenessPoseTracker.Reset();
+                            liveness.ResetBlinkProgress();
                             livenessPoseRejected = true;
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
+
+                        if (!livenessPoseTracker.Observe(std::chrono::steady_clock::now())) {
+                            sendStatusKey(ipc::L10N_POSE_SETTLING);
+                            liveness.ResetBlinkProgress();
+                            livenessPoseRejected = true;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+
                         livenessAcceptedPoseSeen = true;
                         sendStatusKey(ipc::L10N_BLINK_PROMPT);
                         if (liveness.ProcessFrame(livenessLandmarks)) {
@@ -1629,6 +1723,7 @@ bool FaceService::ProcessAuthRequest() {
                     bool verifyOk = false;
                     bool verifyAcceptedPoseSeen = false;
                     bool verifyPoseRejected = false;
+                    PoseSettleTracker verifyPoseTracker;
                     while (m_running && !verifyOk) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during final verify — aborting");
@@ -1641,6 +1736,7 @@ bool FaceService::ProcessAuthRequest() {
                         dlib::matrix<dlib::rgb_pixel> verifyFrame;
                         if (!grabFrame(verifyFrame)) {
                             if (!m_running) break;
+                            verifyPoseTracker.Reset();
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
@@ -1652,6 +1748,7 @@ bool FaceService::ProcessAuthRequest() {
                         if (!prepareFaceFrame(verifyFrame, verifyRect, verifyLandmarks,
                                               &verifyPose)) {
                             sendStatusKey(ipc::L10N_POSE_INVALID);
+                            verifyPoseTracker.Reset();
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
@@ -1660,10 +1757,19 @@ bool FaceService::ProcessAuthRequest() {
                             EvaluateHeadPose(verifyPose);
                         if (!verifyEvaluation.accepted) {
                             sendStatusKey(poseStatusKey(verifyPose, verifyEvaluation));
+                            verifyPoseTracker.Reset();
                             verifyPoseRejected = true;
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
+
+                        if (!verifyPoseTracker.Observe(std::chrono::steady_clock::now())) {
+                            sendStatusKey(ipc::L10N_POSE_SETTLING);
+                            verifyPoseRejected = true;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+
                         verifyAcceptedPoseSeen = true;
                         sendStatusKey(poseStatusKey(verifyPose, verifyEvaluation));
 

@@ -108,6 +108,14 @@ void LivenessDetector::Reset() {
     m_blinkReported = false;
 }
 
+void LivenessDetector::ResetBlinkProgress() {
+    m_below = m_open = 0;
+    m_leftBelow = m_leftOpen = 0;
+    m_rightBelow = m_rightOpen = 0;
+    m_blinkDetected = false;
+    m_blinkReported = false;
+}
+
 bool LivenessDetector::ProcessFrame(const dlib::full_object_detection& landmarks) {
     if (m_blinkDetected) {
         // One-shot: return true only once so the debug UI sees the exact

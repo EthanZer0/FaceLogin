@@ -52,6 +52,7 @@
   "credential.pressAnyKey": "按下任意按键以开始人脸识别",
   "credential.recognizing": "识别中...",
   "credential.poseAcceptable": "识别中，请尽量正对摄像头...",
+  "credential.poseSettling": "姿态已合格，请保持不动...",
   "credential.poseInvalid": "请靠近摄像头并保持正面",
   "credential.poseYawLeft": "请向左转头（当前右转过大）",
   "credential.poseYawRight": "请向右转头（当前左转过大）",
