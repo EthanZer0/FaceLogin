@@ -372,19 +372,44 @@ bool FaceService::Initialize() {
     }
     FACELOGIN_INFO(L"Loaded %zu registered user(s)", m_store->GetUserCount());
 
-    // Write the service's system uptime at startup for the CP's cold-boot
-    // detection.  The CP compares its own uptime to this value:
-    //   close to this value (within ~120s) → cold boot (CP loaded near service)
-    //   far above, or below (cross-boot stale) → cold boot
-    //   far above (same boot, hours later) → unlock
+    // Write both the service uptime and a boot-session marker for the CP's
+    // cold-boot detection.  Uptime alone is insufficient: after a reboot the
+    // new service can start late enough that its uptime is greater than the
+    // value left by the previous boot.  The CP uses the boot marker first and
+    // falls back to the legacy uptime/UserLoggedIn decision when the marker is
+    // unavailable.
     //
     // ALWAYS overwrite — registry persists across reboots, and GetTickCount64
     // resets to 0 on each boot, so a stale value from a prior boot would
     // corrupt detection if we skipped the write.
     {
         ULONGLONG uptime = GetTickCount64();
+        ULONGLONG previousBootTime = ReadRegQword(REGVAL_SERVICE_BOOT_TIME, 0);
+        ULONGLONG bootTime = GetCurrentBootTimeFileTime();
+
+        const bool bootChanged =
+            previousBootTime != 0 && bootTime != 0 &&
+            (previousBootTime > bootTime
+                ? previousBootTime - bootTime
+                : bootTime - previousBootTime) > BOOT_TIME_TOLERANCE_100NS;
+        const bool firstRunDuringEarlyBoot =
+            previousBootTime == 0 && uptime < EARLY_SYSTEM_BOOT_WINDOW_MS;
+
+        if (bootChanged || firstRunDuringEarlyBoot) {
+            // UserLoggedIn is deliberately persisted for same-boot service
+            // restarts, but it is stale after a reboot (and on first startup
+            // after upgrading from a version without ServiceBootTime).
+            WriteRegDword(REGVAL_USER_LOGGED_IN, 0);
+            FACELOGIN_INFO(L"Initialize: new/early system boot detected "
+                           L"(previousBoot=%llu, currentBoot=%llu, uptime=%llu); "
+                           L"cleared stale UserLoggedIn",
+                           previousBootTime, bootTime, uptime);
+        }
+
         WriteRegQword(REGVAL_SERVICE_START_UPTIME, uptime);
-        FACELOGIN_INFO(L"Initialize: ServiceStartUptime = %llu", uptime);
+        WriteRegQword(REGVAL_SERVICE_BOOT_TIME, bootTime);
+        FACELOGIN_INFO(L"Initialize: ServiceStartUptime = %llu, ServiceBootTime = %llu",
+                       uptime, bootTime);
     }
 
     m_detector = nullptr;  // loaded by the background thread — see StartBackgroundModelLoad()

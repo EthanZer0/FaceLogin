@@ -177,19 +177,38 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     // current uptime to the service's recorded uptime tells us whether they are
     // on the same boot cycle.
     //
+    // A boot-session marker is checked before the uptime comparison.  The
+    // previous implementation only compared uptimes, which failed when the
+    // new service started later than the uptime value left by the previous
+    // boot.  In that case a stale UserLoggedIn=1 made an actual cold boot look
+    // like a fast-startup resume and incorrectly required a key press.
+    //
     // Decision matrix:
-    //   serviceUptime == 0          → fallback to UserLoggedIn (service not ready)
-    //   currentUptime < serviceUptime → cross-boot: stale registry value from
-    //                                   prior boot → definitely cold boot
+    //   boot marker changed        → cold boot → auto-trigger
+    //   serviceUptime == 0         → fallback to UserLoggedIn (service not ready)
+    //   currentUptime < serviceUptime → legacy cross-boot fallback → cold boot
     //   delta < 120s, UserLoggedIn=0 → cold boot → auto-trigger
-    //   delta < 120s, UserLoggedIn=1 → fast-startup resume → manual trigger
+    //   delta < 120s, UserLoggedIn=1 → same-boot resume/restart → manual trigger
     //   delta >= 120s               → unlock (service started long ago) → manual
     ULONGLONG serviceUptime = ReadRegQword(REGVAL_SERVICE_START_UPTIME, 0);
+    ULONGLONG recordedBootTime = ReadRegQword(REGVAL_SERVICE_BOOT_TIME, 0);
+    ULONGLONG currentBootTime = GetCurrentBootTimeFileTime();
     ULONGLONG currentUptime = GetTickCount64();
     const ULONGLONG COLD_BOOT_THRESHOLD_MS = 120000; // 2 minutes
     DWORD userLoggedIn = ReadRegDword(REGVAL_USER_LOGGED_IN, 0);
 
-    if (serviceUptime == 0) {
+    const bool bootMarkerChanged =
+        recordedBootTime != 0 && currentBootTime != 0 &&
+        (recordedBootTime > currentBootTime
+            ? recordedBootTime - currentBootTime
+            : currentBootTime - recordedBootTime) > BOOT_TIME_TOLERANCE_100NS;
+
+    if (bootMarkerChanged) {
+        m_isColdBoot = true;
+        FACELOGIN_INFO(L"SetUsageScenario: boot marker changed (recorded=%llu, current=%llu) "
+                       L"→ coldBoot=true; ignoring stale UserLoggedIn=%lu",
+                       recordedBootTime, currentBootTime, userLoggedIn);
+    } else if (serviceUptime == 0) {
         // Service hasn't written ServiceStartUptime yet — fall back to
         // UserLoggedIn only.
         m_isColdBoot = (userLoggedIn == 0);
@@ -209,7 +228,8 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
             // CP and service started close together — could be cold boot
             // or fast-startup resume.  UserLoggedIn disambiguates.
             m_isColdBoot = (userLoggedIn == 0);
-            FACELOGIN_INFO(L"SetUsageScenario: delta=%llu < %llums, UserLoggedIn=%lu → coldBoot=%d",
+            FACELOGIN_INFO(L"SetUsageScenario: delta=%llu < %llums, UserLoggedIn=%lu "
+                          L"(same boot marker) → coldBoot=%d",
                           delta, COLD_BOOT_THRESHOLD_MS, userLoggedIn,
                           static_cast<int>(m_isColdBoot));
         } else {

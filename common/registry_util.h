@@ -3,6 +3,13 @@
 #include <windows.h>
 #include <string>
 
+// Some common-library translation units intentionally target an older Windows
+// SDK contract, so the SDK header may hide this Windows 7+ API even though the
+// application itself requires a newer Windows version.
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600
+extern "C" ULONGLONG WINAPI GetTickCount64(void);
+#endif
+
 // Registry key used for all FaceLogin configuration
 const wchar_t FACELOGIN_REG_KEY[] = L"SOFTWARE\\FaceLogin";
 
@@ -11,6 +18,12 @@ const wchar_t REGVAL_DATA_PATH[]   = L"DataPath";
 const wchar_t REGVAL_INSTALL_PATH[] = L"InstallPath";
 const wchar_t REGVAL_USER_LOGGED_IN[] = L"UserLoggedIn";
 const wchar_t REGVAL_SERVICE_START_UPTIME[] = L"ServiceStartUptime";
+// Boot identity captured by the service.  GetTickCount64 alone is not enough
+// to identify a reboot because a newly started service can observe an uptime
+// greater than the value left by the previous boot.
+const wchar_t REGVAL_SERVICE_BOOT_TIME[] = L"ServiceBootTime";
+inline constexpr ULONGLONG BOOT_TIME_TOLERANCE_100NS = 30ULL * 60ULL * 10000000ULL;
+inline constexpr ULONGLONG EARLY_SYSTEM_BOOT_WINDOW_MS = 5ULL * 60ULL * 1000ULL;
 // Mirrored from config.cold_boot_key_trigger by the Console's SetConfig so
 // the credential provider (running inside LogonUI, which cannot reach
 // config.json reliably) knows whether cold-boot recognition needs a key press.
@@ -115,4 +128,20 @@ inline bool WriteRegQword(const wchar_t* valueName, ULONGLONG val)
         return ok;
     }
     return false;
+}
+
+// Returns the approximate system boot time in FILETIME ticks.  Unlike the
+// wall-clock value alone, subtracting the monotonic uptime makes this usable
+// as a boot-session marker for the credential provider and service.
+inline ULONGLONG GetCurrentBootTimeFileTime()
+{
+    FILETIME nowFileTime{};
+    GetSystemTimeAsFileTime(&nowFileTime);
+
+    ULARGE_INTEGER now{};
+    now.LowPart = nowFileTime.dwLowDateTime;
+    now.HighPart = nowFileTime.dwHighDateTime;
+
+    const ULONGLONG uptime100ns = GetTickCount64() * 10000ULL;
+    return now.QuadPart > uptime100ns ? now.QuadPart - uptime100ns : 0;
 }
