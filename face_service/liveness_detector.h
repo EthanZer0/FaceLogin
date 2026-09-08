@@ -128,8 +128,8 @@ public:
     void Reset();
 
     // Clear only the in-progress blink gesture while retaining any adaptive
-    // baseline. Used when the pose gate is settling so a closed-eye frame
-    // before head movement cannot be paired with an open-eye frame after it.
+    // baseline. Used after a lost/invalid face frame so an eye gesture cannot
+    // be paired across a discontinuity.
     void ResetBlinkProgress();
 
 private:

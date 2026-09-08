@@ -52,7 +52,6 @@
   "credential.pressAnyKey": "Press any key to start face recognition",
   "credential.recognizing": "Recognizing...",
   "credential.poseAcceptable": "Recognizing; please face the camera...",
-  "credential.poseSettling": "Pose aligned; hold still...",
   "credential.poseInvalid": "Move closer and face the camera",
   "credential.poseYawLeft": "Turn your head left (turned too far right)",
   "credential.poseYawRight": "Turn your head right (turned too far left)",

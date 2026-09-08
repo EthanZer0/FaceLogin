@@ -128,14 +128,17 @@ inline HeadPoseEvaluation EvaluateHeadPose(const HeadPoseStats& pose) {
     const float pitch = std::abs(pose.pitch);
     const float roll = std::abs(pose.roll);
 
-    if (yaw <= 15.0f && pitch <= 12.0f && roll <= 12.0f) {
+    // Pitch is more sensitive for the recognizer than the current yaw/roll
+    // limits, so keep a tighter frontal and accepted band while preserving
+    // the existing severe-pose boundary for user guidance.
+    if (yaw <= 15.0f && pitch <= 10.0f && roll <= 12.0f) {
         result.legality = HeadPoseLegality::Front;
         result.accepted = true;
         result.front = true;
         return result;
     }
 
-    if (yaw <= 25.0f && pitch <= 18.0f && roll <= 18.0f) {
+    if (yaw <= 25.0f && pitch <= 15.0f && roll <= 18.0f) {
         result.legality = HeadPoseLegality::Acceptable;
         result.accepted = true;
         return result;
@@ -146,9 +149,9 @@ inline HeadPoseEvaluation EvaluateHeadPose(const HeadPoseStats& pose) {
     } else if (pose.yaw < -25.0f) {
         result.violations |= PoseViolationBit(HeadPoseViolation::YawRight);
     }
-    if (pose.pitch > 18.0f) {
+    if (pose.pitch > 15.0f) {
         result.violations |= PoseViolationBit(HeadPoseViolation::PitchDown);
-    } else if (pose.pitch < -18.0f) {
+    } else if (pose.pitch < -15.0f) {
         result.violations |= PoseViolationBit(HeadPoseViolation::PitchUp);
     }
     if (pose.roll > 18.0f) {

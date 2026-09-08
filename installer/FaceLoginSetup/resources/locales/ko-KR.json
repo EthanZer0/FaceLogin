@@ -52,7 +52,6 @@
   "credential.pressAnyKey": "아무 키나 누르면 얼굴 인식을 시작합니다.",
   "credential.recognizing": "얼굴을 인식하는 중...",
   "credential.poseAcceptable": "인식 중입니다. 카메라를 정면으로 바라보세요...",
-  "credential.poseSettling": "자세가 맞았습니다. 잠시 움직이지 마세요...",
   "credential.poseInvalid": "카메라에 조금 더 가까이 와서 정면을 바라보세요",
   "credential.poseYawLeft": "고개를 왼쪽으로 돌리세요 (현재 오른쪽으로 너무 많이 돌아감)",
   "credential.poseYawRight": "고개를 오른쪽으로 돌리세요 (현재 왼쪽으로 너무 많이 돌아감)",
