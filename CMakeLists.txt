@@ -12,6 +12,22 @@ option(FACELOGIN_BUILD_VISION_COMPONENTS
 # still limited to the actual vision executables.
 find_package(dlib CONFIG REQUIRED)
 
+# The shipped applications operate on camera buffers and ONNX tensors; they do
+# not use dlib's file-image loaders.  The vcpkg dlib target advertises JPEG,
+# PNG, and zlib as unconditional transitive link items, which makes
+# z-applocal copy their DLLs even though the final binaries do not import them.
+# Keep only the numerical BLAS/LAPACK and Windows system dependencies needed by
+# this application in dlib's link interface.
+get_target_property(FACELOGIN_DLIB_LINK_LIBRARIES
+    dlib::dlib INTERFACE_LINK_LIBRARIES)
+if(FACELOGIN_DLIB_LINK_LIBRARIES)
+    list(FILTER FACELOGIN_DLIB_LINK_LIBRARIES INCLUDE
+         REGEX "BLAS::BLAS|LAPACK::LAPACK|ws2_32|winmm")
+    set_property(TARGET dlib::dlib PROPERTY
+        INTERFACE_LINK_LIBRARIES "${FACELOGIN_DLIB_LINK_LIBRARIES}")
+endif()
+unset(FACELOGIN_DLIB_LINK_LIBRARIES)
+
 if(FACELOGIN_BUILD_VISION_COMPONENTS)
     find_package(onnxruntime CONFIG REQUIRED)
 endif()
