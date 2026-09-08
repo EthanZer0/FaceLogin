@@ -50,6 +50,32 @@ struct FramePhotometricTransform {
     bool unrecoverable = false;
 };
 
+enum class HeadPoseQuality {
+    Invalid,
+    Valid,
+};
+
+// Appearance-based pose shared by Console and service. Signs are
+// subject-centric: subject-right yaw is positive, looking up is positive, and
+// subject-left roll is positive.
+struct HeadPoseStats {
+    bool valid = false;
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    float roll = 0.0f;
+    float inferenceMs = 0.0f;
+    // Diagnostics for the detector-to-pose crop. They are intentionally
+    // separate from the angle result so we can distinguish model error from
+    // an extreme side-face input without using either value for auth gating.
+    float faceWidth = 0.0f;
+    float faceHeight = 0.0f;
+    float faceAspect = 0.0f;
+    float cropWidth = 0.0f;
+    float cropHeight = 0.0f;
+    float cropAspect = 0.0f;
+    HeadPoseQuality quality = HeadPoseQuality::Invalid;
+};
+
 enum class HardwareControlState {
     Disabled,
     Probing,
@@ -70,6 +96,7 @@ struct UnifiedFaceFrame {
     dlib::rectangle faceRect;
     FacePhotometricStats stats;
     FramePhotometricTransform transform;
+    HeadPoseStats pose;
     bool faceDetected = false;
     bool qualityAccepted = false;
 };

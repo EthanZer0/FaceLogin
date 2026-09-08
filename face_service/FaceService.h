@@ -110,6 +110,7 @@ private:
     std::unique_ptr<PipeServer> m_pipeServer;
     std::unique_ptr<OnnxLandmarkDetector> m_detector;  // 106-point landmarks (2d106det)
     std::unique_ptr<OnnxDetector> m_onnxDetector;       // SCRFD (face detection)
+    std::unique_ptr<OnnxHeadPose> m_headPose;           // MobileNetV2 6D pose (observer)
     std::unique_ptr<OnnxRecognizer> m_onnxRecognizer;   // InsightFace (recognition)
     std::unique_ptr<OnnxAntiSpoof>  m_antiSpoof;        // MiniFASNetV2 (optional)
     std::unique_ptr<WebcamCapture>   m_webcamMF;   // Media Foundation (standalone / service MF-first)

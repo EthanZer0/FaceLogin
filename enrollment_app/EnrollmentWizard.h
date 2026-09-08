@@ -168,7 +168,8 @@ private:
     // Encode the frame as a base64 JPEG data URL (full resolution).
     std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
     // Serialize detected faces to JSON (coordinates in full-frame space).
-    std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces);
+    std::string FacesToJson(const std::vector<facelogin::FaceWithLandmarks>& faces,
+                            const HeadPoseStats* pose = nullptr);
 
     // Pull-model frame delivery: request ONE fresh frame from the frame thread
     // (which during capture is in pull mode — it grabs a camera frame only on
@@ -183,7 +184,8 @@ private:
     // frame in darkness, then apply the session's per-frame transform.
     bool PrepareFaceFrame(dlib::matrix<dlib::rgb_pixel>& frame,
                           dlib::rectangle& rect,
-                          dlib::full_object_detection& landmarks);
+                          dlib::full_object_detection& landmarks,
+                          HeadPoseStats* outPose = nullptr);
 
     // Load the 2d106det + ONNX models if not already loaded (called from
     // the background frame thread, so a cold start never blocks the UI thread).
@@ -207,6 +209,7 @@ private:
     PhotometricSession m_photometric;
     std::unique_ptr<OnnxLandmarkDetector> m_detector;   // 106-point landmarks (2d106det)
     std::unique_ptr<OnnxDetector>   m_onnxDetector;   // SCRFD detection
+    std::unique_ptr<OnnxHeadPose>   m_headPose;       // MobileNetV2 6D pose (observer)
     std::unique_ptr<OnnxRecognizer> m_onnxRecognizer; // InsightFace recognition
     std::unique_ptr<OnnxAntiSpoof>  m_antiSpoof;
     CredentialStore m_store;

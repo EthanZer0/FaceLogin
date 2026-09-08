@@ -3,7 +3,10 @@
 #include <dlib/image_transforms.h>
 #include <fstream>
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <stdexcept>
 
 namespace facelogin {
 
@@ -499,6 +502,165 @@ std::optional<OnnxDetector::Detection> OnnxDetector::DetectLargestFace(
         });
 
     return *largest;
+}
+
+// ============================================================================
+// OnnxHeadPose
+// ============================================================================
+
+OnnxHeadPose::~OnnxHeadPose() = default;
+
+bool OnnxHeadPose::Initialize(const std::wstring& modelPath) {
+    try {
+        m_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING,
+                                           "FaceLoginHeadPose");
+        Ort::SessionOptions opts;
+        opts.SetIntraOpNumThreads(2);
+        opts.AddConfigEntry("session.intra_op.allow_spinning", "0");
+        opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        opts.DisableCpuMemArena();
+        opts.DisableMemPattern();
+
+        m_session = std::make_unique<Ort::Session>(*m_env, modelPath.c_str(), opts);
+        if (m_session->GetInputCount() != 1 || m_session->GetOutputCount() != 1) {
+            throw std::runtime_error("head-pose model must have one input and one output");
+        }
+
+        const auto inputShape = m_session->GetInputTypeInfo(0)
+            .GetTensorTypeAndShapeInfo().GetShape();
+        if (inputShape.size() != 4 ||
+            (inputShape[0] > 0 && inputShape[0] != 1) ||
+            inputShape[1] != 3 || inputShape[2] != kInputSize ||
+            inputShape[3] != kInputSize) {
+            throw std::runtime_error("unexpected head-pose input shape");
+        }
+        const auto outputInfo = m_session->GetOutputTypeInfo(0)
+            .GetTensorTypeAndShapeInfo();
+        if (outputInfo.GetElementCount() != 9) {
+            throw std::runtime_error("head-pose output is not a 3x3 rotation matrix");
+        }
+
+        Ort::AllocatorWithDefaultOptions allocator;
+        m_inputName = m_session->GetInputNameAllocated(0, allocator).get();
+        m_outputName = m_session->GetOutputNameAllocated(0, allocator).get();
+        m_memoryInfo = std::make_unique<Ort::MemoryInfo>(
+            Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault));
+        m_faceChip.set_size(kInputSize, kInputSize);
+        m_input.assign(3 * kInputSize * kInputSize, 0.0f);
+        m_initialized = true;
+        FACELOGIN_INFO(L"MobileNetV2 head-pose model initialized: %s", modelPath.c_str());
+        FACELOGIN_INFO(L"  Input: %hs [1,3,224,224], Output: %hs [1,3,3]",
+                       m_inputName.c_str(), m_outputName.c_str());
+        return true;
+    } catch (const std::exception& e) {
+        m_session.reset();
+        m_env.reset();
+        m_memoryInfo.reset();
+        m_initialized = false;
+        FACELOGIN_WARN(L"Head-pose model init failed: %hs", e.what());
+        return false;
+    }
+}
+
+HeadPoseStats OnnxHeadPose::Estimate(
+    const dlib::matrix<dlib::rgb_pixel>& image,
+    const dlib::rectangle& faceRect) {
+    HeadPoseStats result;
+    if (!m_initialized || image.size() == 0 || faceRect.is_empty()) return result;
+
+    std::lock_guard<std::mutex> lock(m_runMutex);
+    try {
+        const auto started = std::chrono::steady_clock::now();
+        const double faceWidth = std::max<double>(
+            1.0, static_cast<double>(faceRect.right() - faceRect.left()));
+        const double faceHeight = std::max<double>(
+            1.0, static_cast<double>(faceRect.bottom() - faceRect.top()));
+        const double faceAspect = faceWidth / faceHeight;
+
+        // Match the official ONNX example's expand_bbox() exactly: expand
+        // horizontally by 20% of the face height and vertically by 20% of the
+        // face width. Keep this rectangular crop and let the final resize to
+        // 224x224 match the reference preprocessing. A square crop based on
+        // face height introduces excessive horizontal background at profile.
+        constexpr double kExpandFactor = 0.20;
+        const double expandX = faceHeight * kExpandFactor;
+        const double expandY = faceWidth * kExpandFactor;
+        const double imageLeft = 0.0;
+        const double imageTop = 0.0;
+        const double imageRight = std::max<double>(0.0, image.nc() - 1.0);
+        const double imageBottom = std::max<double>(0.0, image.nr() - 1.0);
+        const double cropLeft = std::max(imageLeft, faceRect.left() - expandX);
+        const double cropTop = std::max(imageTop, faceRect.top() - expandY);
+        const double cropRight = std::min(imageRight, faceRect.right() + expandX);
+        const double cropBottom = std::min(imageBottom, faceRect.bottom() + expandY);
+        const double cropWidth = std::max<double>(1.0, cropRight - cropLeft);
+        const double cropHeight = std::max<double>(1.0, cropBottom - cropTop);
+        result.faceWidth = static_cast<float>(faceWidth);
+        result.faceHeight = static_cast<float>(faceHeight);
+        result.faceAspect = static_cast<float>(faceAspect);
+        result.cropWidth = static_cast<float>(cropWidth);
+        result.cropHeight = static_cast<float>(cropHeight);
+        result.cropAspect = static_cast<float>(cropWidth / cropHeight);
+        const dlib::drectangle cropRect(cropLeft, cropTop, cropRight, cropBottom);
+        dlib::extract_image_chip(
+            image, dlib::chip_details(cropRect,
+                                      dlib::chip_dims(kInputSize, kInputSize)),
+            m_faceChip);
+
+        constexpr float mean[3] = {0.485f, 0.456f, 0.406f};
+        constexpr float stddev[3] = {0.229f, 0.224f, 0.225f};
+        constexpr int plane = kInputSize * kInputSize;
+        for (int y = 0; y < kInputSize; ++y) {
+            for (int x = 0; x < kInputSize; ++x) {
+                const auto& pixel = m_faceChip(y, x);
+                const int index = y * kInputSize + x;
+                m_input[index] =
+                    (static_cast<float>(pixel.red) / 255.0f - mean[0]) / stddev[0];
+                m_input[plane + index] =
+                    (static_cast<float>(pixel.green) / 255.0f - mean[1]) / stddev[1];
+                m_input[2 * plane + index] =
+                    (static_cast<float>(pixel.blue) / 255.0f - mean[2]) / stddev[2];
+            }
+        }
+
+        const std::array<int64_t, 4> shape = {1, 3, kInputSize, kInputSize};
+        auto inputTensor = Ort::Value::CreateTensor<float>(
+            *m_memoryInfo, m_input.data(), m_input.size(), shape.data(), shape.size());
+        const char* inputNames[] = {m_inputName.c_str()};
+        const char* outputNames[] = {m_outputName.c_str()};
+        auto outputs = m_session->Run(Ort::RunOptions{}, inputNames, &inputTensor, 1,
+                                      outputNames, 1);
+        const float* rotation = outputs[0].GetTensorData<float>();
+        for (int i = 0; i < 9; ++i) {
+            if (!std::isfinite(rotation[i])) return result;
+        }
+
+        const double sy = std::sqrt(
+            static_cast<double>(rotation[0]) * rotation[0] +
+            static_cast<double>(rotation[3]) * rotation[3]);
+        const bool singular = sy < 1e-6;
+        const double pitch = singular
+            ? std::atan2(-rotation[5], rotation[4])
+            : std::atan2(rotation[7], rotation[8]);
+        const double yaw = std::atan2(-rotation[6], sy);
+        const double roll = singular ? 0.0 : std::atan2(rotation[3], rotation[0]);
+        constexpr double radiansToDegrees = 57.29577951308232;
+        result.pitch = static_cast<float>(pitch * radiansToDegrees);
+        result.yaw = static_cast<float>(yaw * radiansToDegrees);
+        result.roll = static_cast<float>(roll * radiansToDegrees);
+        result.inferenceMs = static_cast<float>(
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started).count());
+        result.valid = std::abs(result.yaw) <= 90.5f &&
+                       std::abs(result.pitch) <= 90.5f &&
+                       std::abs(result.roll) <= 90.5f;
+        result.quality = result.valid ? HeadPoseQuality::Valid
+                                      : HeadPoseQuality::Invalid;
+        return result;
+    } catch (const std::exception& e) {
+        FACELOGIN_WARN(L"Head-pose inference failed: %hs", e.what());
+        return result;
+    }
 }
 
 // ============================================================================

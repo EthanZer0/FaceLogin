@@ -21,6 +21,7 @@
 #include <fstream>
 #include <algorithm>
 #include <chrono>
+#include <locale>
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "windowscodecs.lib")
@@ -491,12 +492,14 @@ bool EnrollmentWizard::StartPreview() {
             if (m_onnxDetector) {
                 std::vector<facelogin::FaceWithLandmarks> faces;
                 FaceWithLandmarks fwl;
-                const bool prepared = PrepareFaceFrame(frame, fwl.rect, fwl.landmarks);
+                HeadPoseStats pose;
+                const bool prepared = PrepareFaceFrame(
+                    frame, fwl.rect, fwl.landmarks, &pose);
                 if (prepared) {
                     tDet = std::chrono::steady_clock::now();
                     tLand = tDet;
                     faces.push_back(std::move(fwl));
-                    faceJson = FacesToJson(faces);
+                    faceJson = FacesToJson(faces, &pose);
                 }
             }
             if (faceJson == "[]" && (!m_onnxDetector || !m_detector)) {
@@ -550,7 +553,9 @@ bool EnrollmentWizard::StartPreview() {
 bool EnrollmentWizard::PrepareFaceFrame(
     dlib::matrix<dlib::rgb_pixel>& frame,
     dlib::rectangle& rect,
-    dlib::full_object_detection& landmarks) {
+    dlib::full_object_detection& landmarks,
+    HeadPoseStats* outPose) {
+    if (outPose) *outPose = {};
     if (frame.size() == 0 || !m_onnxDetector || !m_detector) return false;
     rect = dlib::rectangle();
     landmarks = dlib::full_object_detection();
@@ -581,9 +586,13 @@ bool EnrollmentWizard::PrepareFaceFrame(
             return false;
         }
     }
+    if (outPose && m_headPose && m_headPose->IsInitialized()) {
+        *outPose = m_headPose->Estimate(rawFrame, rect);
+    }
     UnifiedFaceFrame unified;
     UnifiedFacePipeline pipeline(m_photometric);
     const bool accepted = pipeline.ProcessFrame(rawFrame, rect, landmarks, unified);
+    if (outPose) unified.pose = *outPose;
     if (accepted && unified.normalizedFrame.size() != 0) {
         frame = std::move(unified.normalizedFrame);
         rect = unified.faceRect;
@@ -615,6 +624,17 @@ bool EnrollmentWizard::EnsureModelsLoaded() {
             FACELOGIN_ERROR(L"SCRFD detector failed to load — enrollment unavailable");
             m_onnxDetector.reset();
             return false;
+        }
+    }
+
+    // Pose is optional and observer-only. A missing/incompatible model must
+    // never make face enrollment or recognition unavailable.
+    std::wstring posePath = modelsDir + L"\\head_pose_mobilenetv2.onnx";
+    if (!m_headPose) {
+        m_headPose = std::make_unique<OnnxHeadPose>();
+        if (!m_headPose->Initialize(posePath)) {
+            FACELOGIN_WARN(L"MobileNetV2 head-pose model not available; pose HUD disabled");
+            m_headPose.reset();
         }
     }
 
@@ -873,8 +893,10 @@ std::string EnrollmentWizard::EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixe
 // ============================================================================
 
 std::string EnrollmentWizard::FacesToJson(
-    const std::vector<facelogin::FaceWithLandmarks>& faces) {
+    const std::vector<facelogin::FaceWithLandmarks>& faces,
+    const HeadPoseStats* pose) {
     std::ostringstream js;
+    js.imbue(std::locale::classic());
     js << "[";
     for (size_t fi = 0; fi < faces.size(); fi++) {
         if (fi > 0) js << ",";
@@ -890,7 +912,26 @@ std::string EnrollmentWizard::FacesToJson(
             js << static_cast<int>(f.landmarks.part(i).x()) << ","
                << static_cast<int>(f.landmarks.part(i).y());
         }
-        js << "]}";
+        js << "],\"pose\":";
+        if (pose) {
+            js << "{\"valid\":" << (pose->valid ? "true" : "false")
+               << std::fixed << std::setprecision(1)
+               << ",\"yaw\":" << pose->yaw
+               << ",\"pitch\":" << pose->pitch
+               << ",\"roll\":" << pose->roll
+               << std::setprecision(2)
+               << ",\"inferenceMs\":" << pose->inferenceMs
+               << ",\"faceWidth\":" << pose->faceWidth
+               << ",\"faceHeight\":" << pose->faceHeight
+               << ",\"faceAspect\":" << pose->faceAspect
+               << ",\"cropWidth\":" << pose->cropWidth
+               << ",\"cropHeight\":" << pose->cropHeight
+               << ",\"cropAspect\":" << pose->cropAspect
+               << "}";
+        } else {
+            js << "null";
+        }
+        js << "}";
     }
     js << "]";
     return js.str();

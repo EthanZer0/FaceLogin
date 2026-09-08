@@ -9,6 +9,8 @@ vcpkg/
 models/*.dat
 models/*.bz2
 *.onnx
+# Small runtime pose model is intentionally shipped with the installer.
+!installer/FaceLoginSetup/resources/models/head_pose_mobilenetv2.onnx
 
 # IDE / VS
 .vs/

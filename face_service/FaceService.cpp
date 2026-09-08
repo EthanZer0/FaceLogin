@@ -503,6 +503,21 @@ bool FaceService::LoadHeavyModels() {
     }
     FACELOGIN_INFO(L"SCRFD detector loaded");
 
+    // Head pose is an optional observer. It is loaded with the heavy model
+    // group so the service and Console use the same model asset and lifetime,
+    // but failure never blocks face authentication.
+    {
+        auto headPose = std::make_unique<OnnxHeadPose>();
+        std::wstring path = m_modelsDir + L"\\head_pose_mobilenetv2.onnx";
+        if (headPose->Initialize(path)) {
+            std::lock_guard<std::mutex> lock(m_modelMutex);
+            m_headPose = std::move(headPose);
+            FACELOGIN_INFO(L"MobileNetV2 head-pose model loaded (observer only)");
+        } else {
+            FACELOGIN_WARN(L"MobileNetV2 head-pose model unavailable; pose logging disabled");
+        }
+    }
+
     // 1. 106-point landmark detector (2d106det.onnx, ~5MB — replaces the
     // 99.7MB dlib shape predictor).
     {
@@ -573,6 +588,7 @@ bool FaceService::LoadHeavyModels() {
 void FaceService::UnloadHeavyModels() {
     std::lock_guard<std::mutex> lock(m_modelMutex);
     if (m_onnxDetector)     { m_onnxDetector.reset(); }
+    if (m_headPose)         { m_headPose.reset(); }
     if (m_detector)         { m_detector.reset(); }
     if (m_onnxRecognizer)   { m_onnxRecognizer.reset(); }
     if (m_antiSpoof)        { m_antiSpoof.reset(); }
@@ -1011,7 +1027,9 @@ bool FaceService::ProcessAuthRequest() {
     // recognition, liveness and final verification.
     auto prepareFaceFrame = [this](dlib::matrix<dlib::rgb_pixel>& f,
                                    dlib::rectangle& rect,
-                                   dlib::full_object_detection& landmarks) -> bool {
+                                   dlib::full_object_detection& landmarks,
+                                   HeadPoseStats* outPose = nullptr) -> bool {
+        if (outPose) *outPose = {};
         auto detect = [this, &rect, &landmarks](
                           const dlib::matrix<dlib::rgb_pixel>& candidate) -> bool {
             auto det = m_onnxDetector->DetectLargestFace(candidate);
@@ -1032,9 +1050,13 @@ bool FaceService::ProcessAuthRequest() {
                 return false;
             }
         }
+        if (outPose && m_headPose && m_headPose->IsInitialized()) {
+            *outPose = m_headPose->Estimate(rawFrame, rect);
+        }
         UnifiedFaceFrame unified;
         UnifiedFacePipeline pipeline(m_photometric);
         const bool accepted = pipeline.ProcessFrame(rawFrame, rect, landmarks, unified);
+        if (outPose) unified.pose = *outPose;
         if (accepted && unified.normalizedFrame.size() != 0) {
             f = std::move(unified.normalizedFrame);
             rect = unified.faceRect;
@@ -1280,7 +1302,8 @@ bool FaceService::ProcessAuthRequest() {
         std::optional<CredentialStore::MatchResult> match;
         dlib::full_object_detection landmarks;
         dlib::rectangle faceRect;
-        if (!prepareFaceFrame(frame, faceRect, landmarks)) {
+        HeadPoseStats pose;
+        if (!prepareFaceFrame(frame, faceRect, landmarks, &pose)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
@@ -1297,9 +1320,15 @@ bool FaceService::ProcessAuthRequest() {
         if (match) {
             consecutiveMatches++;
             consecutiveNoMatch = 0;   // a match resets the no-match counter
-            FACELOGIN_INFO(L"Face matched: %s (distance=%.4f, photometric=%d) [%d/%d]",
+            FACELOGIN_INFO(L"Face matched: %s (distance=%.4f, photometric=%d, "
+                           L"pose=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
+                           L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f) [%d/%d]",
                           match->username.c_str(), match->distance,
                           static_cast<int>(m_photometric.State()),
+                          static_cast<int>(pose.quality), pose.yaw, pose.pitch,
+                          pose.roll, pose.inferenceMs, pose.faceWidth,
+                          pose.faceHeight, pose.faceAspect, pose.cropWidth,
+                          pose.cropHeight, pose.cropAspect,
                           consecutiveMatches, CONSENSUS_FRAMES);
 
             if (consecutiveMatches < CONSENSUS_FRAMES) {
@@ -1315,8 +1344,13 @@ bool FaceService::ProcessAuthRequest() {
                     // Diagnostics: report the nearest distance in the single
                     // normalized input domain used by the recognizer.
                     float d0 = m_store->FindNearestDistance(onnxEmb.data(), onnxEmb.size());
-                    FACELOGIN_WARN(L"No match for %d frames — nearest normalized distance=%.3f",
-                                   consecutiveNoMatch, d0);
+                    FACELOGIN_WARN(L"No match for %d frames — nearest normalized distance=%.3f, "
+                                   L"pose=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
+                                   L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f",
+                                   consecutiveNoMatch, d0, static_cast<int>(pose.quality),
+                                   pose.yaw, pose.pitch, pose.roll, pose.inferenceMs,
+                                   pose.faceWidth, pose.faceHeight, pose.faceAspect,
+                                   pose.cropWidth, pose.cropHeight, pose.cropAspect);
                     FACELOGIN_INFO(L"No match for %d consecutive frames — reporting failure to CP",
                                    consecutiveNoMatch);
                     // Opt-in unknown-face capture: save the failing frame +
@@ -1526,7 +1560,9 @@ bool FaceService::ProcessAuthRequest() {
                         // Same normalized frame pipeline as the recognition loop.
                         dlib::full_object_detection verifyLandmarks;
                         dlib::rectangle verifyRect;
-                        if (!prepareFaceFrame(verifyFrame, verifyRect, verifyLandmarks)) {
+                        HeadPoseStats verifyPose;
+                        if (!prepareFaceFrame(verifyFrame, verifyRect, verifyLandmarks,
+                                              &verifyPose)) {
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
@@ -1540,6 +1576,16 @@ bool FaceService::ProcessAuthRequest() {
 
                         if (verifyMatch) {
                             verifyOk = true;
+                            FACELOGIN_INFO(L"Final match verified: distance=%.4f, "
+                                           L"pose=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
+                                           L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f",
+                                           verifyMatch->distance,
+                                           static_cast<int>(verifyPose.quality),
+                                           verifyPose.yaw, verifyPose.pitch,
+                                           verifyPose.roll, verifyPose.inferenceMs,
+                                           verifyPose.faceWidth, verifyPose.faceHeight,
+                                           verifyPose.faceAspect, verifyPose.cropWidth,
+                                           verifyPose.cropHeight, verifyPose.cropAspect);
                             // Use the verified match for the credential (fresh, same identity).
                             match = verifyMatch;
                             break;

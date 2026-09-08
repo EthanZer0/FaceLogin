@@ -156,6 +156,34 @@ private:
                                     float& outScaleX, float& outScaleY);
 };
 
+// Lightweight image-based head-pose estimator derived from 6DRepNet with a
+// MobileNetV2 backbone. It consumes an expanded crop from the original SCRFD
+// face box (never the frontalized ArcFace chip), returns a 3x3 rotation matrix,
+// and converts it to Tait-Bryan pitch/yaw/roll angles in degrees.
+class OnnxHeadPose {
+public:
+    OnnxHeadPose() = default;
+    ~OnnxHeadPose();
+
+    bool Initialize(const std::wstring& modelPath);
+    HeadPoseStats Estimate(const dlib::matrix<dlib::rgb_pixel>& image,
+                           const dlib::rectangle& faceRect);
+    bool IsInitialized() const { return m_initialized; }
+
+private:
+    static constexpr int kInputSize = 224;
+
+    std::unique_ptr<Ort::Env> m_env;
+    std::unique_ptr<Ort::Session> m_session;
+    std::unique_ptr<Ort::MemoryInfo> m_memoryInfo;
+    bool m_initialized = false;
+    std::string m_inputName;
+    std::string m_outputName;
+    std::mutex m_runMutex;
+    dlib::matrix<dlib::rgb_pixel> m_faceChip;
+    std::vector<float> m_input;
+};
+
 // Silent anti-spoofing detection.
 // Rejects printed photos, screen replays, and 3D masks. Two supported models:
 //   - facenox MiniFAS (default, 1.6.0): input 128×128 RGB, output [1,2] logits
