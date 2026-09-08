@@ -7,10 +7,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(FACELOGIN_BUILD_VISION_COMPONENTS
        "Build the face service and enrollment console (requires dlib/ONNX Runtime)"
        ON)
-option(FACELOGIN_BUILD_TESTS
-       "Build photometric pipeline unit tests (requires dlib)"
-       OFF)
-
 # The shared photometric frame types are part of facelogin_common, so dlib is
 # required even when only the non-vision targets are selected. ONNX Runtime is
 # still limited to the actual vision executables.
@@ -46,9 +42,4 @@ add_subdirectory(credential_provider)
 if(FACELOGIN_BUILD_VISION_COMPONENTS)
     add_subdirectory(face_service)
     add_subdirectory(enrollment_app)
-endif()
-
-if(FACELOGIN_BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
 endif()

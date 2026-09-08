@@ -113,8 +113,6 @@
   "console.settings.livenessNone": "None",
   "console.settings.glasses": "Glasses mode",
   "console.settings.glassesHelp": "Glasses mode uses adaptive blink detection that is more robust to frames/reflections, but may be less stable than the default mode. Keep it off unless needed.",
-  "console.settings.lowLight": "Low-light enhancement (handled by the unified pipeline)",
-  "console.settings.lowLightHelp": "The v2 unified photometric pipeline applies the required brightness normalization automatically; this legacy switch is retained for compatibility.",
   "console.settings.exposureControl": "Unified photometric normalization (recommended)",
   "console.settings.exposureControlHelp": "Enrollment, preview, liveness and unlock use the same per-frame photometric pipeline. Hardware coarse control is verified first and falls back to software for the current session; re-enrollment is not required.",
   "console.settings.memory": "Memory optimization",

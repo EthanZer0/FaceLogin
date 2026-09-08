@@ -491,7 +491,8 @@ bool EnrollmentWizard::StartPreview() {
             if (m_onnxDetector) {
                 std::vector<facelogin::FaceWithLandmarks> faces;
                 FaceWithLandmarks fwl;
-                if (PrepareFaceFrame(frame, fwl.rect, fwl.landmarks)) {
+                const bool prepared = PrepareFaceFrame(frame, fwl.rect, fwl.landmarks);
+                if (prepared) {
                     tDet = std::chrono::steady_clock::now();
                     tLand = tDet;
                     faces.push_back(std::move(fwl));
@@ -502,6 +503,12 @@ bool EnrollmentWizard::StartPreview() {
                 // If the model stack is unavailable, still keep the preview
                 // in the same software-normalized brightness domain.
                 m_photometric.NormalizeForDetection(frame);
+            } else if (faceJson == "[]") {
+                // Do not recompute a whole-frame gain when detection misses a
+                // frame.  That switches the preview between face statistics
+                // and background statistics and is a visible brightness
+                // jump. Reuse the last stable transform instead.
+                PhotometricSession::ApplyTransform(frame, m_photometric.LastTransform());
             }
             std::string b64 = EncodeJPEGBase64(frame);
             auto tJpeg = std::chrono::steady_clock::now();
@@ -548,35 +555,41 @@ bool EnrollmentWizard::PrepareFaceFrame(
     rect = dlib::rectangle();
     landmarks = dlib::full_object_detection();
 
-    auto detect = [this, &frame, &rect, &landmarks]() -> bool {
-        auto det = m_onnxDetector->DetectLargestFace(frame);
+    auto detect = [this, &rect, &landmarks](
+                      const dlib::matrix<dlib::rgb_pixel>& candidate) -> bool {
+        auto det = m_onnxDetector->DetectLargestFace(candidate);
         if (!det) return false;
         rect = dlib::rectangle(static_cast<long>(det->x1),
                                static_cast<long>(det->y1),
                                static_cast<long>(det->x2),
                                static_cast<long>(det->y2));
         landmarks = dlib::full_object_detection();
-        return !rect.is_empty() && m_detector->DetectLandmarks(frame, rect, landmarks);
+        return !rect.is_empty() && m_detector->DetectLandmarks(candidate, rect, landmarks);
     };
 
-    dlib::matrix<dlib::rgb_pixel> rawForRetry;
-    bool usedNormalizedRetry = false;
-    if (!detect()) {
+    const dlib::matrix<dlib::rgb_pixel> rawFrame = frame;
+    if (!detect(rawFrame)) {
         // Detection gets one retry on a temporary software-normalized frame;
         // this is still the same session transform used by the actual sample.
-        rawForRetry = frame;
-        m_photometric.NormalizeForDetection(frame);
-        usedNormalizedRetry = true;
-        if (!detect()) return false;
+        dlib::matrix<dlib::rgb_pixel> detectionFrame = rawFrame;
+        m_photometric.NormalizeForDetection(detectionFrame);
+        if (!detect(detectionFrame)) {
+            // Keep the caller's frame raw. The preview path will reuse the
+            // previous stable transform instead of displaying a new
+            // whole-frame gain only because detection failed.
+            frame = rawFrame;
+            return false;
+        }
     }
     UnifiedFaceFrame unified;
     UnifiedFacePipeline pipeline(m_photometric);
-    const auto& photometricSource = usedNormalizedRetry ? rawForRetry : frame;
-    const bool accepted = pipeline.ProcessFrame(photometricSource, rect, landmarks, unified);
-    if (unified.normalizedFrame.size() != 0) {
+    const bool accepted = pipeline.ProcessFrame(rawFrame, rect, landmarks, unified);
+    if (accepted && unified.normalizedFrame.size() != 0) {
         frame = std::move(unified.normalizedFrame);
         rect = unified.faceRect;
         landmarks = std::move(unified.landmarks);
+    } else {
+        frame = rawFrame;
     }
     return accepted && unified.qualityAccepted;
 }

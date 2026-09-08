@@ -63,7 +63,6 @@ func EnsureConfigDefaults(configPath string, uiLanguage string) error {
 			"match_threshold":          0.75,
 			"anti_spoof_threshold":     0.30,
 			"blink_glasses_mode":       false,
-			"low_light_enhance":        false,
 			"photometric_mode":         "hybrid",
 			"photometric_target_luma":  110,
 			"photometric_band":         15,

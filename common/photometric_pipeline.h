@@ -101,8 +101,18 @@ private:
     int m_noResponseCount = 0;
     int m_reversedCount = 0;
 
+    // Hardware feedback is deliberately filtered and requires several
+    // consecutive observations before a camera step.  A single jittery face
+    // crop must not reverse the camera controller.
+    bool m_hasFilteredLuma = false;
+    float m_filteredLuma = 0.0f;
+    int m_darkEvidence = 0;
+    int m_brightEvidence = 0;
+
     bool m_hasSmoothedGain = false;
     float m_smoothedGain = 1.0f;
+    bool m_hasSmoothedGamma = false;
+    float m_smoothedGamma = 1.0f;
     FramePhotometricTransform m_lastTransform;
     mutable std::recursive_mutex m_mutex;
 };

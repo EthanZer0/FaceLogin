@@ -934,16 +934,6 @@ button{font-family:inherit}
 
     <div class="field">
       <label class="check tip">
-        <input type="checkbox" id="cfg-low-light">
-        <span class="cbx"></span>
-        <span>暗光增强（已由统一光照管线自动处理）</span>
-        <span class="tip-ico">i</span>
-        <span class="tip-box">新版本统一光照管线会自动处理必要的亮度归一化，此旧开关仅为兼容保留。</span>
-      </label>
-    </div>
-
-    <div class="field">
-      <label class="check tip">
         <input type="checkbox" id="cfg-exposure">
         <span class="cbx"></span>
         <span>统一光照归一化（推荐开启）</span>
@@ -1218,8 +1208,6 @@ var STATIC_TEXT_KEYS = {
   '无 (None)': 'console.settings.livenessNone',
   '眼镜模式（戴眼镜导致眨眼检测不稳定时开启）': 'console.settings.glasses',
   '眼镜模式使用自适应眨眼检测，对镜框/反光更鲁棒，但可能不如默认模式稳定。非必要建议保持关闭。': 'console.settings.glassesHelp',
-  '暗光增强（已由统一光照管线自动处理）': 'console.settings.lowLight',
-  '新版本统一光照管线会自动处理必要的亮度归一化，此旧开关仅为兼容保留。': 'console.settings.lowLightHelp',
   '统一光照归一化（推荐开启）': 'console.settings.exposureControl',
   '录入、预览、活体和解锁使用同一套逐帧光照处理。开启后优先验证摄像头硬件粗调，失败时当前会话自动降级为软件归一化；不需要重新录入人脸。': 'console.settings.exposureControlHelp',
   '内存优化（识别后释放模型，降低后台内存占用）': 'console.settings.memory',
@@ -1728,7 +1716,6 @@ function loadSettings() {
     window.__CFG_UI_LANGUAGE_INITIAL__ = cfg.ui_language || 'auto';
     document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
-    document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
     // v2 defaults to hybrid. The legacy checkbox now selects hybrid versus
     // software-only while the explicit photometric_mode remains authoritative.
     document.getElementById('cfg-exposure').checked =
@@ -1813,7 +1800,6 @@ function onSaveSettings() {
     match_threshold: 0.45 + (90 - strictness) / 100,
     anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
-    low_light_enhance: document.getElementById('cfg-low-light').checked,
     photometric_mode: document.getElementById('cfg-exposure').checked ? 'hybrid' : 'software',
     photometric_target_luma: 110,
     photometric_band: 15,

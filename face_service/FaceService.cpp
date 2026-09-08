@@ -739,8 +739,6 @@ void FaceService::Run() {
                     m_antiSpoof.reset();
                 }
             }
-            // The photometric session above now owns all brightness handling;
-            // there is no model-side low-light toggle to propagate.
             m_pipeServer->WriteMessage(ipc::MSG_CONFIG_RELOAD_OK);
             m_pipeServer->Disconnect();
             FACELOGIN_INFO(L"Configuration reloaded: rec=%hs det=%hs live=%hs thr=%.2f rotation=%d",
@@ -968,32 +966,35 @@ bool FaceService::ProcessAuthRequest() {
     auto prepareFaceFrame = [this](dlib::matrix<dlib::rgb_pixel>& f,
                                    dlib::rectangle& rect,
                                    dlib::full_object_detection& landmarks) -> bool {
-        auto detect = [this, &f, &rect, &landmarks]() -> bool {
-            auto det = m_onnxDetector->DetectLargestFace(f);
+        auto detect = [this, &rect, &landmarks](
+                          const dlib::matrix<dlib::rgb_pixel>& candidate) -> bool {
+            auto det = m_onnxDetector->DetectLargestFace(candidate);
             if (!det) return false;
             rect = dlib::rectangle(static_cast<long>(det->x1),
                                    static_cast<long>(det->y1),
                                    static_cast<long>(det->x2),
                                    static_cast<long>(det->y2));
             landmarks = dlib::full_object_detection();
-            return m_detector->DetectLandmarks(f, rect, landmarks);
+            return m_detector->DetectLandmarks(candidate, rect, landmarks);
         };
-        dlib::matrix<dlib::rgb_pixel> rawForRetry;
-        bool usedNormalizedRetry = false;
-        if (!detect()) {
-            rawForRetry = f;
-            m_photometric.NormalizeForDetection(f);
-            usedNormalizedRetry = true;
-            if (!detect()) return false;
+        const dlib::matrix<dlib::rgb_pixel> rawFrame = f;
+        if (!detect(rawFrame)) {
+            dlib::matrix<dlib::rgb_pixel> detectionFrame = rawFrame;
+            m_photometric.NormalizeForDetection(detectionFrame);
+            if (!detect(detectionFrame)) {
+                f = rawFrame;
+                return false;
+            }
         }
         UnifiedFaceFrame unified;
         UnifiedFacePipeline pipeline(m_photometric);
-        const auto& photometricSource = usedNormalizedRetry ? rawForRetry : f;
-        const bool accepted = pipeline.ProcessFrame(photometricSource, rect, landmarks, unified);
-        if (unified.normalizedFrame.size() != 0) {
+        const bool accepted = pipeline.ProcessFrame(rawFrame, rect, landmarks, unified);
+        if (accepted && unified.normalizedFrame.size() != 0) {
             f = std::move(unified.normalizedFrame);
             rect = unified.faceRect;
             landmarks = std::move(unified.landmarks);
+        } else {
+            f = rawFrame;
         }
         return accepted && unified.qualityAccepted;
     };

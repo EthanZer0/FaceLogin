@@ -65,6 +65,7 @@ docs/
 scripts/*
 !scripts/check-locales.mjs
 !scripts/sync-locales.mjs
+!scripts/build-windows.ps1
 
 # ZCode CLI session data
 .zcode/

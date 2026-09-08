@@ -191,16 +191,27 @@ public:
         m_exposureSaved = false;
         m_gainSaved = false;
         m_channel = Channel::None;
-        if (m_exposureAvailable && PrepareExposure()) {
-            m_channel = Channel::Exposure;
-            m_state = HardwareControlState::Active;
-            return true;
+
+        // Lock every advertised automatic brightness channel before using
+        // either one.  Locking Exposure while leaving Gain in Auto creates a
+        // second controller in the camera driver; the driver compensates for
+        // our exposure steps and the preview oscillates.  A camera that cannot
+        // lock all of its advertised channels is safer in software-only mode.
+        const bool exposurePrepared = !m_exposureAvailable || PrepareExposure();
+        const bool gainPrepared = !m_gainAvailable || PrepareGain();
+        if (exposurePrepared && gainPrepared) {
+            if (m_exposureSaved) m_channel = Channel::Exposure;
+            else if (m_gainSaved) m_channel = Channel::Gain;
+            if (m_channel != Channel::None) {
+                m_state = HardwareControlState::Active;
+                return true;
+            }
         }
-        if (m_gainAvailable && PrepareGain()) {
-            m_channel = Channel::Gain;
-            m_state = HardwareControlState::Active;
-            return true;
-        }
+
+        // Undo a partially prepared session before falling back.  Do not leave
+        // one channel Manual and the other channel Auto after a failed probe.
+        if (m_exposureSaved || m_gainSaved) RestoreOriginalState();
+        m_channel = Channel::None;
         m_state = HardwareControlState::SoftwareOnly;
         return false;
     }
@@ -257,8 +268,12 @@ private:
     enum class Channel { None, Exposure, Gain };
 
     bool PrepareExposure() {
-        if (!m_cc || FAILED(m_cc->Get(CameraControl_Exposure, &m_originalExposure,
-                                     &m_originalExposureFlags))) return false;
+        if (!m_cc) return false;
+        if (!m_exposureSaved && FAILED(m_cc->Get(CameraControl_Exposure,
+                                                &m_originalExposure,
+                                                &m_originalExposureFlags))) {
+            return false;
+        }
         if (FAILED(m_cc->Set(CameraControl_Exposure, m_originalExposure,
                              CameraControl_Flags_Manual))) {
             return false;
@@ -279,8 +294,12 @@ private:
     }
 
     bool PrepareGain() {
-        if (!m_vpa || FAILED(m_vpa->Get(VideoProcAmp_Gain, &m_originalGain,
-                                       &m_originalGainFlags))) return false;
+        if (!m_vpa) return false;
+        if (!m_gainSaved && FAILED(m_vpa->Get(VideoProcAmp_Gain,
+                                               &m_originalGain,
+                                               &m_originalGainFlags))) {
+            return false;
+        }
         if (FAILED(m_vpa->Set(VideoProcAmp_Gain, m_originalGain,
                               VideoProcAmp_Flags_Manual))) {
             return false;
@@ -301,6 +320,7 @@ private:
         if (m_channel == Channel::Exposure && m_cc) {
             long value = 0, flags = 0;
             if (FAILED(m_cc->Get(CameraControl_Exposure, &value, &flags))) return false;
+            if ((flags & CameraControl_Flags_Manual) == 0) return false;
             const long next = std::max(m_exposureMin, std::min(m_exposureMax,
                 value + (direction > 0 ? m_exposureStep : -m_exposureStep)));
             if (next == value || FAILED(m_cc->Set(CameraControl_Exposure, next,
@@ -312,6 +332,7 @@ private:
         if (m_channel == Channel::Gain && m_vpa) {
             long value = 0, flags = 0;
             if (FAILED(m_vpa->Get(VideoProcAmp_Gain, &value, &flags))) return false;
+            if ((flags & VideoProcAmp_Flags_Manual) == 0) return false;
             const long next = std::max(m_gainMin, std::min(m_gainMax,
                 value + (direction > 0 ? m_gainStep : -m_gainStep)));
             if (next == value || FAILED(m_vpa->Set(VideoProcAmp_Gain, next,
@@ -490,8 +511,14 @@ bool PhotometricSession::Begin() {
     m_pendingResponse = false;
     m_noResponseCount = 0;
     m_reversedCount = 0;
+    m_hasFilteredLuma = false;
+    m_filteredLuma = 0.0f;
+    m_darkEvidence = 0;
+    m_brightEvidence = 0;
     m_hasSmoothedGain = false;
     m_smoothedGain = 1.0f;
+    m_hasSmoothedGamma = false;
+    m_smoothedGamma = 1.0f;
     m_lastTransform = {};
     if (m_config.mode == PhotometricMode::Off) {
         m_state = HardwareControlState::Disabled;
@@ -558,13 +585,26 @@ void PhotometricSession::Demote(HardwareControlState state, const wchar_t* reaso
 
 void PhotometricSession::UpdateHardware(const FacePhotometricStats& stats) {
     if (!HardwareActive() || !stats.valid) return;
+
+    // Face boxes and landmarks move by a few pixels even when the camera and
+    // lighting are static.  Use a short EMA for the hardware loop and require
+    // repeated evidence before writing a new camera value.
+    if (!m_hasFilteredLuma) {
+        m_filteredLuma = stats.medianLuma;
+        m_hasFilteredLuma = true;
+    } else {
+        m_filteredLuma += (stats.medianLuma - m_filteredLuma) * 0.25f;
+    }
+
     const auto now = std::chrono::steady_clock::now();
     const auto interval = std::chrono::milliseconds(m_config.hardwareStepIntervalMs);
     if (m_pendingResponse && now - m_lastHardwareStep >= interval) {
-        if (m_adapter->VerifyResponse(m_pendingDirection, m_pendingLuma, stats.medianLuma)) {
+        if (m_adapter->VerifyResponse(m_pendingDirection, m_pendingLuma, m_filteredLuma)) {
             m_pendingResponse = false;
             m_noResponseCount = 0;
             m_reversedCount = 0;
+            m_darkEvidence = 0;
+            m_brightEvidence = 0;
             if (m_state == HardwareControlState::Probing) {
                 m_state = HardwareControlState::Active;
                 FACELOGIN_INFO(L"Photometric hardware response verified; hardware control active");
@@ -588,12 +628,31 @@ void PhotometricSession::UpdateHardware(const FacePhotometricStats& stats) {
 
     const float lower = m_config.targetLuma - m_config.toleranceBand;
     const float upper = m_config.targetLuma + m_config.toleranceBand;
+    constexpr float kHardwareHysteresis = 8.0f;
     int direction = 0;
     const bool localContrast = stats.p90Luma - stats.p10Luma > 180.0f ||
         stats.leftRightDelta > 0.45f;
     if (!localContrast) {
-        if (stats.clippedRatio >= 0.02f || stats.medianLuma > upper) direction = -1;
-        else if (stats.shadowRatio >= 0.35f || stats.medianLuma < lower) direction = 1;
+        const bool bright = stats.clippedRatio >= 0.02f ||
+            m_filteredLuma > upper + kHardwareHysteresis;
+        const bool dark = stats.shadowRatio >= 0.35f &&
+            m_filteredLuma < lower - kHardwareHysteresis;
+        if (bright) {
+            ++m_brightEvidence;
+            m_darkEvidence = 0;
+        } else if (dark) {
+            ++m_darkEvidence;
+            m_brightEvidence = 0;
+        } else {
+            m_darkEvidence = 0;
+            m_brightEvidence = 0;
+        }
+        constexpr int kRequiredEvidence = 3;
+        if (m_brightEvidence >= kRequiredEvidence) direction = -1;
+        else if (m_darkEvidence >= kRequiredEvidence) direction = 1;
+    } else {
+        m_darkEvidence = 0;
+        m_brightEvidence = 0;
     }
     if (direction == 0) return;
 
@@ -605,7 +664,7 @@ void PhotometricSession::UpdateHardware(const FacePhotometricStats& stats) {
     }
     m_pendingResponse = true;
     m_pendingDirection = direction;
-    m_pendingLuma = stats.medianLuma;
+    m_pendingLuma = m_filteredLuma;
     m_lastHardwareStep = now;
 }
 
@@ -623,24 +682,6 @@ FramePhotometricTransform PhotometricSession::BuildTransform(const FacePhotometr
         // median/mean alone would incorrectly declare convergence.
         stats.p90Luma - stats.p10Luma <= 180.0f &&
         stats.leftRightDelta <= 0.45f && stats.uniformity >= 0.40f;
-    if (normal) {
-        // Return toward identity through the same slew limiter. A camera can
-        // cross into the acceptable band immediately after a dark frame; an
-        // instantaneous 2.0 -> 1.0 drop would reintroduce visible flicker.
-        if (!m_hasSmoothedGain) {
-            m_smoothedGain = 1.0f;
-            m_hasSmoothedGain = true;
-        } else {
-            m_smoothedGain = Clamp(1.0f,
-                                   m_smoothedGain / 1.15f,
-                                   m_smoothedGain * 1.15f);
-        }
-        transform.gain = Clamp(m_smoothedGain,
-                               m_config.minDigitalGain, m_config.maxDigitalGain);
-        transform.applied = std::abs(transform.gain - 1.0f) > 0.01f;
-        return transform;
-    }
-
     const bool oneSidedBlowout = stats.clippedRatio > 0.15f &&
         stats.leftRightDelta > 0.45f && stats.p10Luma < 55.0f;
     const bool cannotRecover = stats.clippedRatio > 0.35f || oneSidedBlowout ||
@@ -648,15 +689,20 @@ FramePhotometricTransform PhotometricSession::BuildTransform(const FacePhotometr
     transform.unrecoverable = cannotRecover;
 
     float desiredGain = 1.0f;
-    if (stats.medianLuma > 1.0f) desiredGain = m_config.targetLuma / stats.medianLuma;
-    desiredGain = Clamp(desiredGain, m_config.minDigitalGain, m_config.maxDigitalGain);
-    if (stats.clippedRatio >= 0.02f) desiredGain = std::min(1.0f, desiredGain);
+    if (!normal) {
+        if (stats.medianLuma > 1.0f) desiredGain = m_config.targetLuma / stats.medianLuma;
+        desiredGain = Clamp(desiredGain, m_config.minDigitalGain, m_config.maxDigitalGain);
+        if (stats.clippedRatio >= 0.02f) desiredGain = std::min(1.0f, desiredGain);
+    }
 
     if (!m_hasSmoothedGain) {
         m_smoothedGain = desiredGain;
         m_hasSmoothedGain = true;
     } else {
-        const float maxRatio = 1.15f;
+        // A 15% one-frame change is visible in the Console preview. Keep the
+        // transformation continuous even when the raw luma crosses the
+        // normal-band boundary by one or two units.
+        constexpr float maxRatio = 1.05f;
         m_smoothedGain = Clamp(desiredGain,
                                m_smoothedGain / maxRatio,
                                m_smoothedGain * maxRatio);
@@ -665,12 +711,23 @@ FramePhotometricTransform PhotometricSession::BuildTransform(const FacePhotometr
 
     // Gamma is only used for genuinely dark distributions.  It is applied to
     // luma while preserving the original chroma ratios.
+    float desiredGamma = 1.0f;
     if (stats.medianLuma < m_config.targetLuma - m_config.toleranceBand &&
         stats.shadowRatio >= 0.35f) {
         const float ratio = Clamp(stats.medianLuma / 255.0f, 0.05f, 0.95f);
-        transform.gamma = Clamp(std::log(m_config.targetLuma / 255.0f) /
-                                std::log(ratio), 0.65f, 1.0f);
+        desiredGamma = Clamp(std::log(m_config.targetLuma / 255.0f) /
+                             std::log(ratio), 0.65f, 1.0f);
     }
+    if (!m_hasSmoothedGamma) {
+        m_smoothedGamma = desiredGamma;
+        m_hasSmoothedGamma = true;
+    } else {
+        constexpr float kGammaStep = 0.04f;
+        m_smoothedGamma = Clamp(desiredGamma,
+                                m_smoothedGamma - kGammaStep,
+                                m_smoothedGamma + kGammaStep);
+    }
+    transform.gamma = Clamp(m_smoothedGamma, 0.65f, 1.0f);
     transform.applied = std::abs(transform.gain - 1.0f) > 0.01f ||
                         std::abs(transform.gamma - 1.0f) > 0.01f;
     return transform;

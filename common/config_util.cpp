@@ -128,7 +128,6 @@ std::string ConfigToJson(const AppConfig& cfg) {
     ss << "  "; jsonWriteString(ss, "match_threshold"); ss << ": " << cfg.match_threshold << ",\n";
     ss << "  "; jsonWriteString(ss, "anti_spoof_threshold"); ss << ": " << cfg.anti_spoof_threshold << ",\n";
     ss << "  "; jsonWriteString(ss, "blink_glasses_mode"); ss << ": " << (cfg.blink_glasses_mode ? "true" : "false") << ",\n";
-    ss << "  "; jsonWriteString(ss, "low_light_enhance"); ss << ": " << (cfg.low_light_enhance ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "photometric_mode"); ss << ": "; jsonWriteString(ss, PhotometricModeToString(cfg.photometric_mode)); ss << ",\n";
     ss << "  "; jsonWriteString(ss, "photometric_target_luma"); ss << ": " << cfg.photometric_target_luma << ",\n";
     ss << "  "; jsonWriteString(ss, "photometric_band"); ss << ": " << cfg.photometric_band << ",\n";
@@ -158,7 +157,6 @@ AppConfig ConfigFromJson(const std::string& json) {
     cfg.match_threshold = jsonGetFloat(json, "match_threshold", 0.75f);
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
     cfg.blink_glasses_mode = (JsonGetString(json, "blink_glasses_mode") == "true");
-    cfg.low_light_enhance = (JsonGetString(json, "low_light_enhance") == "true");
     cfg.unload_models_after_auth = (JsonGetString(json, "unload_models_after_auth") == "true");
     cfg.face_exposure_control = (JsonGetString(json, "face_exposure_control") == "true");
     cfg.face_exposure_target = jsonGetFloat(json, "face_exposure_target", 110.0f);

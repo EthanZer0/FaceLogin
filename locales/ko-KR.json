@@ -113,8 +113,6 @@
   "console.settings.livenessNone": "사용 안 함",
   "console.settings.glasses": "안경 모드(안경 때문에 눈 깜박임 확인이 불안정할 때 사용)",
   "console.settings.glassesHelp": "안경테와 반사에 적응하는 눈 깜박임 확인을 사용합니다. 기본 방식보다 불안정할 수 있으므로 필요한 경우에만 켜세요.",
-  "console.settings.lowLight": "저조도 보정(통합 조명 파이프라인에서 자동 처리)",
-  "console.settings.lowLightHelp": "v2 통합 광도 파이프라인이 필요한 밝기 보정을 자동으로 적용합니다. 이 이전 스위치는 호환성을 위해 유지됩니다.",
   "console.settings.exposureControl": "통합 광도 정규화(권장)",
   "console.settings.exposureControlHelp": "등록, 미리보기, 실재 확인과 잠금 해제가 동일한 프레임별 광도 파이프라인을 사용합니다. 하드웨어 조절을 검증한 뒤 실패하면 현재 세션만 소프트웨어 방식으로 전환하며 재등록이 필요하지 않습니다.",
   "console.settings.memory": "메모리 절약(인식 후 모델을 해제하여 백그라운드 메모리 감소)",

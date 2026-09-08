@@ -28,9 +28,6 @@ struct AppConfig {
     // EAR + fixed threshold). true = GLASSES mode (adaptive per-eye baseline +
     // single-eye + pose gate) — for users whose glasses destabilize classic EAR.
     bool           blink_glasses_mode     = false;
-    // Legacy low-light flag. The v2 frame pipeline owns normalization; this
-    // value is retained only so older config files round-trip safely.
-    bool           low_light_enhance      = false;
     // V2 unified photometric pipeline. New installations use hybrid mode;
     // legacy fields below remain serialized for rollback compatibility only.
     PhotometricMode photometric_mode  = PhotometricMode::Hybrid;
