@@ -495,6 +495,42 @@ button{font-family:inherit}
 .cam-picker .btn-secondary{margin-top:10px}
 
 /* ================================================================
+   Face rename modal
+   ================================================================ */
+.rename-overlay{
+  position:fixed;inset:0;z-index:110;
+  align-items:center;justify-content:center;
+  background:rgba(22,26,34,.45);backdrop-filter:blur(2px);
+  display:flex;
+  visibility:hidden;opacity:0;pointer-events:none;
+  transition:opacity .22s ease,visibility 0s .22s;
+}
+.rename-overlay.active{
+  visibility:visible;opacity:1;pointer-events:auto;
+  transition:opacity .22s ease,visibility 0s;
+}
+.rename-card{
+  width:90%;max-width:380px;background:var(--face);
+  border:1px solid var(--hair);border-radius:8px;
+  box-shadow:0 18px 60px rgba(22,26,34,.2);padding:24px;
+  opacity:0;transform:translateY(20px) scale(.96);
+  transition:opacity .24s ease,transform .30s cubic-bezier(.34,1.45,.5,1);
+}
+.rename-overlay.active .rename-card{opacity:1;transform:translateY(0) scale(1)}
+.rename-card h2{
+  font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
+  margin-bottom:8px;text-transform:uppercase;
+}
+.rename-card p.dim{font-size:11px;color:#8A919E;line-height:1.6;margin-bottom:18px}
+.rename-card input{
+  box-sizing:border-box;width:100%;border:1px solid var(--hair);border-radius:var(--radius);
+  padding:9px 12px;font-size:13px;outline:none;background:var(--face);color:var(--ink);
+}
+.rename-card input:focus{border-color:var(--live);box-shadow:0 0 0 3px rgba(14,159,110,.12)}
+.rename-actions{display:flex;gap:8px;margin-top:14px}
+.rename-actions .btn{flex:1;margin-top:0}
+
+/* ================================================================
    About modal — click the footer version tag
    ================================================================ */
 .about-overlay{
@@ -1116,6 +1152,21 @@ button{font-family:inherit}
     <button class="btn btn-secondary" id="refresh-dismiss" onclick="onRefreshDismiss()">
       暂不处理
     </button>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- Face Rename Modal                                                   -->
+<!-- ================================================================== -->
+<div class="rename-overlay" id="rename-overlay" onclick="if(event.target===this)closeRenameDialog()">
+  <div class="rename-card" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+    <h2 id="rename-title"></h2>
+    <p class="dim" id="rename-description"></p>
+    <input type="text" id="rename-input" maxlength="32" autocomplete="off">
+    <div class="rename-actions">
+      <button type="button" class="btn btn-secondary" id="rename-cancel" onclick="closeRenameDialog()"></button>
+      <button type="button" class="btn btn-primary" id="rename-confirm" onclick="onRenameConfirm()"></button>
+    </div>
   </div>
 </div>
 
@@ -2075,11 +2126,19 @@ function onCapture() {
 // Multi-face management (1.3.0)
 // ================================================================
 
+var faceLabelsById = Object.create(null);
+var renameFaceId = null;
+var renamePreviousFocus = null;
+
 function loadFaces() {
   checkAccountRefresh();  // prompt to refresh a stale MSA→local record if present
   try {
     var faces = JSON.parse(H.GetFacesJson());
     var count = H.GetFaceCount();
+    faceLabelsById = Object.create(null);
+    for (var j = 0; j < faces.length; j++) {
+      faceLabelsById[String(faces[j].id)] = faces[j].label || '';
+    }
     var list = document.getElementById('face-list');
     document.getElementById('faces-count').textContent = t('console.faces.count', { count: count });
     try { document.getElementById('faces-user').textContent = H.GetUsername(); } catch(e) {}
@@ -2121,9 +2180,41 @@ function onDeleteFace(id) {
 }
 
 function onRenameFace(id) {
-  var name = prompt(t('console.faces.renamePrompt'));
-  if (name === null) return;  // cancelled
-  name = name.trim();
+  openRenameDialog(id);
+}
+
+function openRenameDialog(id) {
+  renameFaceId = id;
+  renamePreviousFocus = document.activeElement;
+  var overlay = document.getElementById('rename-overlay');
+  var input = document.getElementById('rename-input');
+  document.getElementById('rename-title').textContent = t('console.faces.renameTitle');
+  document.getElementById('rename-description').textContent = t('console.faces.renameDescription');
+  document.getElementById('rename-cancel').textContent = t('console.faces.renameCancel');
+  document.getElementById('rename-confirm').textContent = t('console.faces.renameConfirm');
+  input.placeholder = t('console.faces.renamePlaceholder');
+  input.value = faceLabelsById[String(id)] || '';
+  overlay.classList.add('active');
+  requestAnimationFrame(function() {
+    input.focus();
+    input.select();
+  });
+}
+
+function closeRenameDialog() {
+  var overlay = document.getElementById('rename-overlay');
+  if (overlay) overlay.classList.remove('active');
+  renameFaceId = null;
+  var previousFocus = renamePreviousFocus;
+  renamePreviousFocus = null;
+  if (previousFocus && previousFocus.focus) previousFocus.focus();
+}
+
+function onRenameConfirm() {
+  if (renameFaceId === null) return;
+  var id = renameFaceId;
+  var name = document.getElementById('rename-input').value.trim();
+  closeRenameDialog();
   try {
     if (H.RenameFace(id, name)) {
       showBanner('faces', '已重命名。', 'ok');
@@ -2133,6 +2224,16 @@ function onRenameFace(id) {
     }
   } catch(e) { showBanner('faces', t('console.faces.renameFailedDetail', { error: e.message }), 'error'); }
 }
+
+document.getElementById('rename-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    onRenameConfirm();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeRenameDialog();
+  }
+});
 
 function onClearAllFaces() {
   if (!confirm('确定清空当前账号的全部人脸吗？将无法使用人脸登录。')) return;
@@ -2628,9 +2729,14 @@ function openExternal(url) {
   window.open(url, '_blank', 'noopener');
 }
 // ESC closes every open modal consistently (about / refresh / cam-picker /
-// face-viewer: same behavior as clicking the backdrop).
+// face-viewer / rename: same behavior as clicking the backdrop).
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
+    var renameOverlay = document.getElementById('rename-overlay');
+    if (renameOverlay && renameOverlay.classList.contains('active')) {
+      closeRenameDialog();
+      return;
+    }
     var ids = ['about-overlay', 'refresh-overlay', 'cam-picker-overlay', 'face-viewer-overlay'];
     for (var i = 0; i < ids.length; i++) {
       var el = document.getElementById(ids[i]);
