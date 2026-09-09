@@ -40,14 +40,14 @@ func (a *App) startup(ctx context.Context) {
 }
 
 // IsStandaloneUninstaller lets the shared Wails frontend render only the
-// existing uninstall page when this binary is launched as FaceLoginUninstall.
+// existing uninstall page when this binary is launched as Uninstall.exe.
 func (a *App) IsStandaloneUninstaller() bool {
 	return a.standaloneUninstaller
 }
 
 // FinalizeStandaloneUninstall starts a short-lived copy of this executable in
 // %TEMP%. It waits for this UI process to exit, then removes the otherwise
-// locked FaceLoginUninstall.exe and the now-empty install directory.
+// locked Uninstall.exe and the now-empty install directory.
 func (a *App) FinalizeStandaloneUninstall() bool {
 	if !a.standaloneUninstaller || a.installDir == "" {
 		return false
@@ -235,7 +235,7 @@ func (a *App) Install(installDir string, locale string) map[string]interface{} {
 	// this signed, elevated Wails executable: its filename switches the shared
 	// UI into uninstall-only mode, while keeping the workflow visually and
 	// functionally identical to the installer uninstall page.
-	uninstallDest := filepath.Join(installDir, "FaceLoginUninstall.exe")
+	uninstallDest := filepath.Join(installDir, "Uninstall.exe")
 	if exe, copyErr := os.Executable(); copyErr != nil {
 		return result(false, fmt.Sprintf("locate setup executable: %v", copyErr))
 	} else if copyErr = internal.CopyFile(exe, uninstallDest); copyErr != nil {

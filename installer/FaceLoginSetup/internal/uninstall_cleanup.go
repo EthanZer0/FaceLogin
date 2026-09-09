@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const standaloneUninstallerName = "FaceLoginUninstall.exe"
+const standaloneUninstallerName = "Uninstall.exe"
 
 // LaunchUninstallCleanup copies the running uninstaller to a temporary file
 // and starts it in cleanup mode. The worker owns no product resources, so it
@@ -27,7 +27,7 @@ func LaunchUninstallCleanup(installDir string) error {
 		return fmt.Errorf("not running from %s", standaloneUninstallerName)
 	}
 
-	cleanupPath := filepath.Join(os.TempDir(), fmt.Sprintf("FaceLoginUninstallCleanup-%d.exe", os.Getpid()))
+	cleanupPath := filepath.Join(os.TempDir(), fmt.Sprintf("UninstallCleanup-%d.exe", os.Getpid()))
 	if err := CopyFile(exe, cleanupPath); err != nil {
 		return fmt.Errorf("copy cleanup helper: %w", err)
 	}

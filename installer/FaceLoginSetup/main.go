@@ -101,7 +101,7 @@ func main() {
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
 
-	app := NewApp(strings.EqualFold(filepath.Base(os.Args[0]), "FaceLoginUninstall.exe"))
+	app := NewApp(strings.EqualFold(filepath.Base(os.Args[0]), "Uninstall.exe"))
 
 	err := wails.Run(&options.App{
 		Title:            "FaceLogin Setup",

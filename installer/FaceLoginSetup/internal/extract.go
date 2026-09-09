@@ -149,7 +149,7 @@ func RemoveInstalledFiles(destDir string, removeUserData bool) (int, error) {
 			"FaceLoginService.exe",
 			"FaceLoginCredentialProvider.dll",
 			"FaceLoginConsole.exe",
-			"FaceLoginUninstall.exe",
+			"Uninstall.exe",
 		} {
 			p := filepath.Join(destDir, name)
 			if FileExists(p) && !isCurrentExecutable(p) {
@@ -184,10 +184,10 @@ func RemoveInstalledFiles(destDir string, removeUserData bool) (int, error) {
 			}
 		}
 	}
-	// FaceLoginUninstall.exe is deployed from the running Setup executable,
+	// Uninstall.exe is deployed from the running Setup executable,
 	// rather than the embedded resources tree. A standalone uninstaller skips
 	// itself here and lets its temporary cleanup worker remove it after exit.
-	uninstallerPath := filepath.Join(destDir, "FaceLoginUninstall.exe")
+	uninstallerPath := filepath.Join(destDir, "Uninstall.exe")
 	if FileExists(uninstallerPath) && !isCurrentExecutable(uninstallerPath) {
 		if err := os.Remove(uninstallerPath); err != nil {
 			recordErr(err)
