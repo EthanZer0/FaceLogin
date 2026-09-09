@@ -192,24 +192,23 @@ public:
         m_gainSaved = false;
         m_channel = Channel::None;
 
-        // Lock every advertised automatic brightness channel before using
-        // either one.  Locking Exposure while leaving Gain in Auto creates a
-        // second controller in the camera driver; the driver compensates for
-        // our exposure steps and the preview oscillates.  A camera that cannot
-        // lock all of its advertised channels is safer in software-only mode.
-        const bool exposurePrepared = !m_exposureAvailable || PrepareExposure();
-        const bool gainPrepared = !m_gainAvailable || PrepareGain();
-        if (exposurePrepared && gainPrepared) {
-            if (m_exposureSaved) m_channel = Channel::Exposure;
-            else if (m_gainSaved) m_channel = Channel::Gain;
-            if (m_channel != Channel::None) {
-                m_state = HardwareControlState::Active;
-                return true;
-            }
+        // Only lock one brightness channel.  A number of integrated camera
+        // drivers advertise both Exposure and Gain but internally couple
+        // them.  Switching both to Manual freezes an unsafe combination and
+        // can turn the preview black even though Set/Get report success.
+        // Exposure is the preferred coarse control; Gain is tried only when
+        // Exposure cannot be prepared.
+        if (m_exposureAvailable && PrepareExposure()) {
+            m_channel = Channel::Exposure;
+            return true;
+        }
+        if (m_gainAvailable && PrepareGain()) {
+            m_channel = Channel::Gain;
+            return true;
         }
 
-        // Undo a partially prepared session before falling back.  Do not leave
-        // one channel Manual and the other channel Auto after a failed probe.
+        // Undo a partially prepared session before falling back.  Never leave
+        // a channel in Manual when the first controlled step was not verified.
         if (m_exposureSaved || m_gainSaved) RestoreOriginalState();
         m_channel = Channel::None;
         m_state = HardwareControlState::SoftwareOnly;
@@ -218,15 +217,11 @@ public:
 
     bool StepExposure(int direction) override {
         if (m_channel != Channel::Exposure) return false;
-        if (StepActive(direction)) return true;
-        // A capability can be reported for exposure while the actual driver
-        // refuses a manual step. Switch to a separately verified gain channel
-        // before giving up the hardware path altogether.
-        if (m_gainAvailable && PrepareGain()) {
-            m_channel = Channel::Gain;
-            return StepActive(direction);
-        }
-        return false;
+        // Do not switch to Gain here.  Doing so would leave Exposure Manual
+        // while enabling Gain Manual, recreating the two-controller conflict
+        // that this adapter is designed to avoid.  A failed Exposure step
+        // safely demotes the current session to software-only mode.
+        return StepActive(direction);
     }
 
     bool StepGain(int direction) override {
@@ -247,15 +242,26 @@ public:
             ok = SUCCEEDED(m_cc->Set(CameraControl_Exposure, m_originalExposure,
                                      m_originalExposureFlags)) && ok;
             long value = 0, flags = 0;
-            ok = SUCCEEDED(m_cc->Get(CameraControl_Exposure, &value, &flags)) &&
-                 value == m_originalExposure && flags == m_originalExposureFlags && ok;
+            const bool readBack = SUCCEEDED(m_cc->Get(CameraControl_Exposure, &value, &flags));
+            // When restoring Auto, the driver is allowed to immediately
+            // choose a different value.  Verify the mode in that case, not
+            // the transient numeric exposure value.
+            const bool modeRestored = (m_originalExposureFlags & CameraControl_Flags_Auto) != 0
+                ? ((flags & CameraControl_Flags_Auto) != 0 &&
+                   (flags & CameraControl_Flags_Manual) == 0)
+                : flags == m_originalExposureFlags;
+            ok = readBack && modeRestored && ok;
         }
         if (m_gainSaved && m_vpa) {
             ok = SUCCEEDED(m_vpa->Set(VideoProcAmp_Gain, m_originalGain,
                                       m_originalGainFlags)) && ok;
             long value = 0, flags = 0;
-            ok = SUCCEEDED(m_vpa->Get(VideoProcAmp_Gain, &value, &flags)) &&
-                 value == m_originalGain && flags == m_originalGainFlags && ok;
+            const bool readBack = SUCCEEDED(m_vpa->Get(VideoProcAmp_Gain, &value, &flags));
+            const bool modeRestored = (m_originalGainFlags & VideoProcAmp_Flags_Auto) != 0
+                ? ((flags & VideoProcAmp_Flags_Auto) != 0 &&
+                   (flags & VideoProcAmp_Flags_Manual) == 0)
+                : flags == m_originalGainFlags;
+            ok = readBack && modeRestored && ok;
         }
         m_restored = true;
         m_state = ok ? HardwareControlState::Restored : HardwareControlState::SoftwareOnly;
@@ -600,6 +606,25 @@ void PhotometricSession::UpdateHardware(const FacePhotometricStats& stats) {
 
     const auto now = std::chrono::steady_clock::now();
     const auto interval = std::chrono::milliseconds(m_config.hardwareStepIntervalMs);
+    if (m_pendingResponse) {
+        // A successful Set()/Get() only proves that the driver accepted the
+        // control value.  It does not prove that the resulting image is safe.
+        // If an exposure-increase step immediately collapses the measured
+        // face brightness, restore the original Auto state without waiting
+        // for the normal 500ms feedback interval.
+        const float collapseLimit = std::max(8.0f, m_pendingLuma * 0.25f);
+        const bool severeCollapse = m_pendingDirection > 0 &&
+            (m_filteredLuma < m_pendingLuma - collapseLimit ||
+             (stats.medianLuma < 25.0f && stats.shadowRatio > 0.90f));
+        if (severeCollapse) {
+            FACELOGIN_WARN(L"Photometric hardware step collapsed brightness: before=%.1f after=%.1f median=%.1f shadow=%.3f; restoring Auto",
+                           m_pendingLuma, m_filteredLuma, stats.medianLuma,
+                           stats.shadowRatio);
+            Demote(HardwareControlState::Unresponsive,
+                   L"manual camera step caused severe underexposure");
+            return;
+        }
+    }
     if (m_pendingResponse && now - m_lastHardwareStep >= interval) {
         if (m_adapter->VerifyResponse(m_pendingDirection, m_pendingLuma, m_filteredLuma)) {
             m_pendingResponse = false;
@@ -658,6 +683,10 @@ void PhotometricSession::UpdateHardware(const FacePhotometricStats& stats) {
     }
     if (direction == 0) return;
 
+    FACELOGIN_INFO(L"Photometric hardware adjustment requested: median=%.1f filtered=%.1f target=%.1f direction=%d shadow=%.3f clipped=%.3f",
+                   stats.medianLuma, m_filteredLuma, m_config.targetLuma,
+                   direction, stats.shadowRatio, stats.clippedRatio);
+
     if (!m_manualPrepared) {
         if (!m_adapter->PrepareManualControl()) {
             Demote(HardwareControlState::SoftwareOnly,
@@ -665,7 +694,7 @@ void PhotometricSession::UpdateHardware(const FacePhotometricStats& stats) {
             return;
         }
         m_manualPrepared = true;
-        FACELOGIN_INFO(L"Photometric abnormal luma confirmed; manual camera control enabled");
+        FACELOGIN_INFO(L"Photometric abnormal luma confirmed; one-channel manual camera control enabled");
     }
 
     bool stepped = m_adapter->StepExposure(direction);
