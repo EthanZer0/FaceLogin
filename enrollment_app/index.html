@@ -225,7 +225,14 @@ button{font-family:inherit}
   font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
   margin-bottom:16px;text-transform:uppercase;
 }
-#screen-settings .settings-body{overflow-y:auto}
+#screen-settings .settings-body{
+  overflow-y:auto;
+  /* The custom-select focus ring expands beyond its trigger. Reserve a small
+     horizontal safety area so the ring is not clipped by this scroll
+     container, and keep the control clear of the right-hand scrollbar. */
+  padding:16px 18px 24px 12px;
+  scrollbar-gutter:stable;
+}
 .field{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
 .field label{font-size:10px;font-weight:500;color:var(--fog);letter-spacing:.1em}
 .field input,.field select{
