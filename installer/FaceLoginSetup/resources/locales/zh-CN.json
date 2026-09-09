@@ -114,7 +114,7 @@
   "console.field.faceLabelPlaceholder": "可留空，默认如“脸1”",
   "console.passwordless.skip": "该账号没有密码（仅使用 PIN/Hello），跳过密码录入",
   "console.passwordless.warning": "无密码账号无法用于人脸解锁，人脸识别只能完成录入。",
-  "console.password.storage": "你的密码将使用 DPAPI 加密，仅存储在本机。",
+  "console.password.storage": "你的密码将使用 DPAPI 加密，仅存储在本机。无密码账户（空密码本地账号）人脸解锁将尝试空密码登录——Windows 默认允许空密码控制台登录（锁屏解锁），失败时请改用 PIN/Hello。",
   "console.enroll.save": "保存并录入",
   "console.faces.title": "人脸管理",
   "console.faces.currentAccount": "当前账号：",

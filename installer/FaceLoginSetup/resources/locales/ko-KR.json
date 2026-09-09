@@ -114,7 +114,7 @@
   "console.field.faceLabelPlaceholder": "비워두면 ‘얼굴 1’처럼 자동 지정됩니다.",
   "console.passwordless.skip": "암호 없이 PIN/Windows Hello만 사용하는 계정입니다. 암호 등록 건너뛰기",
   "console.passwordless.warning": "암호가 없는 계정은 얼굴로 잠금을 해제할 수 없으며 얼굴 데이터만 등록됩니다.",
-  "console.password.storage": "암호는 DPAPI로 암호화되어 이 PC에만 저장됩니다.",
+  "console.password.storage": "암호는 DPAPI로 암호화되어 이 PC에만 저장됩니다. 암호가 없는 계정(암호가 빈 로컬 계정)의 얼굴 잠금 해제는 빈 암호로 로그인을 시도합니다. Windows는 기본적으로 빈 암호의 콘솔 로그인(잠금 화면 잠금 해제 포함)을 허용하지만, 실패하면 PIN/Hello를 사용하세요.",
   "console.enroll.save": "저장하고 등록",
   "console.faces.title": "등록된 얼굴 관리",
   "console.faces.currentAccount": "현재 계정: ",

@@ -114,7 +114,7 @@
   "console.field.faceLabelPlaceholder": "Optional; defaults to something like “Face 1”",
   "console.passwordless.skip": "This account has no password (PIN/Hello only); skip password entry",
   "console.passwordless.warning": "A passwordless account cannot be used to unlock with face login; recognition can only complete enrollment.",
-  "console.password.storage": "Your password is encrypted with DPAPI and stored only on this machine.",
+  "console.password.storage": "Your password is encrypted with DPAPI and stored only on this machine. For passwordless accounts (local accounts with a blank password), face unlock will try to sign in with a blank password—Windows allows blank-password console sign-in by default (including lock-screen unlock). If it fails, use PIN/Hello instead.",
   "console.enroll.save": "Save & Enroll",
   "console.faces.title": "Face Management",
   "console.faces.currentAccount": "Current account:",
