@@ -1,7 +1,8 @@
+//go:build !uninstaller
+
 package main
 
 import (
-	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,23 +15,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
-//go:embed all:frontend/dist
-var assets embed.FS
-
-//go:embed all:resources
-var resources embed.FS
-
-const SERVICE_NAME = "FaceLoginService"
-
-// Registry paths
-const REG_KEY = `SOFTWARE\FaceLogin`
-const REGVAL_DATA_PATH = "DataPath"
-const REGVAL_INSTALL_PATH = "InstallPath"
-
 func main() {
-	// The installed uninstaller is the same signed GUI binary as Setup, copied
-	// under a dedicated name. Its cleanup worker is intentionally handled before
-	// elevation/Wails startup so it never opens a UI or a console window.
+	// Handle the cleanup worker before elevation/Wails startup so it never opens
+	// a UI or a console window.
 	if internal.RunUninstallCleanup(os.Args[1:]) {
 		return
 	}
@@ -98,8 +85,8 @@ func main() {
 	internal.NoticeVersion = "2.0.0"
 	internal.NoticeTitle = "installer.notice.title"
 	internal.NoticeBody = "installer.notice.body"
-	// Initialize the embedded resource filesystem in the internal package
-	internal.EmbeddedFS = resources
+	// Initialize the embedded resource filesystem in the internal package.
+	installEmbeddedResources()
 
 	app := NewApp(strings.EqualFold(filepath.Base(os.Args[0]), "Uninstall.exe"))
 

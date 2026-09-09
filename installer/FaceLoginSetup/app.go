@@ -35,8 +35,9 @@ func (a *App) startup(ctx context.Context) {
 			a.installDir = filepath.Dir(exe)
 		}
 	}
-	// Set up the embedded FS reference for extraction
-	internal.EmbeddedFS = resources
+	// Set up the embedded FS reference for extraction. The lightweight
+	// standalone uninstaller intentionally provides no resource payload.
+	installEmbeddedResources()
 }
 
 // IsStandaloneUninstaller lets the shared Wails frontend render only the
@@ -231,14 +232,10 @@ func (a *App) Install(installDir string, locale string) map[string]interface{} {
 	// Step 8: Finalize
 	enrollDest := filepath.Join(installDir, "FaceLoginConsole.exe")
 	_ = internal.ExtractResource("resources/FaceLoginConsole.exe", enrollDest)
-	// Install a dedicated entry point for removal. It is deliberately a copy of
-	// this signed, elevated Wails executable: its filename switches the shared
-	// UI into uninstall-only mode, while keeping the workflow visually and
-	// functionally identical to the installer uninstall page.
+	// Install a dedicated lightweight entry point for removal. It uses the same
+	// signed Wails UI but is built without the installation payload.
 	uninstallDest := filepath.Join(installDir, "Uninstall.exe")
-	if exe, copyErr := os.Executable(); copyErr != nil {
-		return result(false, fmt.Sprintf("locate setup executable: %v", copyErr))
-	} else if copyErr = internal.CopyFile(exe, uninstallDest); copyErr != nil {
+	if copyErr := internal.ExtractResource("resources/Uninstall.exe", uninstallDest); copyErr != nil {
 		return result(false, fmt.Sprintf("create standalone uninstaller: %v", copyErr))
 	}
 
