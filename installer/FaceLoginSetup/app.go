@@ -134,6 +134,9 @@ func (a *App) Install(installDir string, locale string) map[string]interface{} {
 
 	a.emit(0, "installer.progress.startInstall", "running", "")
 	installDir = filepath.Clean(installDir)
+	if err = internal.ValidateInstallDir(installDir); err != nil {
+		return result(false, err.Error())
+	}
 
 	// Step 1: Stop and delete existing service
 	a.emit(0, "installer.progress.stopExistingService", "running", "")

@@ -153,6 +153,73 @@ func IsSafeInstallDir(path string) bool {
 	return true
 }
 
+// ValidateInstallDir validates a user-selected installation target before any
+// service, registry, or filesystem mutation occurs. The installer accepts a
+// custom parent directory, but the final component must remain the product
+// directory so the registered service and uninstaller have a stable layout.
+func ValidateInstallDir(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("installer.error.installPathRequired")
+	}
+	if !filepath.IsAbs(path) || filepath.VolumeName(path) == "" {
+		return fmt.Errorf("installer.error.installPathAbsolute")
+	}
+
+	clean := filepath.Clean(path)
+	if !strings.EqualFold(filepath.Base(clean), "FaceLogin") {
+		return fmt.Errorf("installer.error.installPathName")
+	}
+
+	// Allow normal subdirectories such as C:\Program Files\FaceLogin, but
+	// reject the protected directory itself as the product target.
+	protected := []string{
+		os.Getenv("windir"),
+		os.Getenv("SystemRoot"),
+		os.Getenv("ProgramData"),
+		os.Getenv("Public"),
+		os.Getenv("UserProfile"),
+		os.Getenv("ProgramFiles"),
+		os.Getenv("ProgramFiles(x86)"),
+	}
+	for _, reserved := range protected {
+		if reserved != "" && strings.EqualFold(clean, filepath.Clean(reserved)) {
+			return fmt.Errorf("installer.error.installPathProtected")
+		}
+	}
+	if filepath.Dir(clean) == clean {
+		return fmt.Errorf("installer.error.installPathRoot")
+	}
+
+	info, err := os.Stat(clean)
+	if err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("installer.error.installPathNotDirectory")
+		}
+		entries, readErr := os.ReadDir(clean)
+		if readErr != nil {
+			return fmt.Errorf("installer.error.installPathUnreadable")
+		}
+		if len(entries) > 0 && !IsSafeInstallDir(clean) &&
+			!strings.EqualFold(ReadRegString("InstallPath", ""), clean) {
+			return fmt.Errorf("installer.error.installPathNotFaceLogin")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("installer.error.installPathUnavailable")
+	}
+
+	parent := filepath.Dir(clean)
+	if parentInfo, parentErr := os.Stat(parent); parentErr == nil {
+		if !parentInfo.IsDir() {
+			return fmt.Errorf("installer.error.installParentNotDirectory")
+		}
+	} else if !os.IsNotExist(parentErr) {
+		return fmt.Errorf("installer.error.installParentUnavailable")
+	}
+
+	return nil
+}
+
 // CopyFile copies a file from src to dst. Parent directories of dst must exist.
 func CopyFile(src, dst string) error {
 	data, err := os.ReadFile(src)
