@@ -217,6 +217,7 @@
   "console.faces.legacy": "Legacy Data",
   "console.faces.rename": "Rename",
   "console.faces.delete": "Delete",
+  "console.faces.deleteTitle": "Delete face",
   "console.faces.renamePrompt": "Name this face:",
   "console.faces.renameTitle": "Rename face",
   "console.faces.renameDescription": "Set a recognizable name for this enrolled face.",

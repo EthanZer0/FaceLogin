@@ -217,6 +217,7 @@
   "console.faces.legacy": "旧版数据",
   "console.faces.rename": "重命名",
   "console.faces.delete": "删除",
+  "console.faces.deleteTitle": "删除人脸",
   "console.faces.renamePrompt": "为这张脸命名：",
   "console.faces.renameTitle": "重命名人脸",
   "console.faces.renameDescription": "为这张已录入的人脸设置一个便于识别的名称。",

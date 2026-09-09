@@ -538,6 +538,40 @@ button{font-family:inherit}
 .rename-actions .btn{flex:1;margin-top:0}
 
 /* ================================================================
+   Face delete confirmation modal
+   ================================================================ */
+.delete-overlay{
+  position:fixed;inset:0;z-index:110;
+  align-items:center;justify-content:center;
+  background:rgba(22,26,34,.45);backdrop-filter:blur(2px);
+  display:flex;
+  visibility:hidden;opacity:0;pointer-events:none;
+  transition:opacity .22s ease,visibility 0s .22s;
+}
+.delete-overlay.active{
+  visibility:visible;opacity:1;pointer-events:auto;
+  transition:opacity .22s ease,visibility 0s;
+}
+.delete-card{
+  width:90%;max-width:380px;background:var(--face);
+  border:1px solid var(--hair);border-radius:8px;
+  box-shadow:0 18px 60px rgba(22,26,34,.2);padding:24px;
+  opacity:0;transform:translateY(20px) scale(.96);
+  transition:opacity .24s ease,transform .30s cubic-bezier(.34,1.45,.5,1);
+}
+.delete-overlay.active .delete-card{opacity:1;transform:translateY(0) scale(1)}
+.delete-card h2{
+  font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
+  margin-bottom:8px;text-transform:uppercase;
+}
+.delete-card p.dim{font-size:11px;color:#8A919E;line-height:1.6;margin-bottom:18px}
+.delete-actions{display:flex;gap:8px;margin-top:14px}
+.delete-actions .btn{flex:1;margin-top:0}
+.btn-danger{background:var(--err);color:#FFFFFF;flex-shrink:0}
+.btn-danger:hover{background:#B52226}
+.btn-danger:active{transform:scale(.985)}
+
+/* ================================================================
    About modal — click the footer version tag
    ================================================================ */
 .about-overlay{
@@ -1178,6 +1212,20 @@ button{font-family:inherit}
 </div>
 
 <!-- ================================================================== -->
+<!-- Face Delete Confirmation Modal                                     -->
+<!-- ================================================================== -->
+<div class="delete-overlay" id="face-delete-overlay" onclick="if(event.target===this)closeDeleteDialog()">
+  <div class="delete-card" role="dialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description">
+    <h2 id="delete-title"></h2>
+    <p class="dim" id="delete-description"></p>
+    <div class="delete-actions">
+      <button type="button" class="btn btn-secondary" id="delete-cancel" onclick="closeDeleteDialog()"></button>
+      <button type="button" class="btn btn-danger" id="delete-confirm" onclick="onDeleteConfirm()"></button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
 <!-- About Modal — click the footer version tag                        -->
 <!-- ================================================================== -->
 <div class="about-overlay" id="about-overlay" onclick="if(event.target===this)closeAbout()">
@@ -1318,7 +1366,6 @@ var RUNTIME_TEXT_KEYS = {
   '已检测到该账号无密码，将跳过密码录入。': 'console.passwordless.detected',
   '尚未录入人脸。切换到“录入”页开始录入。': 'console.faces.empty',
   '点击“开始采集”即可为当前账号追加一张新人脸。': 'console.faces.addHint',
-  '确定删除这张脸吗？': 'console.faces.deleteConfirm',
   '已删除。': 'console.faces.deleted',
   '删除失败，请重试。': 'console.faces.deleteFailed',
   '已重命名。': 'console.faces.renamed',
@@ -2131,6 +2178,8 @@ function onCapture() {
 var faceLabelsById = Object.create(null);
 var renameFaceId = null;
 var renamePreviousFocus = null;
+var deleteFaceId = null;
+var deletePreviousFocus = null;
 
 function loadFaces() {
   checkAccountRefresh();  // prompt to refresh a stale MSA→local record if present
@@ -2170,13 +2219,42 @@ function goAddFace() {
 }
 
 function onDeleteFace(id) {
-  if (!confirm('确定删除这张脸吗？')) return;
+  openDeleteDialog(id);
+}
+
+function openDeleteDialog(id) {
+  deleteFaceId = id;
+  deletePreviousFocus = document.activeElement;
+  var overlay = document.getElementById('face-delete-overlay');
+  document.getElementById('delete-title').textContent = t('console.faces.deleteTitle');
+  document.getElementById('delete-description').textContent = t('console.faces.deleteConfirm');
+  document.getElementById('delete-cancel').textContent = t('console.faces.renameCancel');
+  document.getElementById('delete-confirm').textContent = t('console.faces.delete');
+  overlay.classList.add('active');
+  requestAnimationFrame(function() {
+    document.getElementById('delete-cancel').focus();
+  });
+}
+
+function closeDeleteDialog() {
+  var overlay = document.getElementById('face-delete-overlay');
+  if (overlay) overlay.classList.remove('active');
+  deleteFaceId = null;
+  var previousFocus = deletePreviousFocus;
+  deletePreviousFocus = null;
+  if (previousFocus && previousFocus.focus) previousFocus.focus();
+}
+
+function onDeleteConfirm() {
+  if (deleteFaceId === null) return;
+  var id = deleteFaceId;
+  closeDeleteDialog();
   try {
     if (H.DeleteFace(id)) {
-      showBanner('faces', '已删除。', 'ok');
+      showBanner('faces', t('console.faces.deleted'), 'ok');
       loadFaces();
     } else {
-      showBanner('faces', '删除失败，请重试。', 'error');
+      showBanner('faces', t('console.faces.deleteFailed'), 'error');
     }
   } catch(e) { showBanner('faces', t('console.faces.deleteFailedDetail', { error: e.message }), 'error'); }
 }
@@ -2737,6 +2815,11 @@ document.addEventListener('keydown', function(e) {
     var renameOverlay = document.getElementById('rename-overlay');
     if (renameOverlay && renameOverlay.classList.contains('active')) {
       closeRenameDialog();
+      return;
+    }
+    var deleteOverlay = document.getElementById('face-delete-overlay');
+    if (deleteOverlay && deleteOverlay.classList.contains('active')) {
+      closeDeleteDialog();
       return;
     }
     var ids = ['about-overlay', 'refresh-overlay', 'cam-picker-overlay', 'face-viewer-overlay'];
