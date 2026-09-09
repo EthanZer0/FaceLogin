@@ -4,6 +4,8 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"FaceLoginSetup/internal"
 
@@ -26,6 +28,13 @@ const REGVAL_DATA_PATH = "DataPath"
 const REGVAL_INSTALL_PATH = "InstallPath"
 
 func main() {
+	// The installed uninstaller is the same signed GUI binary as Setup, copied
+	// under a dedicated name. Its cleanup worker is intentionally handled before
+	// elevation/Wails startup so it never opens a UI or a console window.
+	if internal.RunUninstallCleanup(os.Args[1:]) {
+		return
+	}
+
 	// Check administrator — if not elevated, relaunch as admin
 	if !internal.IsAdmin() {
 		err := internal.Elevate()
@@ -92,13 +101,13 @@ func main() {
 	// Initialize the embedded resource filesystem in the internal package
 	internal.EmbeddedFS = resources
 
-	app := NewApp()
+	app := NewApp(strings.EqualFold(filepath.Base(os.Args[0]), "FaceLoginUninstall.exe"))
 
 	err := wails.Run(&options.App{
-		Title:        "FaceLogin Setup",
-		Width:        640,
-		Height:       520,
-		DisableResize: true, // fixed-size window — no edge resize, no maximize
+		Title:            "FaceLogin Setup",
+		Width:            640,
+		Height:           520,
+		DisableResize:    true, // fixed-size window — no edge resize, no maximize
 		WindowStartState: options.Normal,
 		AssetServer: &assetserver.Options{
 			Assets: assets,

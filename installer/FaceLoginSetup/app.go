@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -13,19 +14,49 @@ import (
 
 // App struct
 type App struct {
-	ctx context.Context
+	ctx                   context.Context
+	standaloneUninstaller bool
+	installDir            string
 }
 
 // NewApp creates a new App application struct
-func NewApp() *App {
-	return &App{}
+func NewApp(standaloneUninstaller bool) *App {
+	return &App{standaloneUninstaller: standaloneUninstaller}
 }
 
 // startup is called when the app starts. The context is saved so we can call runtime methods.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.installDir = internal.ReadRegString(REGVAL_INSTALL_PATH, "")
+	if a.standaloneUninstaller && a.installDir == "" {
+		// A registry-cleanup retry must still be able to remove the standalone
+		// uninstaller when it is launched directly from the install folder.
+		if exe, err := os.Executable(); err == nil {
+			a.installDir = filepath.Dir(exe)
+		}
+	}
 	// Set up the embedded FS reference for extraction
 	internal.EmbeddedFS = resources
+}
+
+// IsStandaloneUninstaller lets the shared Wails frontend render only the
+// existing uninstall page when this binary is launched as FaceLoginUninstall.
+func (a *App) IsStandaloneUninstaller() bool {
+	return a.standaloneUninstaller
+}
+
+// FinalizeStandaloneUninstall starts a short-lived copy of this executable in
+// %TEMP%. It waits for this UI process to exit, then removes the otherwise
+// locked FaceLoginUninstall.exe and the now-empty install directory.
+func (a *App) FinalizeStandaloneUninstall() bool {
+	if !a.standaloneUninstaller || a.installDir == "" {
+		return false
+	}
+	if err := internal.LaunchUninstallCleanup(a.installDir); err != nil {
+		return false
+	}
+	runtime.Quit(a.ctx)
+	return true
 }
 
 // ProgressEvent is sent to the frontend during install/uninstall.
@@ -188,6 +219,16 @@ func (a *App) Install(installDir string, locale string) map[string]interface{} {
 	// Step 8: Finalize
 	enrollDest := filepath.Join(installDir, "FaceLoginConsole.exe")
 	_ = internal.ExtractResource("resources/FaceLoginConsole.exe", enrollDest)
+	// Install a dedicated entry point for removal. It is deliberately a copy of
+	// this signed, elevated Wails executable: its filename switches the shared
+	// UI into uninstall-only mode, while keeping the workflow visually and
+	// functionally identical to the installer uninstall page.
+	uninstallDest := filepath.Join(installDir, "FaceLoginUninstall.exe")
+	if exe, copyErr := os.Executable(); copyErr != nil {
+		return result(false, fmt.Sprintf("locate setup executable: %v", copyErr))
+	} else if copyErr = internal.CopyFile(exe, uninstallDest); copyErr != nil {
+		return result(false, fmt.Sprintf("create standalone uninstaller: %v", copyErr))
+	}
 
 	a.emit(100, "installer.progress.complete", "done", "")
 	return result(true, "installer.result.installed")

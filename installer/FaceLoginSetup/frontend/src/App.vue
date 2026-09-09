@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { ref, computed, onMounted } from 'vue'
-import { GetDefaultPaths, Install, Uninstall, PickDirectory, IsInstalled, GetUpgradeNotice } from '../wailsjs/go/main/App'
-import { EventsOn, EventsOff } from '../wailsjs/runtime'
+import { GetDefaultPaths, Install, Uninstall, PickDirectory, IsInstalled, GetUpgradeNotice, IsStandaloneUninstaller, FinalizeStandaloneUninstall } from '../wailsjs/go/main/App'
+import { EventsOn, EventsOff, WindowSetTitle } from '../wailsjs/runtime'
 import { activeLocale, availableLocales, localePreference, setLocale, t, noticeT } from './i18n'
 
 const installDir = ref('')
@@ -15,6 +15,7 @@ const resultMessage = ref('')
 const resultSuccess = ref(false)
 const showResult = ref(false)
 const alreadyInstalled = ref(false)
+const standaloneUninstaller = ref(false)
 
 // Upgrade notice ("what's new") popup state
 const notice = ref<any>(null)
@@ -73,9 +74,16 @@ const noticeSections = computed<NoticeSection[]>(() => {
 })
 
 onMounted(async () => {
+	standaloneUninstaller.value = await IsStandaloneUninstaller()
   const paths = await GetDefaultPaths()
   installDir.value = paths.installDir
   alreadyInstalled.value = await IsInstalled()
+  if (standaloneUninstaller.value) {
+    showInstall.value = false
+    const title = t('installer.uninstaller.windowTitle')
+    document.title = title
+    WindowSetTitle(title)
+  }
 })
 
 async function doPickDirectory() {
@@ -149,6 +157,11 @@ async function doUninstall() {
   resultSuccess.value = result.success
   showResult.value = true
   running.value = false
+  if (result.success && standaloneUninstaller.value) {
+    // The dedicated uninstaller closes after reporting success; its temporary
+    // helper then deletes the running executable and empty install folder.
+    window.setTimeout(() => { void FinalizeStandaloneUninstall() }, 900)
+  }
 }
 </script>
 
@@ -158,7 +171,7 @@ async function doUninstall() {
     <div class="px-8 pt-8 pb-2 flex items-start justify-between gap-4">
       <div>
         <h1 class="text-2xl font-light tracking-tight text-gray-900">FaceLogin</h1>
-        <p class="text-sm text-gray-400 font-light">{{ t('installer.subtitle') }}</p>
+        <p class="text-sm text-gray-400 font-light">{{ standaloneUninstaller ? t('installer.uninstaller.subtitle') : t('installer.subtitle') }}</p>
       </div>
       <label class="flex flex-col gap-1 text-xs text-gray-400">
         <span>{{ t('installer.language') }}</span>
@@ -175,7 +188,7 @@ async function doUninstall() {
     </div>
 
     <!-- Mode Tabs -->
-    <div class="px-8 mt-4 flex gap-6 border-b border-gray-100">
+    <div v-if="!standaloneUninstaller" class="px-8 mt-4 flex gap-6 border-b border-gray-100">
       <button
         :class="['pb-2 text-sm font-medium transition-colors',
                  showInstall ? 'text-gray-900 border-b-2 border-gray-900' : 'text-gray-400 hover:text-gray-600']"
