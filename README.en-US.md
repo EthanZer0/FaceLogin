@@ -34,18 +34,6 @@
 
 ---
 
-## 2.0.0 Highlights
-
-- Enrollment and lock-screen authentication now share one per-frame pipeline: SCRFD detection, 106 landmarks, optional photometric normalization, pose gating, liveness, and matching use the same frame state.
-- Added a MobileNetV2 head-pose model. Lock-screen matching accepts only valid poses and reports localized instructions for yaw, pitch, and roll adjustments.
-- Reworked authentication sessions, pipe-reader shutdown, and input-thread lifetime. Ordinary unlock ignores mouse movement, and late responses cannot affect a newer attempt.
-- Photometric normalization is off by default. The old dark-light enhancement setting, legacy exposure controller, global hardware-failure blacklist, and diagnostic tool were removed.
-- The installer now supports a native desktop shortcut, a lightweight standalone `Uninstall.exe`, custom confirmation dialogs, install-path validation, and synchronized language packs.
-
-See [CHANGELOG.md](CHANGELOG.md) for the categorized 2.0.0 release log.
-
----
-
 ## System Architecture
 
 ```mermaid
