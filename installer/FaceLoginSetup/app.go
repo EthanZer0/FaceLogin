@@ -128,6 +128,15 @@ func (a *App) GetUpgradeNotice() map[string]interface{} {
 	return internal.GetUpgradeNotice()
 }
 
+// CreateDesktopShortcut creates the optional user-facing Console shortcut
+// after the core installation has completed.
+func (a *App) CreateDesktopShortcut(installDir string) map[string]interface{} {
+	if err := internal.CreateDesktopShortcut(filepath.Clean(installDir)); err != nil {
+		return result(false, err.Error())
+	}
+	return result(true, "installer.result.desktopShortcutCreated")
+}
+
 // Install runs the full installation.
 func (a *App) Install(installDir string, locale string) map[string]interface{} {
 	var err error
@@ -264,6 +273,12 @@ func (a *App) Uninstall() map[string]interface{} {
 	} else {
 		internal.UnregisterCOMDLL("")
 		a.emit(50, "installer.progress.unregisterProvider", "done", "")
+	}
+
+	// Remove only the shortcut that points to this installation. A same-named
+	// shortcut targeting another program is intentionally preserved.
+	if installDir != "" {
+		_ = internal.RemoveDesktopShortcut(installDir)
 	}
 
 	// Step 3: Delete installed program files AND user data (data/, log/) and

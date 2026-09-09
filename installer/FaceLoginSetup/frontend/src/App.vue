@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { ref, computed, onMounted } from 'vue'
-import { GetDefaultPaths, Install, Uninstall, PickDirectory, IsInstalled, GetUpgradeNotice, IsStandaloneUninstaller, FinalizeStandaloneUninstall } from '../wailsjs/go/main/App'
+import { GetDefaultPaths, Install, Uninstall, PickDirectory, IsInstalled, GetUpgradeNotice, IsStandaloneUninstaller, FinalizeStandaloneUninstall, CreateDesktopShortcut } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff, WindowSetTitle } from '../wailsjs/runtime'
 import { activeLocale, availableLocales, localePreference, setLocale, t, noticeT } from './i18n'
 
@@ -16,6 +16,7 @@ const resultSuccess = ref(false)
 const showResult = ref(false)
 const alreadyInstalled = ref(false)
 const standaloneUninstaller = ref(false)
+const createDesktopShortcut = ref(true)
 
 // Upgrade notice ("what's new") popup state
 const notice = ref<any>(null)
@@ -125,6 +126,12 @@ async function doInstall() {
   const result = await Install(installDir.value, localePreference.value)
   resultMessage.value = localizeBackendMessage(result.message)
   resultSuccess.value = result.success
+  if (result.success && createDesktopShortcut.value && !standaloneUninstaller.value) {
+    const shortcutResult = await CreateDesktopShortcut(installDir.value)
+    if (!shortcutResult.success) {
+      resultMessage.value += '\n\n' + localizeBackendMessage(shortcutResult.message)
+    }
+  }
   showResult.value = true
   running.value = false
 
@@ -233,6 +240,15 @@ async function doUninstall() {
           </button>
         </div>
         <p class="mt-1 text-xs text-gray-400">{{ t('installer.modelsHint') }}</p>
+
+        <label class="mt-4 flex items-center gap-2 text-sm text-gray-600">
+          <input
+            v-model="createDesktopShortcut"
+            type="checkbox"
+            class="h-4 w-4 accent-gray-800"
+          />
+          <span>{{ t('installer.createDesktopShortcut') }}</span>
+        </label>
 
         <button
           class="mt-6 w-full py-2.5 text-sm font-medium bg-gray-900 text-white
