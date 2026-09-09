@@ -89,7 +89,13 @@ onMounted(async () => {
 async function doPickDirectory() {
   const dir = await PickDirectory(t('installer.selectInstallDirectory'))
   if (dir) {
-    installDir.value = dir
+    // The folder picker selects the parent directory. Keep the product's
+    // conventional final folder explicit, while avoiding FaceLogin\FaceLogin
+    // when the user selected an existing product directory.
+    const parent = dir.replace(/[\\/]+$/, '')
+    installDir.value = /(?:^|[\\/])FaceLogin$/i.test(parent)
+      ? parent
+      : `${parent}\\FaceLogin`
   }
 }
 
