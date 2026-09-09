@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { GetDefaultPaths, Install, Uninstall, PickDirectory, IsInstalled, GetUpgradeNotice, IsStandaloneUninstaller, FinalizeStandaloneUninstall, CreateDesktopShortcut } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff, WindowSetTitle } from '../wailsjs/runtime'
 import { activeLocale, availableLocales, localePreference, setLocale, t, noticeT } from './i18n'
@@ -17,6 +17,8 @@ const showResult = ref(false)
 const alreadyInstalled = ref(false)
 const standaloneUninstaller = ref(false)
 const createDesktopShortcut = ref(true)
+const showUninstallConfirm = ref(false)
+const uninstallConfirmButton = ref<HTMLButtonElement | null>(null)
 
 // Upgrade notice ("what's new") popup state
 const notice = ref<any>(null)
@@ -146,9 +148,21 @@ async function doInstall() {
   }
 }
 
-async function doUninstall() {
-  if (!confirm(t('installer.uninstallConfirm'))) return
+function openUninstallConfirm() {
+  showUninstallConfirm.value = true
+  void nextTick(() => uninstallConfirmButton.value?.focus())
+}
 
+function closeUninstallConfirm() {
+  showUninstallConfirm.value = false
+}
+
+function doUninstall() {
+  openUninstallConfirm()
+}
+
+async function confirmUninstall() {
+  closeUninstallConfirm()
   running.value = true
   showResult.value = false
   progressPercent.value = 0
@@ -373,6 +387,50 @@ async function doUninstall() {
       </div>
     </div>
   </Transition>
+
+  <!-- Uninstall confirmation popup — custom UI matching the installer language -->
+  <Transition name="notice">
+    <div
+      v-if="showUninstallConfirm"
+      class="confirm-overlay fixed inset-0 flex items-center justify-center p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="uninstall-confirm-title"
+      aria-describedby="uninstall-confirm-description"
+      tabindex="-1"
+      @click.self="closeUninstallConfirm"
+      @keydown.esc="closeUninstallConfirm"
+    >
+      <div class="confirm-card w-[90%] max-w-md">
+        <div class="px-6 pt-6 pb-4 border-b border-gray-100 flex items-start gap-3">
+          <div class="flex-1 min-w-0">
+            <h2 id="uninstall-confirm-title" class="text-lg font-medium tracking-tight text-gray-900 leading-snug">
+              {{ t('installer.uninstallConfirmTitle') }}
+            </h2>
+            <p id="uninstall-confirm-description" class="mt-3 text-sm text-gray-600 leading-6">
+              {{ t('installer.uninstallConfirmDescription') }}
+            </p>
+            <p class="confirm-warning mt-4 px-3 py-2.5 text-sm leading-6">
+              {{ t('installer.uninstallConfirmWarning') }}
+            </p>
+          </div>
+        </div>
+        <div class="px-6 py-4 flex gap-3 justify-end">
+          <button
+            type="button"
+            class="confirm-cancel px-5 py-2 text-sm font-medium"
+            @click="closeUninstallConfirm"
+          >{{ t('installer.cancel') }}</button>
+          <button
+            ref="uninstallConfirmButton"
+            type="button"
+            class="confirm-danger px-5 py-2 text-sm font-medium text-white"
+            @click="confirmUninstall"
+          >{{ t('installer.uninstallButton') }}</button>
+        </div>
+      </div>
+    </div>
+  </Transition>
 </template>
 
 <style scoped>
@@ -390,6 +448,46 @@ async function doUninstall() {
   -webkit-backdrop-filter: blur(4px);
   backdrop-filter: blur(4px);
 }
+
+.confirm-overlay {
+  z-index: 60;
+  background:
+    radial-gradient(ellipse at 50% 42%, rgba(208, 42, 46, 0.08), transparent 62%),
+    rgba(17, 24, 39, 0.46);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.confirm-card {
+  background: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 24px 60px -14px rgba(0, 0, 0, 0.30),
+              0 4px 14px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.confirm-warning {
+  color: #9B2C2F;
+  background: #FFF7F7;
+  border-left: 2px solid #D02A2E;
+  border-radius: 2px;
+}
+
+.confirm-cancel {
+  color: #374151;
+  border: 1px solid #D1D5DB;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.confirm-cancel:hover { background: #F3F4F6; border-color: #9CA3AF; }
+
+.confirm-danger {
+  background: #D02A2E;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+.confirm-danger:hover { background: #B52226; }
+.confirm-danger:active { transform: translateY(1px); }
 
 .notice-card {
   background: #ffffff;
