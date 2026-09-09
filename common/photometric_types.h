@@ -22,7 +22,7 @@ PhotometricMode PhotometricModeFromString(const std::string& value);
 std::string PhotometricModeToString(PhotometricMode mode);
 
 struct PhotometricConfig {
-    PhotometricMode mode = PhotometricMode::Hybrid;
+    PhotometricMode mode = PhotometricMode::Off;
     float targetLuma = 110.0f;
     float toleranceBand = 15.0f;
     float minDigitalGain = 0.5f;

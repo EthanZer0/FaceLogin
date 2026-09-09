@@ -1774,10 +1774,8 @@ function loadSettings() {
     window.__CFG_UI_LANGUAGE_INITIAL__ = cfg.ui_language || 'auto';
     document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
-    // v2 defaults to hybrid. The legacy checkbox now selects hybrid versus
-    // software-only while the explicit photometric_mode remains authoritative.
     document.getElementById('cfg-exposure').checked =
-      (cfg.photometric_mode || (cfg.face_exposure_control ? 'hybrid' : 'software')) === 'hybrid';
+      !!cfg.face_exposure_control;
     document.getElementById('cfg-unload-models').checked = !!cfg.unload_models_after_auth;
 
     // Populate the camera dropdown from the enumerated devices.
@@ -1858,9 +1856,6 @@ function onSaveSettings() {
     match_threshold: 0.45 + (90 - strictness) / 100,
     anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
-    photometric_mode: document.getElementById('cfg-exposure').checked ? 'hybrid' : 'software',
-    photometric_target_luma: 110,
-    photometric_band: 15,
     face_exposure_control: document.getElementById('cfg-exposure').checked,
     unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
     capture_unknown_faces: document.getElementById('cfg-capture-unknown').checked,
