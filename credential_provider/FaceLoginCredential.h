@@ -162,12 +162,9 @@ private:
     // adjustment cannot extend or prematurely end an authentication attempt.
     ULONGLONG m_authDeadlineTick = 0;
 
-    // On unlock: baseline tick recorded in Advise(). A background thread
-    // polls GetLastInputInfo() and calls StartAuth() when NEW input arrives
-    // (keyboard or mouse). The first keypress that dismissed the lock-screen
-    // wallpaper happened BEFORE our DLL was loaded, so any tick <= baseline
-    // is ignored.
-    DWORD m_waitingStartTick = 0;
+    // On unlock: a background thread snapshots virtual-key states when it
+    // starts, then reacts only to rising edges on keyboard keys or mouse
+    // buttons. Mouse movement alone is intentionally ignored.
     HANDLE m_hInputThread = nullptr;   // background input-detection thread
     HANDLE m_hInputStop = nullptr;     // event: signal to stop the thread
     bool m_inputThreadRunning = false;

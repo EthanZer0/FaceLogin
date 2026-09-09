@@ -10,6 +10,7 @@
 #include <ntsecapi.h>
 #include <sddl.h>
 #include <shlwapi.h>
+#include <array>
 #include <vector>
 #include <process.h>
 
@@ -20,13 +21,12 @@
 // Input-detection thread (unlock scenario)
 // ============================================================================
 //
-// Runs as a background thread, polling GetLastInputInfo() every ~200 ms.
-// When it detects that the user has pressed a key or moved the mouse AFTER
-// the baseline tick (recorded in Advise()), it calls StartAuth() which
-// connects the pipe asynchronously.  Once auth completes, the pipe callback
-// stores credentials and triggers CredentialsChanged(), causing LogonUI to
-// re-enumerate and call GetSerialization(), which then packs and returns
-// the ready credentials.
+// Runs as a background thread, polling the physical state of virtual keys.
+// A rising edge on a keyboard key or mouse button calls StartAuth(). Mouse
+// movement alone does not change any of these states and cannot trigger
+// recognition. Once auth completes, the pipe callback stores credentials and
+// triggers CredentialsChanged(), causing LogonUI to re-enumerate and call
+// GetSerialization(), which then packs and returns the ready credentials.
 //
 // The thread stops when:
 //   - New input is detected and StartAuth() is called, OR
@@ -37,16 +37,52 @@ struct InputDetectionContext {
     FaceLoginCredential* pCred;
 };
 
-static unsigned __stdcall InputDetectionThreadProc(void* pParam) {
+namespace {
+
+constexpr DWORD kInputPollIntervalMs = 40;
+constexpr ULONGLONG kInputBaselineGraceMs = 350;
+
+bool IsMouseButtonVirtualKey(int virtualKey) {
+    switch (virtualKey) {
+    case VK_LBUTTON:
+    case VK_RBUTTON:
+    case VK_MBUTTON:
+    case VK_XBUTTON1:
+    case VK_XBUTTON2:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsVirtualKeyDown(int virtualKey) {
+    // Use only the high bit. The low transition bit is legacy process-global
+    // state and is not reliable for polling.
+    return (GetAsyncKeyState(virtualKey) & static_cast<SHORT>(0x8000)) != 0;
+}
+
+} // namespace
+
+unsigned __stdcall InputDetectionThreadProc(void* pParam) {
     auto* ctx = static_cast<InputDetectionContext*>(pParam);
     FaceLoginCredential* pCred = ctx->pCred;
     delete ctx;
 
-    FACELOGIN_INFO(L"[InputThread] Started — polling for user input every 200ms");
+    FACELOGIN_INFO(L"[InputThread] Started — polling keyboard and mouse-button states every %lums",
+                   kInputPollIntervalMs);
 
-    const DWORD pollIntervalMs = 200;
     const DWORD timeoutSec = 30;
-    DWORD startTick = GetTickCount();
+    ULONGLONG startTick = GetTickCount64();
+    const ULONGLONG baselineGraceUntil = startTick + kInputBaselineGraceMs;
+    std::array<bool, 256> previousDown{};
+
+    // Prime the snapshot so the click/key used to select the credential tile
+    // is not mistaken for the input that should start authentication.
+    for (int virtualKey = 1; virtualKey <= 0xFF; ++virtualKey) {
+        previousDown[virtualKey] = IsVirtualKeyDown(virtualKey);
+    }
+    FACELOGIN_INFO(L"[InputThread] Baseline captured; selection-input grace=%llums",
+                   kInputBaselineGraceMs);
 
     // Loop forever (until the stop event is signaled).  The 30s timeout does
     // NOT kill the thread — it only restarts the idle window so a user who
@@ -63,59 +99,50 @@ static unsigned __stdcall InputDetectionThreadProc(void* pParam) {
         // late keypress still works. (Previously the thread exited after 30s
         // of no input, leaving no path to restart it — a later keypress did
         // nothing.)
-        DWORD elapsedMs = GetTickCount() - startTick;
-        if (elapsedMs > timeoutSec * 1000) {
+        ULONGLONG nowTick = GetTickCount64();
+        if (nowTick - startTick > static_cast<ULONGLONG>(timeoutSec) * 1000) {
             FACELOGIN_INFO(L"[InputThread] 30s idle — restarting idle window");
-            startTick = GetTickCount();
-            continue;
+            startTick = nowTick;
         }
 
-        // Poll GetLastInputInfo
-        LASTINPUTINFO lii = {};
-        lii.cbSize = sizeof(lii);
-        if (GetLastInputInfo(&lii)) {
-            // 300ms threshold: the first keypress to dismiss the lock-screen
-            // wallpaper generates both KEYDOWN and KEYUP events, but the
-            // KEYDOWN itself is the user's intent to unlock — trigger on the
-            // first keystroke instead of requiring a second one. The small
-            // guard only skips stray input recorded right around the
-            // baseline (Advise) so we don't fire on noise. 500→300ms shrinks
-            // the "dead zone" where a first keypress is silently swallowed
-            // after the lock screen appears, so the user's first press more
-            // often starts recognition immediately.
-            DWORD waitingStartTick = 0;
-            EnterCriticalSection(&pCred->m_cs);
-            waitingStartTick = pCred->m_waitingStartTick;
-            LeaveCriticalSection(&pCred->m_cs);
-            DWORD threshold = waitingStartTick + 300;
-            if (lii.dwTime > threshold) {
-                FACELOGIN_INFO(L"[InputThread] NEW input detected! (last=%lu > threshold=%lu, diff=%ld)",
-                              lii.dwTime, threshold,
-                              static_cast<LONG>(lii.dwTime - waitingStartTick));
-                const auto state = pCred->GetState();
-                if (state == FaceLoginCredential::State::Waiting) {
-                    pCred->StartAuth();
-                } else if (state == FaceLoginCredential::State::Failed ||
-                           state == FaceLoginCredential::State::Error) {
-                    // Failed/error states deliberately keep their message
-                    // visible until the user provides a new input.  Once
-                    // that input arrives, atomically consume the retry
-                    // transition before starting a new attempt.  Without
-                    // this transition the thread saw State::Failed, skipped
-                    // StartAuth(), and then exited permanently.
-                    if (pCred->TransitionState(state,
-                                               FaceLoginCredential::State::Waiting)) {
-                        pCred->SetStatusText(L"");
-                        FACELOGIN_INFO(L"[InputThread] Retry input accepted — restarting authentication");
-                        pCred->StartAuth();
-                    }
-                }
+        bool inputDetected = false;
+        for (int virtualKey = 1; virtualKey <= 0xFF; ++virtualKey) {
+            const bool currentDown = IsVirtualKeyDown(virtualKey);
+            const bool risingEdge = currentDown && !previousDown[virtualKey];
+            previousDown[virtualKey] = currentDown;
+            if (risingEdge && nowTick >= baselineGraceUntil) {
+                const bool mouseButton = IsMouseButtonVirtualKey(virtualKey);
+                FACELOGIN_INFO(L"[InputThread] New %s input detected (VK=0x%02X)",
+                               mouseButton ? L"mouse-button" : L"keyboard",
+                               virtualKey);
+                inputDetected = true;
                 break;
             }
         }
 
-        // Sleep (alertable so the stop event can wake us)
-        SleepEx(pollIntervalMs, TRUE);
+        if (inputDetected) {
+            const auto state = pCred->GetState();
+            if (state == FaceLoginCredential::State::Waiting) {
+                pCred->StartAuth();
+            } else if (state == FaceLoginCredential::State::Failed ||
+                       state == FaceLoginCredential::State::Error) {
+                // Failed/error states deliberately keep their message visible
+                // until the user provides a new input. Once that input
+                // arrives, atomically consume the retry transition before
+                // starting a new attempt.
+                if (pCred->TransitionState(state,
+                                           FaceLoginCredential::State::Waiting)) {
+                    pCred->SetStatusText(L"");
+                    FACELOGIN_INFO(L"[InputThread] Retry input accepted — restarting authentication");
+                    pCred->StartAuth();
+                }
+            }
+            break;
+        }
+
+        // Wait with a timeout so StopInputDetectionThread() wakes the worker
+        // immediately instead of waiting for the next polling interval.
+        WaitForSingleObject(pCred->m_hInputStop, kInputPollIntervalMs);
     }
 
     FACELOGIN_INFO(L"[InputThread] Exiting");
@@ -409,9 +436,6 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         // clicks the tile — SetSelected handles that).
         FACELOGIN_INFO(L"Advise: %s state — restarting input detection (key press retries)",
                        state == State::Failed ? L"failed" : L"error");
-        EnterCriticalSection(&m_cs);
-        m_waitingStartTick = GetTickCount();
-        LeaveCriticalSection(&m_cs);
         StartInputDetectionThread();
         return S_OK;
     }
@@ -438,9 +462,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
 
     EnterCriticalSection(&m_cs);
     m_state = State::Waiting;
-    m_waitingStartTick = GetTickCount();
     LeaveCriticalSection(&m_cs);
-    FACELOGIN_INFO(L"Advise: baseline tick = %lu", m_waitingStartTick);
 
     if (coldBoot) {
         // Cold boot: start auth HERE, not in SetSelected. With autoLogon=TRUE
@@ -532,9 +554,6 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
         // visible and the next key press is the explicit retry.
         FACELOGIN_INFO(L"SetSelected: %s state — restarting input detection (key press retries)",
                        state == State::Failed ? L"failed" : L"error");
-        EnterCriticalSection(&m_cs);
-        m_waitingStartTick = GetTickCount();
-        LeaveCriticalSection(&m_cs);
         StartInputDetectionThread();
     } else if (state == State::Waiting && !inputThreadRunning) {
         // Waiting + (re)selected — either the initial selection after a cold
@@ -542,9 +561,6 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
         // back to the face tile after SetDeselected stopped everything.
         // Either way: start the input-detection thread and require a key press.
         FACELOGIN_INFO(L"SetSelected: tile selected — starting input detection (key press starts auth)");
-        EnterCriticalSection(&m_cs);
-        m_waitingStartTick = GetTickCount();
-        LeaveCriticalSection(&m_cs);
         StartInputDetectionThread();
         // Repush the Waiting text (clears any residual "识别中..." / stale text)
         SetStatusText(L"");
@@ -845,9 +861,6 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
         bool canWaitForRetry = false;
         EnterCriticalSection(&m_cs);
         canWaitForRetry = m_state == State::Failed && m_pCredentialEvents != nullptr;
-        if (canWaitForRetry) {
-            m_waitingStartTick = GetTickCount();
-        }
         LeaveCriticalSection(&m_cs);
         if (canWaitForRetry) {
             FACELOGIN_INFO(L"Local auth timeout: waiting for a new input to retry");
