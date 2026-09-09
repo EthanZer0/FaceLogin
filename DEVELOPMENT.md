@@ -1,5 +1,7 @@
 # FaceLogin 技术开发文档
 
+本文档对应当前 `dev-2.0.0` 开发线（以 `v1.9.0` release 为基线）。如果文档与实现冲突，以当前源代码、`common/` 协议定义和构建脚本为准。
+
 ## 一、项目概述
 
 ### 1.1 项目简介
@@ -16,9 +18,10 @@ FaceLogin 是一个 Windows 人脸识别登录系统，允许用户通过摄像�
 | 人脸检测 | SCRFD ONNX |
 | 地标提取 | 2d106det ONNX (106点) |
 | 人脸识别 | InsightFace buffalo_s ONNX (512维) |
-| 活体检测 | EAR眨眼检测 + facenox MiniFAS 静默反欺诈 |
+| 活体检测 | EAR眨眼检测 + facenox MiniFAS 静默反欺诈，可配置为 `blink` / `antispoof` / `none`（默认 `none`） |
 | 相机采集 | Media Foundation 优先 + DirectShow 回退（服务与 Console 统一管线） |
-| 人脸曝光控制 | 相机硬件曝光/增益 + 数字增益双通道反馈环（可选） |
+| 光照处理 | 公共逐帧光照统计与归一化；硬件粗调可验证、会话级降级，用户开关默认关闭 |
+| 头部姿态 | MobileNetV2 6D Pose ONNX，输出 Yaw / Pitch / Roll，用于锁屏识别姿态门控 |
 | 多语言 | 独立语言包 locales/*.json（zh-CN / ko-KR / en-US）+ auto 跟随系统 |
 | 凭据提供 | Windows Credential Provider COM (ICredentialProvider) |
 | 进程通信 | 命名管道 (Named Pipe), UTF-16LE 编码, 消息载荷为 locale key |
@@ -35,6 +38,21 @@ FaceLogin 是一个 Windows 人脸识别登录系统，允许用户通过摄像�
 - 管理员权限（用于安装、注册COM组件、服务管理）
 - WebView2 运行时（Windows 11 内置，Windows 10 自动安装）
 
+### 1.4 从 v1.9.0 到 2.0.0 的实现变更
+
+本节是以 `v1.9.0` release 为起点的代码级变更摘要，详细行为以各模块章节和当前实现为准：
+
+| 领域 | 2.0.0 当前实现 |
+|---|---|
+| 光照与曝光 | 删除旧 `FaceExposureController`、固定 `sessionGain` 和全局 `ExposureHardwareBroken` 黑名单；新增公共逐帧 `PhotometricPipeline`，使用鲁棒脸部统计做软件归一化，硬件曝光/增益只作为可验证的慢速粗调，失败只在当前会话降级。默认 `face_exposure_control=false`。 |
+| 统一帧链路 | 录入预览、录入采样、锁屏识别、活体和最终校验共用原始帧、地标、光照统计、归一化帧和质量状态；正常亮度保持恒等变换。 |
+| 姿态检测 | 新增 `head_pose_mobilenetv2.onnx` 与 `OnnxHeadPose`，输出 Yaw/Pitch/Roll；锁屏识别在活体和 embedding 前执行姿态门控，并通过 locale key 返回方向提示或 `AUTH_POSE_TIMEOUT`。 |
+| 认证生命周期 | Credential Provider 增加 attempt ID、明确 `Waiting → Authenticating → Ready → Submitted` 状态、唯一终端响应处理、确定性管道/输入线程回收；删除 `TerminateThread` 路径。普通解锁只接受选中磁贴后的键盘按键或鼠标按键上升沿，鼠标移动不触发。 |
+| 服务生命周期 | 服务控制回调只发出停止请求，由服务主线程统一结束认证、释放摄像头、结束光照会话和关闭管道；客户端断开、超时、失败和停止共用清理出口。 |
+| 模型与数据 | 保留 `w600k_mbf.onnx`、512-D embedding、112×112 RGB、ArcFace 五点对齐和 `users.dat` V5；当前 V5/ONNX 模板继续使用，新光照管线不要求重新录入。更早的 dlib/旧对齐模板仍按 `legacy` 标记要求重新录入。新增姿态模型使随包模型约 31 MB。 |
+| Console 与安装器 | 移除暗光增强、姿态实时左上角叠加、`diag_glasses` 和 `jpeg62.dll`/`libpng16.dll`/`z.dll` 相关依赖；Console 增加单实例、高 DPI 清单、录入/人脸管理自定义弹窗与统一多语言；安装器增加目录规范化、合法性检查、原生快捷方式、自定义弹窗、隐藏安装控制台窗口和轻量独立 `Uninstall.exe`。 |
+| 文档与语言 | `zh-CN`、`ko-KR`、`en-US` 语言包继续以根目录 locale 为唯一来源；IPC 状态和错误只传 locale key，不在服务端硬编码显示文本。 |
+
 ---
 
 ## 二、项目结构
@@ -45,6 +63,7 @@ FaceLogin/
 ├── vcpkg.json                      # vcpkg 依赖定义 (dlib, onnxruntime)
 ├── .gitignore
 ├── README.md / README.ko-KR.md / README.en-US.md   # 三语言 README
+├── CHANGELOG.md                     # 按分类整理的版本更新日志
 ├── locales/                        # 独立语言包 (zh-CN / ko-KR / en-US)
 │   ├── zh-CN.json                  # 基准语言（源码/DOM 原文）
 │   ├── ko-KR.json
@@ -60,6 +79,7 @@ FaceLogin/
 │   ├── config_util.cpp/h           # 应用配置 JSON 序列化
 │   ├── registry_util.h             # 注册表读写工具
 │   ├── locale_util.cpp/h           # 语言包加载/解析 (ResolveLocale, LocaleCatalog)
+│   ├── photometric_types.h         # 光照、姿态与统一帧数据类型
 │   └── photometric_pipeline.cpp/h  # 统一逐帧光照管线与硬件控制适配
 ├── face_service/                   # 人脸识别 Windows 服务
 │   ├── CMakeLists.txt
@@ -68,7 +88,7 @@ FaceLogin/
 │   ├── landmark_detector.cpp/h     # 2d106det 106点地标提取
 │   ├── liveness_detector.cpp/h     # EAR眨眼活体检测
 │   ├── liveness_types.h            # 活体检测方法枚举
-│   ├── onnx_models.cpp/h           # ONNX 模型封装 (SCRFD / buffalo_s / MiniFASNet)
+│   ├── onnx_models.cpp/h           # ONNX 模型封装 (SCRFD / 106点 / buffalo_s / Pose / MiniFAS)
 │   ├── webcam_capture.cpp/h        # Media Foundation 摄像头 (MF 优先)
 │   ├── webcam_capture_dshow.cpp/h  # DirectShow 摄像头 (DS 回退)
 │   ├── pipe_server.cpp/h           # 命名管道服务端 (DACL安全)
@@ -86,7 +106,6 @@ FaceLogin/
 │   ├── CMakeLists.txt
 │   ├── main.cpp                    # WinMain 入口 + 管理员权限检查
 │   ├── EnrollmentWizard.cpp/h      # 注册向导后端 (摄像头/检测/活体/存储)
-│   ├── CameraPreview.cpp/h         # 摄像头预览辅助 (遗留, 未编译)
 │   ├── WebviewHost.cpp/h           # WebView2 宿主 + IDispatch 桥接 (约39个JS接口)
 │   ├── index.html                  # 嵌入式前端 UI (录入/设置/日志/关于)
 │   ├── FaceLoginEnrollment.manifest # 高DPI感知清单
@@ -96,7 +115,9 @@ FaceLogin/
 ├── installer/                      # 安装程序 (Go Wails v2)
 │   ├── FaceLoginSetup/
 │   │   ├── app.go                  # 安装/卸载/文件夹选择逻辑
-│   │   ├── main.go                 # Wails 入口 (升级公告配置)
+│   │   ├── main.go                 # Wails 安装器入口 (升级公告配置)
+│   │   ├── main_uninstaller.go     # 不嵌入安装资源的独立卸载器入口
+│   │   ├── build-installer.ps1     # 先构建卸载器，再构建完整安装器
 │   │   ├── frontend/src/App.vue    # Vue 3 安装界面
 │   │   ├── frontend/src/i18n.ts    # 前端翻译 (catalogs + noticeT)
 │   │   ├── frontend/src/notice-zh.json / notice-en.json   # 升级公告 (独立中英)
@@ -105,14 +126,15 @@ FaceLogin/
 │   │   │   ├── elevate.go          # 管理员权限提权
 │   │   │   ├── extract.go          # 嵌入式资源提取
 │   │   │   ├── scm.go              # Windows 服务管理
-│   │   │   └── util.go             # 注册表操作 + 目录权限
+│   │   │   ├── shortcut.go          # Windows 原生桌面快捷方式
+│   │   │   ├── uninstall_cleanup.go # 卸载后的目录与注册表清理
+│   │   │   └── util.go              # 注册表操作 + 目录权限
 │   │   └── resources/              # 部署文件 (编译时嵌入)
 │   └── wails.json                  # Wails 项目配置
 ├── scripts/                        # 辅助脚本
-│   ├── download_models.ps1         # 模型文件下载 (ONNX 模型)
+│   ├── build-windows.ps1           # C++ Windows 构建与部署
 │   ├── check-locales.mjs           # 语言包一致性检查 (CI)
 │   ├── sync-locales.mjs            # 语言包同步工具
-│   └── start_standalone.bat        # 开发模式快速启动
 └── assets/                         # 静态资源 (图标等)
 ```
 
@@ -191,14 +213,23 @@ sequenceDiagram
     LogonUI->>CP: 加载 COM 组件
     CP->>DB: 读取已注册用户数
     DB-->>CP: userCount > 0
-    CP->>LogonUI: 显示 "人脸登录" 磁贴 (自动选中)
-    LogonUI->>CP: SetSelected → GetSerialization (轮询)
+    CP->>LogonUI: 显示 "人脸登录" 磁贴
+    alt 冷启动且 cold_boot_key_trigger=false
+        CP->>CP: Advise 后直接开始当前认证尝试
+    else 普通解锁或启用按键触发
+        User->>LogonUI: 选择人脸磁贴
+        CP->>CP: 等待一次键盘按键或鼠标按键上升沿
+        User->>LogonUI: 按键或点击鼠标
+        CP->>CP: 开始当前认证尝试
+    end
+    CP->>Pipe: AUTH_REQUEST (attemptId)
     CP->>Pipe: AUTH_REQUEST
     Pipe->>Svc: 转发请求
     Svc->>Svc: 初始化摄像头
     loop 每帧 (~30fps, 最长15s)
-        Svc->>Svc: 抓帧 → 人脸检测 → 地标提取
-        Svc->>Svc: 活体检测 (眨眼 / 反欺诈)
+        Svc->>Svc: 抓帧 → 检测 → 106点地标 → 逐帧光照归一化
+        Svc->>Svc: MobileNetV2 姿态门控
+        Svc->>Svc: 活体检测 (眨眼 / 反欺诈 / none)
         Svc->>Svc: 计算512维嵌入
         Svc->>DB: 匹配嵌入向量 (欧氏距离)
         alt 匹配成功
@@ -305,7 +336,9 @@ FACELOGIN_ERROR(L"...");
 | `AUTH_SUCCESS:SID:UPN:DOMAIN\USER:PASSWORD` | 冒号分隔 (≥3个) | 认证成功，返回凭据（V5格式含SID/UPN/人脸ID；passwordless 账户密码为空串） |
 | `AUTH_SUCCESS:DOMAIN\USER:PASSWORD` | 冒号分隔 (1个) | 旧格式（V1向后兼容） |
 | `AUTH_TIMEOUT` | 纯文本 | 15秒内未检测到匹配人脸 |
-| `AUTH_NO_FACE` | 纯文本 | 检测超时无匹配 |
+| `AUTH_POSE_TIMEOUT` | 纯文本 | 15秒内姿态始终不合法 |
+| `AUTH_NO_FACE` | 纯文本 | 认证窗口内没有可用人脸 |
+| `AUTH_NO_MATCH` | 纯文本 | 检测到人脸但没有匹配；服务端可在连续失败后提前结束 |
 | `AUTH_ERROR:key` | 前缀+locale key | 错误状态（载荷为 locale key，见下） |
 | `AUTH_CANCELLED` | 纯文本 | 用户取消 |
 | `STATUS:key` | 前缀+locale key | 实时状态推送（载荷为 locale key） |
@@ -314,7 +347,7 @@ FACELOGIN_ERROR(L"...");
 | `GET_LOGS` / `GET_LOGS_OK:json` | 纯文本/JSON | 获取服务端日志 |
 | `PING` / `PONG` | 纯文本 | 连接存活检测 |
 
-**本地化契约（1.9.0）**：`STATUS:` 与 `AUTH_ERROR:` 的载荷**一律是 locale key**（如 `service.loadingModels`、`credential.noMatch`），不是显示文本——服务端不承担翻译，凭据提供方是唯一翻译点（`LocalizeKey` → `LocaleCatalog`：当前语言包 → zh-CN 包 → 状态默认文本）。key 常量集中在 `ipc_protocol.h` 的 `L10N_*`（值与 `locales/*.json` 的 key 对应），新增消息零双改。`MSG_PASSWORDLESS_NOTICE`（值 `credential.passwordless`）为遗留防御常量（服务端已不发，CP 端仍识别以兼容旧服务端）。
+**本地化契约（2.0.0）**：`STATUS:` 与 `AUTH_ERROR:` 的载荷**一律是 locale key**（如 `service.loadingModels`、`credential.poseYawLeft`、`credential.noMatch`），不是显示文本——服务端不承担翻译，凭据提供方是唯一翻译点（`LocalizeKey` → `LocaleCatalog`：当前语言包 → zh-CN 包 → 状态默认文本）。key 常量集中在 `ipc_protocol.h` 的 `L10N_*`（值与 `locales/*.json` 的 key 对应），新增消息零双改。`AUTH_POSE_TIMEOUT` 是独立终端结果，不能用普通 `AUTH_TIMEOUT` 替代。
 
 **安全措施**：
 - DACL: 仅 SYSTEM + Administrators 可连接
@@ -326,14 +359,14 @@ FACELOGIN_ERROR(L"...");
 **AuthResult 结构**:
 ```cpp
 struct AuthResult {
-    enum class Status { Success, Timeout, NoFace, Error, Cancelled };
+    enum class Status { Success, Timeout, PoseTimeout, NoFace, NoMatch, Error, Cancelled };
     Status status;
     std::wstring sid;      // S-1-5-21-... (V2)
     std::wstring upn;      // user@domain (V2, 可为空)
     std::wstring domain;
     std::wstring username;
     std::wstring password; // 使用后清零! (passwordless 账户为空串)
-    std::wstring errorMessage;  // locale key (1.9.0), 旧服务端为中文文本
+    std::wstring errorMessage;  // locale key；兼容旧服务端中文文本
 };
 ```
 
@@ -369,16 +402,15 @@ struct AppConfig {
     float          match_threshold        = 0.75f;    // 欧氏距离; 0.45(严格)…1.15(宽松)
     float          anti_spoof_threshold   = 0.30f;    // 反欺诈阈值
     bool           blink_glasses_mode     = false;    // 眼镜模式 (自适应眨眼)
-    bool           low_light_enhance      = false;    // 旧字段，仅兼容保留
-    PhotometricMode photometric_mode      = PhotometricMode::Hybrid; // hybrid/software/off
-    float          photometric_target_luma = 110.0f;
-    float          photometric_band       = 15.0f;
+    PhotometricMode photometric_mode      = PhotometricMode::Off; // 内部策略；由用户开关映射
+    float          photometric_target_luma = 110.0f;   // 内部默认值
+    float          photometric_band       = 15.0f;     // 内部默认值
     bool           unload_models_after_auth = false;  // 内存优化 (识别后释放模型)
     std::string    camera_device          = "";       // 摄像头符号链接; 空=第一个
     int            camera_rotation        = 0;        // 0/90/180/270 顺时针
-    bool           face_exposure_control  = false;    // 旧字段迁移别名（写出时与新模式同步）
-    float          face_exposure_target   = 110.0f;   // 旧字段迁移别名
-    float          face_exposure_band     = 15.0f;    // 旧字段迁移别名
+    bool           face_exposure_control  = false;    // 唯一用户可见的光照归一化开关
+    float          face_exposure_target   = 110.0f;   // 旧配置迁移别名，保存时不再写出
+    float          face_exposure_band     = 15.0f;    // 旧配置迁移别名，保存时不再写出
     std::string    ui_language            = "auto";   // 界面语言: auto/zh-CN/ko-KR/en-US
     bool           capture_unknown_faces  = false;    // 记录未匹配人脸 (1.8.0)
     bool           cold_boot_key_trigger  = false;    // 开机需按键触发识别 (1.8.0)
@@ -395,9 +427,9 @@ enum class LivenessMethod {
 
 **ui_language 白名单**: `auto` / `zh-CN` / `ko-KR` / `en-US`（`ConfigFromJson` 校验，非法值忽略）。`auto` 的解析见 §4.6 多语言架构。
 
-配置文件位置: `%PROGRAMDATA%\FaceLogin\data\config.json`
+配置文件位置: 安装器写入的 `<installDir>\data\config.json`；注册表 `DataPath` 不可用时回退到 `%PROGRAMDATA%\FaceLogin\data\config.json`
 
-### 4.6 多语言架构（1.9.0）
+### 4.6 多语言架构（2.0.0）
 
 **单一翻译源**：所有文案的唯一来源是仓库根 `locales/*.json`（扁平 JSON，key 按命名空间 `console.*` / `credential.*` / `service.*` / `installer.*` / `meta.*` 组织）。zh-CN 是**基准语言**（源码/DOM/服务端日志均以中文书写），ko-KR / en-US 只做覆盖。四个组件各自消费同一份包，互不依赖。
 
@@ -465,6 +497,7 @@ ServiceMain()
 服务控制:
   - SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN
   - 故障恢复: 3次重启, 间隔60秒, 重置周期24小时
+  - Stop/HandlerEx 只设置停止标志、唤醒模型等待并请求管道停止；摄像头、PhotometricSession 和模型由 Run() 所属主线程统一释放，管道最终关闭也由主线程收尾
 ```
 
 **认证流程 (`ProcessAuthRequest`)**:
@@ -475,37 +508,38 @@ ServiceMain()
 3. 延时初始化摄像头 (仅在收到认证请求时打开，避免摄像头占用)
 4. 丢弃前10帧 (摄像头自动曝光预热)
 5. 重置活体检测器
-6. 统一光照处理: SCRFD 检测 → 106点地标 → 鲁棒人脸统计 →
-   硬件曝光/增益慢速、可验证粗调 + 软件逐帧 Y 通道归一化；硬件失败只在当前会话降级
+6. 统一帧处理: SCRFD 检测 → 106点地标 → 鲁棒人脸统计 →
+   （可选）硬件曝光/增益慢速、可验证粗调 + 逐帧软件归一化；硬件失败只在当前会话降级
 7. 循环 (最长时间 m_authTimeoutSeconds = 15秒):
    a. 抓取一帧并进入统一 `UnifiedFaceFrame`（没有固定 session gain）
    b. 人脸检测 (SCRFD ONNX)
    c. 检测最大人脸
    d. 提取106点地标
-   e. 活体检测 (眨眼EAR 或 静默反欺诈)
-   f. 计算512维嵌入向量 (ONNX buffalo_s)
-   g. 数据库匹配 (欧氏距离 < 阈值 + 最佳/次佳比)
-   h. 匹配成功 → 发送 STATUS: 识别成功 → 构建 AUTH_SUCCESS → 发送凭据 → 退出
-   i. 匹配失败 → 继续循环
-8. 超时 → 发送 AUTH_TIMEOUT
+   e. MobileNetV2 头部姿态估计与姿态门控；不合法时只发送对应方向提示
+   f. 活体检测 (眨眼EAR / 静默反欺诈 / none)
+   g. 计算512维嵌入向量 (ONNX buffalo_s)
+   h. 数据库匹配 (欧氏距离 < 阈值 + 最佳/次佳比)
+   i. 匹配成功 → 发送唯一 AUTH_SUCCESS → 退出
+   j. 连续无匹配达到提前失败条件 → AUTH_NO_MATCH
+8. 姿态持续不合法超时 → AUTH_POSE_TIMEOUT；其他超时 → AUTH_TIMEOUT
 9. ReleaseCamera: 结束当前 `PhotometricSession`，读回并恢复原始硬件控制状态，再关闭摄像头
 ```
 
-**摄像头双模式（1.9.0 起 MF 优先，DS 仅回退）**:
+**摄像头双模式（2.0.0：MF 优先，DS 仅回退）**:
 
 | 属性 | Media Foundation (MF) | DirectShow (DS) |
 |---|---|---|
 | 优先级 | 首选（服务与 Console 统一） | 回退（MF 初始化失败时） |
 | COM线程模型 | MTA | COINIT_MULTITHREADED |
 | 颜色格式 | NV12 → RGB | RGB24 |
-| Session 0 支持 | ✅ (1.9.0 起服务可用) | ✅ |
+| Session 0 支持 | ✅ | ✅ |
 | 分辨率 | 1280×720 | 1280×720 |
 
-> 1.9.0 之前服务模式固定走 DS；`5752f0e` 起 `EnsureCameraForAuth` 先试 MF、失败回退 DS，录入与解锁采集行为完全一致（两者均向公共适配器提供 `IAMVideoProcAmp`/`IAMCameraControl`）。
+> 服务端与 Console 共用 MF 优先、DS 回退的采集策略；两者均向公共光照管线提供统一的帧和硬件控制能力。
 
 **统一光照管线（`common/photometric_pipeline.h/cpp`）**：录入预览、录入采样、认证匹配、活体和最终校验共用同一套逐帧处理。使用关键点轮廓的腐蚀区域计算 trimmed mean、median、P10/P90、裁剪比例、暗部比例、左右差异和均匀度；硬件控制只按驱动报告的离散步长运行，并用实际帧亮度验证方向。硬件无响应或方向反转时恢复原始状态并仅在当前会话降级为软件归一化，不写全局黑名单。正常亮度输入保持恒等变换；局部不均匀只在 112×112 识别 chip 上做受限低频照明校正，防伪仍使用全帧归一化结果，旧 `users.dat` 模板直接匹配。
 
-**配置项** (通过 config.json + `CONFIG_RELOAD` 热加载):
+**配置项**（通过 `config.json` + `CONFIG_RELOAD` 热加载）:
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
@@ -514,14 +548,15 @@ ServiceMain()
 | `liveness_method` | `"none"` | 活体方法: blink / antispoof / none |
 | `match_threshold` | 0.75 | 欧氏距离阈值 (越小越严格; 1.8.0 从 0.65 重校准) |
 | `anti_spoof_threshold` | 0.30 | 反欺诈阈值 (越高越严格) |
-| `photometric_mode` | `"hybrid"` | `hybrid`=硬件验证粗调+逐帧软件归一化，`software`=仅软件，`off`=诊断用 |
-| `photometric_target_luma` | 110.0 | 鲁棒人脸亮度目标 |
-| `photometric_band` | 15.0 | 目标容差带 |
-| `face_exposure_control` / `face_exposure_target` / `face_exposure_band` | 旧值 | 仅用于老配置迁移，不再驱动旧控制器 |
-| `unload_models_after_auth` | false | 内存优化：识别后卸载模型 + 清空工作集 (1.9.0 起含 SCRFD) |
+| `face_exposure_control` | `false` | 唯一用户可见的统一光照归一化开关；`true` 时启用软件逐帧归一化，并允许硬件验证粗调 |
+| `photometric_mode` / `photometric_target_luma` / `photometric_band` | 内部默认 `off` / 110 / 15 | 内部策略字段，不由用户直接设置；旧配置可读取迁移，保存时不再写出 |
+| `face_exposure_target` / `face_exposure_band` | 旧值 | 仅用于旧配置迁移，不再驱动旧曝光控制器 |
+| `unload_models_after_auth` | false | 内存优化：识别后卸载模型 + 清空工作集 |
 | `capture_unknown_faces` | false | 记录未匹配人脸 (1.8.0) |
 | `cold_boot_key_trigger` | false | 开机需按键触发识别 (1.8.0) |
 | `ui_language` | "auto" | 界面语言 (见 §4.6) |
+
+`photometric_*` 和曝光目标/容差字段不是当前用户设置项；它们只作为旧配置迁移输入。统一光照功能关闭时保持原始帧，开启后也只在统计结果显示暗光或过曝等必要条件时调整，不再提供单独的“暗光增强”分支。保存新配置时只写出 `face_exposure_control`。
 
 ### 5.3 人脸地标 (`landmark_detector.h/cpp`)
 
@@ -575,15 +610,21 @@ EAR = (||P2-P6|| + ||P3-P5||) / (2 * ||P1-P4||)
 
 ### 5.6 ONNX 模型 (`onnx_models.h/cpp`)
 
-封装三个 ONNX 推理引擎:
+封装四个 ONNX 推理引擎:
 
 | 类 | 模型 | 输入 | 输出 | 用途 |
 |---|---|---|---|---|
 | `OnnxDetector` | SCRFD (`det_500m.onnx`) | 图像 (letterbox) | 检测框+5点关键点 | 人脸检测 |
 | `OnnxRecognizer` | InsightFace buffalo_s (`w600k_mbf.onnx`) | 112×112 对齐人脸 | 512维嵌入 | 人脸识别 |
 | `OnnxAntiSpoof` | facenox MiniFAS (`minifas_quantized.onnx`) | 128×128 人脸 crop | real-spoof logit 差 | 静默反欺诈 |
+| `OnnxHeadPose` | MobileNetV2 6D Pose (`head_pose_mobilenetv2.onnx`) | SCRFD 框扩展 crop | Pitch/Yaw/Roll | 锁屏姿态门控 |
 
-所有 ONNX 模型放置在 `%PROGRAMDATA%\FaceLogin\models\` 下。
+`OnnxHeadPose` 使用 SCRFD 人脸框扩展后的原始人脸 crop，不使用 ArcFace 112×112 对齐 chip。模型角度方向约定为：右转 Yaw 为正、左转为负；抬头 Pitch 为正、低头为负；向左倾斜 Roll 为正、向右为负。精确数值主要在约 ±45° 内可靠，较大侧脸只用于方向判断。姿态门控的当前阈值为：正面 `|yaw|≤15°、|pitch|≤10°、|roll|≤12°`；可接受 `|yaw|≤25°、|pitch|≤15°、|roll|≤18°`；超过 `30°/25°/25°` 为严重姿态。锁屏流程只接受可接受范围内的帧，并通过 `credential.poseYawLeft` 等 locale key 提示具体调整方向。
+
+当前姿态门控没有额外的“姿态已合格，请保持不动”稳定等待阶段；合法帧会立即进入后续活体/识别流程。连续多帧匹配确认由识别流程本身负责，姿态提示只描述当前需要调整的具体方向。
+
+所有 ONNX 模型放置在安装目录的 `models\` 下；若注册表路径不可用，公共路径工具才回退到 `%PROGRAMDATA%\FaceLogin\models\`。
+反欺诈主模型是 `minifas_quantized.onnx`；代码仍支持在该模型不可用时尝试目录中已有的 `OULU_Protocol_2_model_0_0.onnx`，但当前 2.0.0 安装资源不主动分发该可选旧模型。
 
 ### 5.7 凭据存储 (`credential_store.h/cpp`)
 
@@ -633,6 +674,7 @@ class PipeServer {
     bool WaitForClient(DWORD timeoutMs = 30000);
     bool ReadMessage(std::wstring& outMessage, DWORD timeoutMs = 30000);
     bool WriteMessage(const std::wstring& message);
+    void RequestStop();             // 设置停止状态并关闭当前管道以唤醒 I/O
     void Disconnect();
     void Close();
 };
@@ -643,6 +685,7 @@ class PipeServer {
 - `PIPE_REJECT_REMOTE_CLIENTS`
 - 管道实例: 1（单客户端模型，串行服务）
 - 缓冲区: 4096 字节
+- 停止流程: 控制回调只设置停止状态、通知模型等待并调用 `RequestStop()` 唤醒管道 I/O；服务主线程退出 Run 循环后统一释放摄像头与模型并执行最终 `Close()`，停止期间的 aborted/broken/invalid-handle I/O 视为正常收尾
 
 ---
 
@@ -674,7 +717,7 @@ HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\
 | 2 | CPFT_SUBMIT_BUTTON | 提交 | 隐藏的提交按钮 |
 | 3 | CPFT_COMMAND_LINK | 切换到密码登录 | 备用登录方式 |
 
-**自动登录**: `GetCredentialCount()` 在冷启动登录时返回 `pbAutoLogonWithDefault = TRUE`（`m_isColdBoot`），锁屏解锁时返回 FALSE——用户按任意键后才开始识别。系统自动选中此凭据。
+**自动登录**: `GetCredentialCount()` 在冷启动登录时根据 `cold_boot_key_trigger` 决定 `pbAutoLogonWithDefault`。默认值为 `false`，冷启动在 `Advise()` 后自动开始识别；设为 `true` 时等待一次键盘按键或鼠标按键。普通 `CPUS_UNLOCK_WORKSTATION` 解锁始终需要先选择人脸磁贴，再等待一次键盘按键或鼠标按键；鼠标移动不会触发识别。
 
 **场景支持**: 支持 `CPUS_LOGON` 和 `CPUS_UNLOCK_WORKSTATION`。
 
@@ -709,7 +752,7 @@ HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\
 - 同步: `CRITICAL_SECTION` 保护状态变量, `HANDLE m_hCredsReady` 事件通知
 - 超时: 20 秒硬超时，防止阻塞 LogonUI
 
-**状态机**（1.9.0 补充 Submitted 终态）:
+**状态机**（2.0.0）:
 
 ```
 Waiting ──→ Authenticating ──→ Ready ──→ Submitted (凭据已交 LSA, 终态)
@@ -719,7 +762,9 @@ Waiting ──→ Authenticating ──→ Ready ──→ Submitted (凭据已�
 ```
 
 - `Submitted`: `GetSerialization` 打包成功、凭据交 LSA 后进入；LSA 拒绝（`ReportResult` 失败）置 `Failed`——杜绝"拒绝错误页残留『人脸识别成功』"
-- 状态文本清理: 三条超时路径（GetSerialization 轮询 / 20s 本地硬超时 / OnPipeResponse）统一 `m_statusText.clear()`，超时回落"未识别到人脸"而非残留"识别中..."
+- 每次 `StartAuth()` 生成新的 attempt ID，并清除上一轮的 SID/UPN/用户名/密码、状态文本、no-match 标志和截止时间；迟到的管道响应若不属于当前 attempt 或当前状态不是 `Authenticating`，直接丢弃。
+- `GetSerialization()` 只在 `Ready` 状态打包凭据并转为 `Submitted`，不再解析第二次终端响应；终端结果只由后台管道读取回调处理。
+- `SetDeselected()`、`UnAdvise()`、`ReportResult()` 和析构统一走取消/清理入口，先使 attempt 失效，再在锁外回收管道和输入线程。
 
 **状态文本（多语言）**: 全部经 `Text(key, fallback)` 从 `LocaleCatalog` 取（当前语言包 → zh-CN → fallback 中文）；服务端 `STATUS:`/`AUTH_ERROR:` 载荷为 locale key，`LocalizeKey` 直查翻译（见 §4.2 / §4.6）。关键 key：`credential.pressAnyKey` / `credential.recognizing` / `credential.success` / `credential.noMatch` / `credential.noFace` / `credential.serviceUnavailable` / `credential.passwordless` 等。
 
@@ -729,11 +774,11 @@ Waiting ──→ Authenticating ──→ Ready ──→ Submitted (凭据已�
 class PipeClient {
     bool Connect(DWORD timeoutMs = 5000);
     void StartBackgroundRead();      // 启动后台阻塞读取线程
-    bool CheckResponse();            // 非阻塞轮询
+    void Disconnect();               // 请求停止并等待读取线程退出，幂等
 };
 ```
 
-**实时状态推送**: `STATUS:` 消息通过回调立即传递到 UI 更新显示文本，其余消息写入缓冲区并触发事件。
+**实时状态推送**: `STATUS:` 消息通过回调立即传递到 UI 更新显示文本；终端消息也只通过后台读取线程的唯一回调交付，不在 `GetSerialization()` 中重复轮询或解析。断开顺序是停止事件 → 取消 I/O → 等待读取线程退出 → 关闭句柄，禁止 `TerminateThread` 和对象提前释放。
 
 ---
 
@@ -762,13 +807,14 @@ Win32 GUI 应用程序。
 
 **页面一：人脸采集**
 
-- 摄像头 MF 采集，帧线程后台抓帧 + JPEG 编码 + 检测
-- 实时人脸检测 (SCRFD ONNX) + 106点地标叠加
+- 摄像头 MF 优先、DS 回退，帧线程后台抓帧 + JPEG 编码 + 检测
+- 录入预览、正式采样与服务端认证共用统一逐帧光照管线；正常亮度时保持恒等变换，光照开关默认关闭
+- 实时人脸检测 (SCRFD ONNX) + 106点地标；头部姿态模型作为公共观测能力，不在 Console 左上角绘制姿态数值
 - 采集流程:
-  1. 活体检测 (眨眼 / 反欺诈，根据配置)
-  2. 活体通过 → 采集 10 帧人脸嵌入向量
+  1. 根据配置执行活体检测 (眨眼 / 反欺诈 / none)
+  2. 活体通过且帧质量合格 → 采集 10 帧人脸嵌入向量
   3. 嵌入一致性检查 (平均两两距离 < 阈值)
-  4. 计算 10 帧平均嵌入
+  4. 计算 10 帧平均嵌入；过曝、严重欠曝或不可恢复帧不进入模板平均
 
 **页面二：密码录入**
 
@@ -812,7 +858,7 @@ Win32 GUI 应用程序。
 | 38 | NeedsReenrollment | 旧对齐数据需重录检测 |
 | 39 | IsCapturing | 采集是否进行中 |
 | 42 | LogDiagnostic | JS→日志诊断桥 (卡90%排查) |
-| 46 | ReloadUi | 重建页面（语言切换，1.9.0）——重读嵌入 HTML + 按当前 config 注入语言包 + NavigateToString |
+| 46 | ReloadUi | 重建页面（语言切换）——重读嵌入 HTML + 按当前 config 注入语言包 + NavigateToString |
 
 > 完整清单见 `WebviewHost.cpp` 的 `GetIDsOfNames` / `Invoke`。
 
@@ -833,10 +879,10 @@ Win32 GUI 应用程序。
 |---|---|
 | 录入 | 摄像头预览 + Canvas 渲染 + 人脸框叠加 + 活体提示 + 采集进度 |
 | 人脸 | 多人脸管理（添加/删除/重命名/清空） |
-| 设置 | 界面语言 / 活体方法 / 反欺诈阈值 / 匹配严格度 / 摄像头旋转 / 摄像头选择 / 眼镜模式 / 暗光增强 / 人脸曝光控制 / 内存优化 / 记录未匹配人脸 / 开机按键触发 |
+| 设置 | 界面语言 / 活体方法 / 反欺诈阈值 / 匹配严格度 / 摄像头旋转 / 摄像头选择 / 眼镜模式 / 统一光照归一化开关（默认关闭） / 内存优化 / 记录未匹配人脸 / 开机按键触发 |
 | 日志 | Console 日志 / Service 日志切换 + 自动刷新 + 彩色等级显示 + 未知人脸照片浏览 |
 
-**前端 i18n（1.9.0）**：`STATIC_TEXT_KEYS`（约 77 条）以**精确中文 DOM 文本**为 key 映射 locale key，`applyI18n` 用 TreeWalker 遍历文本节点替换；`STATIC_PLACEHOLDER_KEYS` 管 placeholder；`RUNTIME_TEXT_KEYS` 管 JS 运行时字符串；`t(key) = I18N[key] || I18N_ZH[key] || key`。语言切换：设置页"界面语言"→ `H.SetConfig` 写 `ui_language` → `H.ReloadUi()` 重建（800ms 延迟先显示保存提示）。语言名选项母语自标（简体中文/한국어/English）。
+**前端 i18n（2.0.0）**：`STATIC_TEXT_KEYS` 以**精确中文 DOM 文本**为 key 映射 locale key，`applyI18n` 用 TreeWalker 遍历文本节点替换；`STATIC_PLACEHOLDER_KEYS` 管 placeholder；`RUNTIME_TEXT_KEYS` 管 JS 运行时字符串；`t(key) = I18N[key] || I18N_ZH[key] || key`。语言切换：设置页"界面语言"→ `H.SetConfig` 写 `ui_language` → `H.ReloadUi()` 重建。服务端和 Credential Provider 的姿态提示也只发送 locale key，由当前语言包翻译。
 
 **关于卡片**：Contributors 名单（EthanZer0 / Link2323 / yuisatomi）、版本号、GitHub 链接、Star 提示。
 
@@ -853,13 +899,14 @@ Win32 GUI 应用程序。
 | 后端 | Go + Wails v2 Runtime |
 | 前端 | Vue 3 + Tailwind CSS + TypeScript |
 | 打包 | Wails 构建 (Go 编译 + WebView2 嵌入) |
-| 资源 | Go embed.FS 嵌入所有部署文件 (~80 MB) |
+| 资源 | 完整安装器使用 Go embed.FS 嵌入部署文件；独立卸载器不嵌入安装资源 |
 | 多语言 | `frontend/src/i18n.ts` 以 `?raw` 内嵌三语言包；`ui_language` 白名单见 `internal/config.go` |
 
 ### 8.2 命令行用法
 
 ```
 FaceLoginSetup.exe          交互模式 (GUI)
+Uninstall.exe               独立卸载模式（安装后位于安装目录）
 ```
 
 ### 8.3 安装流程
@@ -869,7 +916,7 @@ FaceLoginSetup.exe          交互模式 (GUI)
 | 1 | 停止并删除已有服务 | 0-12% |
 | 2 | 创建目标目录 | 12-25% |
 | 3 | 写入注册表路径 (InstallPath, DataPath) | 25-30% |
-| 4 | 提取所有嵌入文件 (~66MB) | 30-60% |
+| 4 | 提取所有嵌入文件（包含 `Uninstall.exe`） | 30-60% |
 | 5 | 写入默认 config.json | 60% |
 | 6 | 设置数据目录 ACL | 60-67% |
 | 7 | 注册 COM DLL (regsvr32) | 67-75% |
@@ -886,23 +933,27 @@ FaceLoginSetup.exe          交互模式 (GUI)
 | 4 | 清理注册表键值 | 70-85% |
 | 5 | 完成 (彻底删除) | 85-100% |
 
-> 1.3.0 起卸载为**彻底删除**：程序文件、人脸数据（users.dat）和日志一并删除；安装目录仅在清空后才移除，非空则保留（防止误删用户自放的文件）。
+> 当前卸载为**彻底删除**：程序文件、人脸数据（`users.dat`）和日志一并删除；安装目录清空后也会尝试移除，非空则保留（防止误删用户自行放入的文件）。独立 `Uninstall.exe` 通过 `uninstaller` build tag 编译，不包含完整安装包的模型和运行库，因此体积显著小于安装器。
 
 ### 8.5 特殊功能
 
 - **文件夹选择器**: 通过 `runtime.OpenDirectoryDialog` 调用原生文件夹选择器
+- **安装目录规范化**: 用户选择目录后自动追加 `FaceLogin`；已有末级目录判断不区分大小写，并检查最终目录是否合法
+- **桌面快捷方式**: 安装完成页可选，使用 Windows 原生 Shell Link 接口创建
 - **安装检测**: 检查注册表 `InstallPath` 值 + 目录存在性，已安装时标签显示"更新"
 - **进度推送**: 通过 Wails Events 实时推送安装进度到 Vue 前端
-- **升级公告** (1.9.0)：仅**升级安装**成功后弹出"更新说明"弹窗（全新安装不弹）。`main.go` 的 `internal.Notice*` 只声明版本与两个 locale key——`NoticeTitle = "installer.notice.title"`、`NoticeBody = "installer.notice.body"`（body 值为换行分隔的纯条目列表，无分组）。文案存放在**独立公告文件** `frontend/src/notice-zh.json` / `notice-en.json`（`?raw` 内嵌，不进共享语言包）：中文界面读中文公告、其他所有语言一律读英文公告（`noticeT()`）。改公告 = 只改 notice 文件，main.go 零改动。1.8.0 及之前为"main.go 拼接 key 列表 + 分组标题"格式，前端 `noticeSections` 仍兼容旧格式。
+- **自定义弹窗**: 安装/升级/卸载确认和公告使用 Vue 自定义弹窗，不调用 WebView 原生 `alert/confirm/prompt`；文件夹选择器仍是系统原生选择器
+- **升级公告**：仅**升级安装**成功后弹出"更新说明"弹窗（全新安装不弹）。公告正文存放在 `frontend/src/notice-zh.json` / `notice-en.json`，中文界面读中文公告，其他语言读英文公告。
 
 ### 8.6 目录结构
 
 ```
-C:\Program Files\FaceLogin\               # 安装目录 (用户可选, 默认)
+<installDir>\                              # 用户选择的安装目录
 ├── FaceLoginService.exe
 ├── FaceLoginCredentialProvider.dll
 ├── FaceLoginConsole.exe
-├── locales/                              # 语言包 (zh-CN / ko-KR / en-US, 1.9.0)
+├── Uninstall.exe                          # 轻量独立卸载程序
+├── locales/                              # 语言包 (zh-CN / ko-KR / en-US)
 │   ├── zh-CN.json
 │   ├── ko-KR.json
 │   └── en-US.json
@@ -916,8 +967,6 @@ C:\Program Files\FaceLogin\               # 安装目录 (用户可选, 默认)
 ├── libquadmath-0.dll
 ├── libgcc_s_seh-1.dll
 └── libwinpthread-1.dll
-
-C:\ProgramData\FaceLogin\                   # 数据目录
 ├── data/
 │   ├── config.json                        # 热配置
 │   └── users.dat                          # 加密凭据数据库 (V5)
@@ -925,12 +974,15 @@ C:\ProgramData\FaceLogin\                   # 数据目录
 │   ├── service.log
 │   ├── enrollment.log
 │   └── credential_provider.log
-└── models/                                # ONNX 模型 (~28 MB)
+└── models/                                # ONNX 模型 (~31 MB)
     ├── 2d106det.onnx                                  (~5 MB)
     ├── det_500m.onnx                                 (~2.5 MB)
     ├── w600k_mbf.onnx                                 (~13 MB)
-    └── minifas_quantized.onnx                        (~0.6 MB)
+    ├── minifas_quantized.onnx                         (~0.6 MB)
+    └── head_pose_mobilenetv2.onnx                     (~8.9 MB)
 ```
+
+安装器把 `InstallPath` 和 `DataPath` 指向同一个用户选择的安装目录，因此 `data/`、`models/`、`log/` 与程序文件默认位于同一目录。注册表路径不可用时公共路径工具才回退到 `%PROGRAMDATA%\FaceLogin`。
 
 ---
 
@@ -942,6 +994,7 @@ C:\ProgramData\FaceLogin\                   # 数据目录
 | `det_500m.onnx` | ~2.5 MB | SCRFD 人脸检测 | InsightFace |
 | `w600k_mbf.onnx` | ~13 MB | buffalo_s MobileFaceNet 512维嵌入 | InsightFace |
 | `minifas_quantized.onnx` | ~0.6 MB | facenox MiniFAS 静默反欺诈 | facenox/face-antispoof-onnx |
+| `head_pose_mobilenetv2.onnx` | ~8.9 MB | MobileNetV2 头部姿态估计 | [yakhyo/head-pose-estimation](https://github.com/yakhyo/head-pose-estimation/releases/tag/weights) |
 
 所有 ONNX 模型随安装包分发。
 
@@ -991,8 +1044,8 @@ cmake --build build --config Release
 cd installer\FaceLoginSetup
 
 # 确保资源文件就位 (将构建产物 + 模型文件放入 resources\)
-# 然后构建
-wails build -clean -platform windows/amd64
+# 先构建轻量 Uninstall.exe，再构建完整安装器
+.\build-installer.ps1
 ```
 
 ### 10.3 构建产物
@@ -1002,11 +1055,12 @@ wails build -clean -platform windows/amd64
 | `FaceLoginService.exe` | `build/face_service/Release/` | C++ MSVC x64 |
 | `FaceLoginCredentialProvider.dll` | `build/credential_provider/Release/` | C++ MSVC x64 |
 | `FaceLoginConsole.exe` | `installer/FaceLoginSetup/resources/` (CMake 直接输出) | C++ MSVC x64 |
-| `FaceLoginSetup.exe` | `installer/FaceLoginSetup/build/bin/` | Go Wails x64 |
+| `Uninstall.exe` | `installer/FaceLoginSetup/resources/` | Go Wails x64，独立卸载器 |
+| `FaceLoginSetup.exe` | `installer/FaceLoginSetup/build/bin/` | Go Wails x64，完整安装器 |
 
 ### 10.4 部署
 
-`FaceLoginConsole.exe` 由 CMake 直接输出到 `installer/FaceLoginSetup/resources/`；`FaceLoginService.exe` 和 `FaceLoginCredentialProvider.dll` 需手动复制到 `resources/`。模型文件在 `resources/models/`。三者就位后运行 `wails build` 打包。
+`FaceLoginConsole.exe` 由 CMake 直接输出到 `installer/FaceLoginSetup/resources/`；`FaceLoginService.exe` 和 `FaceLoginCredentialProvider.dll` 需同步到 `resources/`。模型文件在 `resources/models/`。资源就位后运行 `build-installer.ps1`，脚本会构建无资源依赖的 `Uninstall.exe` 并将其纳入完整安装包。
 
 运行 `FaceLoginSetup.exe`，选择安装目录，点击安装即可。
 
@@ -1054,7 +1108,7 @@ wails build -clean -platform windows/amd64
 
 ### 13.1 日志文件
 
-所有日志位于 `%ProgramData%\FaceLogin\log\`:
+日志默认位于安装目录的 `log\`；如果注册表中的 `DataPath` 不可用，公共路径工具回退到 `%ProgramData%\FaceLogin\log\`:
 
 | 日志文件 | 来源 |
 |---|---|
@@ -1069,8 +1123,9 @@ wails build -clean -platform windows/amd64
 | 服务启动超时 | 模型加载慢 (~1s) | 正常现象，后台继续启动 |
 | 服务启动失败 | 缺少运行时 DLL | 安装时确保 DLL 与 EXE 同目录 |
 | 锁屏不显示磁贴 | 未注册或已禁用 / 无注册用户 | 检查注册表 Disabled 键值，确认已录入人脸 |
-| 识别率低 | 光照不足 / 嵌入质量差 / 环境亮度变化 | 重新注册人脸，确保光线均匀；开启「人脸曝光自动控制」（设置页）后重新录入，换环境不再明显影响识别 |
-| 摄像头不工作 | Session 0 权限 | 服务模式使用 DirectShow |
+| 识别率低 | 光照不足 / 姿态不合法 / 嵌入质量差 | 先保持正面姿态并确保脸部完整入镜；可开启设置中的「统一光照归一化」，该功能不要求重新录入，严重过曝或欠曝时仍需调整环境光 |
+| 姿态提示持续出现 | Yaw / Pitch / Roll 超出锁屏合法范围 | 按提示调整具体方向；当前门控优先保证约 25° 内的可接受姿态，极大侧脸只用于方向判断 |
+| 摄像头不工作 | 摄像头占用 / MF 初始化失败 / Session 0 权限 | 检查摄像头是否被其他程序占用；服务先尝试 Media Foundation，失败后回退 DirectShow |
 | 人脸登录后用户名密码错误 | MSA 账户凭据格式不对 | 确认 V5 数据库含正确 UPN |
 | 注册时显示空白 UPN | 本地账户无 UPN（正常） | 本地账户 UPN 本就为空，非故障 |
 
@@ -1081,8 +1136,7 @@ wails build -clean -platform windows/amd64
 ### 14.1 本地开发模式
 
 ```cmd
-REM 1. 下载模型
-powershell -File scripts\download_models.ps1
+REM 1. 确认安装目录 resources\models\ 中存在全部 ONNX 模型
 
 REM 2. 停止已有服务
 sc stop FaceLoginService
@@ -1090,7 +1144,7 @@ sc stop FaceLoginService
 REM 3. 以 standalone 模式运行服务 (前台 + Debug 输出)
 FaceLoginService.exe -standalone
 
-REM 4. 部署 DLL 并注册
+REM 4. 部署 DLL 并注册（仅开发调试）
 regsvr32 build\credential_provider\Release\FaceLoginCredentialProvider.dll
 
 REM 5. Win+L 锁屏测试
@@ -1121,9 +1175,16 @@ AUTH_SUCCESS:S-1-5-21-xxx:user@outlook.com:DESKTOP-XXX\username:password123
 # 认证成功，本地账户 (UPN 为空): SID::DOMAIN\username:password
 AUTH_SUCCESS:S-1-5-21-xxx::DESKTOP-XXX\username:password123
 
-# 状态推送 (服务端 → 客户端; 载荷为 locale key, 1.9.0)
+# 状态推送 (服务端 → 客户端; 载荷为 locale key, 2.0.0)
 STATUS:service.loadingModels
 STATUS:credential.recognizing
+STATUS:credential.poseYawLeft
+STATUS:credential.poseYawRight
+STATUS:credential.posePitchDown
+STATUS:credential.posePitchUp
+STATUS:credential.poseRollLeft
+STATUS:credential.poseRollRight
+STATUS:credential.poseAcceptable
 STATUS:service.livenessChecking
 STATUS:service.blinkPrompt
 STATUS:credential.noMatch
@@ -1131,10 +1192,13 @@ STATUS:credential.noMatch
 # 认证超时
 AUTH_TIMEOUT
 
-# 无匹配人脸
+# 认证窗口内没有可用人脸
 AUTH_NO_FACE
 
-# 错误 (载荷为 locale key, 1.9.0; 旧版为中文文本)
+# 检测到人脸但连续匹配失败
+AUTH_NO_MATCH
+
+# 错误 (载荷为 locale key, 2.0.0; 旧版为中文文本)
 AUTH_ERROR:service.noRegisteredUsers
 AUTH_ERROR:service.modelLoadFailed
 AUTH_ERROR:service.cameraUnavailable
@@ -1142,6 +1206,9 @@ AUTH_ERROR:service.antiSpoofFailed
 AUTH_ERROR:service.blinkFailed
 AUTH_ERROR:service.finalMatchFailed
 AUTH_ERROR:credential.passwordless   # 遗留: 仅旧服务端发送, CP 端防御识别
+
+# 姿态持续不合法超时
+AUTH_POSE_TIMEOUT
 
 # 数据库重载 (注册程序 → 服务端)
 RELOAD_DB

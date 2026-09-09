@@ -15,7 +15,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="DEVELOPMENT.md"><img src="https://img.shields.io/badge/platform-Windows%2010%2B%20x64-blue" alt="Platform"></a>
   <a href="DEVELOPMENT.md"><img src="https://img.shields.io/badge/language-C%2B%2B20%20%7C%20Go-orange" alt="Language"></a>
-  <a href="https://github.com/EthanZer0/FaceLogin/releases"><img src="https://img.shields.io/badge/version-1.9.0-green" alt="Version"></a>
+  <a href="https://github.com/EthanZer0/FaceLogin/releases"><img src="https://img.shields.io/badge/version-2.0.0-green" alt="Version"></a>
 </p>
 
 ---
@@ -24,13 +24,25 @@
 
 <div align="center">
 
-| Lock-screen face unlock | Dual liveness detection | ONNX recognition |
+| Lock-screen face unlock | Optional liveness and pose gate | ONNX recognition |
 |:---:|:---:|:---:|
-| Native Windows lock-screen integration<br>No extra steps required | EAR blink + MiniFASNetV2<br>Defends against photo/video/mask attacks | SCRFD detection + InsightFace<br>ONNX face recognition |
+| Native Windows lock-screen integration<br>Ordinary unlock starts after selecting the tile and pressing a key or mouse button | Blink / Anti-Spoof / None<br>MobileNetV2 head-pose gate | SCRFD detection + 106 landmarks<br>InsightFace 512-D embeddings |
 | **Multi-account support** | **Secure storage** | **Hot configuration** |
 | Local SAM + Microsoft online<br>accounts fully supported, multiple faces per account | Machine-scope DPAPI encryption<br>Pipe DACL access control | Runtime parameter changes<br>no service restart needed |
 
 </div>
+
+---
+
+## 2.0.0 Highlights
+
+- Enrollment and lock-screen authentication now share one per-frame pipeline: SCRFD detection, 106 landmarks, optional photometric normalization, pose gating, liveness, and matching use the same frame state.
+- Added a MobileNetV2 head-pose model. Lock-screen matching accepts only valid poses and reports localized instructions for yaw, pitch, and roll adjustments.
+- Reworked authentication sessions, pipe-reader shutdown, and input-thread lifetime. Ordinary unlock ignores mouse movement, and late responses cannot affect a newer attempt.
+- Photometric normalization is off by default. The old dark-light enhancement setting, legacy exposure controller, global hardware-failure blacklist, and diagnostic tool were removed.
+- The installer now supports a native desktop shortcut, a lightweight standalone `Uninstall.exe`, custom confirmation dialogs, install-path validation, and synchronized language packs.
+
+See [CHANGELOG.md](CHANGELOG.md) for the categorized 2.0.0 release log.
 
 ---
 
@@ -93,15 +105,17 @@ Download `FaceLoginSetup.exe` from [Releases](https://github.com/EthanZer0/FaceL
 
 ### Step 2: Enroll your face
 
-Run `FaceLoginConsole.exe` as administrator, follow the liveness prompt, enter your password, and click **Save & Enroll**.
+Run `FaceLoginConsole.exe` as administrator. If Blink or Anti-Spoof liveness is enabled, follow its prompt; then enter your password and click **Save & Enroll**.
 
 ### Step 3: Unlock
 
-Press `Win + L` to lock the screen, then look at the camera — the system recognizes your face and unlocks automatically.
+Press `Win + L` to lock the screen, select the **Face Login** tile, and look at the camera. During ordinary unlock, selecting the tile arms input detection; the next keyboard key or mouse-button press starts recognition. Mouse movement alone is ignored. Cold boot starts recognition automatically by default, and can be configured to wait for a key or mouse button.
+
+If the pose is outside the accepted range, the lock screen shows a localized instruction for turning left/right, looking up/down, or tilting your head. Recognition resumes when the pose is valid.
 
 ### Uninstall
 
-Run the installer and switch to the **Uninstall** tab, or manually run `regsvr32 /u FaceLoginCredentialProvider.dll`.
+Run the installer and switch to the **Uninstall** tab, or launch `Uninstall.exe` from the installation directory. The uninstaller stops/removes the service, unregisters the Credential Provider, and removes the installation directory and FaceLogin data. Back up any data you want to keep before uninstalling.
 
 ---
 
@@ -113,7 +127,7 @@ Run the installer and switch to the **Uninstall** tab, or manually run `regsvr32
 | Camera | USB or built-in, 1280×720 supported |
 | Runtime | WebView2 (built into Windows 11, auto-installed on Windows 10) |
 | Privileges | Administrator (required for installation and enrollment) |
-| Disk space | ~200 MB (including ~28 MB of model files) |
+| Disk space | Installer ~100 MB; installed programs, runtimes, and models ~110 MB, plus user data |
 
 ---
 
@@ -124,7 +138,8 @@ Run the installer and switch to the **Uninstall** tab, or manually run `regsvr32
 | Process communication | Named pipe DACL: SYSTEM + Administrators only, remote access denied |
 | Credential storage | DPAPI `CRYPTPROTECT_LOCAL_MACHINE` machine-scope encryption |
 | Memory protection | Password wiped with `SecureZeroMemory` immediately after use |
-| Liveness detection | EAR blink + MiniFASNetV2 dual verification |
+| Liveness and pose | Liveness is configurable; lock-screen recognition applies a MobileNetV2 head-pose gate before matching |
+| Photometric processing | Unified per-frame normalization is off by default; when enabled it adjusts only when dark/overexposed conditions require it, with hardware fallback limited to the current session |
 | Match security | Euclidean distance threshold + best/second-best match ratio dual check |
 | Build hardening | ASLR, DEP, CFG, 64-bit high-entropy address randomization |
 
@@ -140,7 +155,7 @@ FaceLogin/
 ├── enrollment_app/         # Face enrollment console (WebView2 GUI)
 ├── installer/              # Go Wails graphical installer
 ├── locales/                # Standalone language packs (zh-CN / ko-KR / en-US)
-├── scripts/                # Helper scripts (model download, diagnostics, locale-pack checks)
+├── scripts/                # Build scripts and locale-pack consistency checks
 └── assets/                 # Icon resources
 ```
 
@@ -156,7 +171,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for the detailed technical documentation.
 
 - **Visual Studio 2022** (with the C++ workload)
 - **vcpkg** — dlib (image utility library: matrix/rectangle/transform), onnxruntime
-- **Go 1.21+** + **Wails v2** (installer only)
+- **Go 1.25+** + **Wails v2** (installer only)
 - **CMake 3.20+**
 
 ### C++ Components
@@ -175,9 +190,11 @@ cmake --build build --config Release
 
 ```powershell
 cd installer/FaceLoginSetup
-# Copy FaceLoginService.exe and FaceLoginCredentialProvider.dll into resources/ first, then build
-wails build -clean -platform windows/amd64
+# Sync C++ binaries and models into resources/ first, then build the installer
+.\build-installer.ps1
 ```
+
+`build-installer.ps1` first builds a lightweight standalone `Uninstall.exe` without embedded installation resources, copies it into `resources/`, and then builds the full `FaceLoginSetup.exe`. Direct Wails commands remain useful for local iteration, but releases should use this script.
 
 ### Model Files
 
@@ -187,6 +204,7 @@ wails build -clean -platform windows/amd64
 | `det_500m.onnx` | SCRFD face detection | [InsightFace](https://github.com/deepinsight/insightface) |
 | `w600k_mbf.onnx` | InsightFace face recognition | [InsightFace](https://github.com/deepinsight/insightface) |
 | `minifas_quantized.onnx` | Silent anti-spoofing | [facenox/face-antispoof-onnx](https://github.com/facenox/face-antispoof-onnx) |
+| `head_pose_mobilenetv2.onnx` | MobileNetV2 head-pose estimation (Yaw/Pitch/Roll) | [yakhyo/head-pose-estimation](https://github.com/yakhyo/head-pose-estimation/releases/tag/weights) |
 
 ---
 
