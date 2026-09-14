@@ -115,6 +115,10 @@ PSECURITY_DESCRIPTOR PipeServer::CreateSecurityDescriptor() {
 bool PipeServer::WaitForClient(DWORD timeoutMs) {
     Close(); // Ensure clean state
 
+    if (m_stopRequested.load()) {
+        return false;
+    }
+
     PSECURITY_DESCRIPTOR pSD = CreateSecurityDescriptor();
     if (!pSD) return false;
 
@@ -144,20 +148,39 @@ bool PipeServer::WaitForClient(DWORD timeoutMs) {
     }
     m_hPipe.store(pipe);
 
+    // RequestStop() may have raced with pipe creation. In that case the
+    // service owner thread closes the newly-created handle itself instead of
+    // entering a blocking ConnectNamedPipe call.
+    if (m_stopRequested.load()) {
+        Close();
+        return false;
+    }
+
     FACELOGIN_INFO(L"Named pipe created, waiting for client...");
 
-    // Blocking wait for client connection.
-    // The handle is closed by Close() in the Stop() path, which unblocks this.
+    // Blocking wait for client connection. RequestStop() connects a short-
+    // lived wake client so this call returns without closing a handle that is
+    // actively used by another thread.
     BOOL connected = ConnectNamedPipe(pipe, nullptr);
     DWORD err = GetLastError();
 
     if (connected) {
+        if (m_stopRequested.load()) {
+            FACELOGIN_INFO(L"Pipe wait cancelled by service stop");
+            Close();
+            return false;
+        }
         m_connected.store(true);
         FACELOGIN_INFO(L"Client connected synchronously");
         return true;
     }
 
     if (err == ERROR_PIPE_CONNECTED) {
+        if (m_stopRequested.load()) {
+            FACELOGIN_INFO(L"Pipe wait cancelled by service stop");
+            Close();
+            return false;
+        }
         m_connected.store(true);
         FACELOGIN_INFO(L"Client already connected");
         return true;
@@ -347,7 +370,33 @@ void PipeServer::Close() {
 
 void PipeServer::RequestStop() {
     m_stopRequested.store(true);
-    Close();
+
+    // CloseHandle from the service-control callback can itself block while
+    // the owner thread is inside a synchronous ConnectNamedPipe. Connect a
+    // temporary client instead; the owner thread observes m_stopRequested
+    // immediately after ConnectNamedPipe returns and performs final cleanup.
+    if (m_hPipe.load() == INVALID_HANDLE_VALUE || m_connected.load()) {
+        return;
+    }
+
+    HANDLE wakeClient = CreateFileW(
+        ipc::PIPE_NAME,
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (wakeClient != INVALID_HANDLE_VALUE) {
+        CloseHandle(wakeClient);
+        FACELOGIN_INFO(L"Pipe connection wait awakened for service stop");
+        return;
+    }
+
+    const DWORD err = GetLastError();
+    if (err != ERROR_PIPE_BUSY && err != ERROR_FILE_NOT_FOUND) {
+        FACELOGIN_WARN(L"Failed to awaken pipe wait during service stop: %lu", err);
+    }
 }
 
 } // namespace facelogin

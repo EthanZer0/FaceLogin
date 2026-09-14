@@ -4,8 +4,13 @@
 #include <chrono>
 #include <thread>
 #include <cwchar>
+#include <new>
 
 namespace facelogin {
+
+struct PipeReadThreadContext {
+    std::shared_ptr<PipeClient> client;
+};
 
 PipeClient::PipeClient() {
     InitializeCriticalSection(&m_cs);
@@ -51,8 +56,21 @@ void PipeClient::CleanupReadThread() {
     LeaveCriticalSection(&m_cs);
 
     if (!thread) return;
-    if (thread == GetCurrentThread()) {
-        FACELOGIN_ERROR(L"PipeClient: read thread attempted to join itself");
+    DWORD readThreadId = 0;
+    EnterCriticalSection(&m_cs);
+    readThreadId = m_readThreadId;
+    LeaveCriticalSection(&m_cs);
+    if (readThreadId != 0 && readThreadId == GetCurrentThreadId()) {
+        // The thread context owns a shared_ptr, so closing our kernel handle
+        // here is safe: the PipeClient object remains alive until the routine
+        // returns and releases that context.
+        EnterCriticalSection(&m_cs);
+        if (m_hReadThread == thread) {
+            CloseHandle(m_hReadThread);
+            m_hReadThread = nullptr;
+            m_readThreadId = 0;
+        }
+        LeaveCriticalSection(&m_cs);
         return;
     }
 
@@ -69,18 +87,22 @@ void PipeClient::CleanupReadThread() {
     if (m_hReadThread == thread) {
         CloseHandle(m_hReadThread);
         m_hReadThread = nullptr;
+        m_readThreadId = 0;
     }
     LeaveCriticalSection(&m_cs);
 }
 
-bool PipeClient::Connect(DWORD timeoutMs) {
+bool PipeClient::Connect(DWORD timeoutMs, HANDLE cancelEvent) {
     Disconnect();
     if (!m_hReadStop) return false;
     ResetEvent(m_hReadStop);
 
     const auto startTime = std::chrono::steady_clock::now();
     while (true) {
-        if (IsStopping()) return false;
+        if (IsStopping() ||
+            (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0)) {
+            return false;
+        }
 
         HANDLE pipe = CreateFileW(
             ipc::PIPE_NAME,
@@ -120,11 +142,17 @@ bool PipeClient::Connect(DWORD timeoutMs) {
 
         if (err == ERROR_PIPE_BUSY) {
             WaitNamedPipeW(ipc::PIPE_NAME, 200);
-            Sleep(50);
+            if (cancelEvent && WaitForSingleObject(cancelEvent, 50) == WAIT_OBJECT_0) {
+                return false;
+            }
+            if (!cancelEvent) Sleep(50);
             continue;
         }
         if (err == ERROR_FILE_NOT_FOUND) {
-            Sleep(100);
+            if (cancelEvent && WaitForSingleObject(cancelEvent, 100) == WAIT_OBJECT_0) {
+                return false;
+            }
+            if (!cancelEvent) Sleep(100);
             continue;
         }
 
@@ -188,9 +216,31 @@ bool PipeClient::IsTerminalMessage(const std::wstring& msg) {
 }
 
 DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
-    auto* self = static_cast<PipeClient*>(param);
+    std::unique_ptr<PipeReadThreadContext> context(
+        static_cast<PipeReadThreadContext*>(param));
+    auto owner = context->client;
+    auto* self = owner.get();
 
     while (!self->IsStopping()) {
+        OnResponseCallback timeoutCallback;
+        bool timedOut = false;
+        EnterCriticalSection(&self->m_cs);
+        if (!self->m_terminalDelivered && self->m_readDeadlineTick != 0 &&
+            GetTickCount64() >= self->m_readDeadlineTick) {
+            self->m_terminalDelivered = true;
+            self->m_connected = false;
+            timeoutCallback = self->m_onResponse;
+            timedOut = true;
+        }
+        LeaveCriticalSection(&self->m_cs);
+        if (timedOut) {
+            FACELOGIN_WARN(L"Background read timed out waiting for terminal response");
+            if (timeoutCallback && !self->IsStopping()) {
+                timeoutCallback(true, ipc::MSG_AUTH_TIMEOUT);
+            }
+            break;
+        }
+
         HANDLE pipe = INVALID_HANDLE_VALUE;
         EnterCriticalSection(&self->m_cs);
         pipe = self->m_hPipe;
@@ -273,11 +323,23 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
         break;
     }
 
+    OnResponseCallback releasedResponse;
+    OnStatusCallback releasedStatus;
+    EnterCriticalSection(&self->m_cs);
+    releasedResponse = std::move(self->m_onResponse);
+    releasedStatus = std::move(self->m_onStatus);
+    self->m_readDeadlineTick = 0;
+    LeaveCriticalSection(&self->m_cs);
+    // Callback captures may release the credential and re-enter Disconnect;
+    // destroy them only after leaving the PipeClient lock.
+    releasedResponse = nullptr;
+    releasedStatus = nullptr;
     return 0;
 }
 
 bool PipeClient::StartBackgroundRead(OnResponseCallback onResponse,
-                                     OnStatusCallback onStatus) {
+                                     OnStatusCallback onStatus,
+                                     DWORD timeoutMs) {
     if (m_hReadStop) SetEvent(m_hReadStop);
     CleanupReadThread();
 
@@ -287,16 +349,26 @@ bool PipeClient::StartBackgroundRead(OnResponseCallback onResponse,
         m_onResponse = std::move(onResponse);
         m_onStatus = std::move(onStatus);
         m_terminalDelivered = false;
+        m_readDeadlineTick = timeoutMs == 0 ? 0 : GetTickCount64() + timeoutMs;
         ResetEvent(m_hReadStop);
     }
     LeaveCriticalSection(&m_cs);
     if (!canStart) return false;
 
+    auto* context = new (std::nothrow) PipeReadThreadContext{shared_from_this()};
+    if (!context) {
+        FACELOGIN_ERROR(L"Failed to allocate pipe read thread context");
+        MarkDisconnected();
+        return false;
+    }
+
     EnterCriticalSection(&m_cs);
-    m_hReadThread = CreateThread(nullptr, 0, ReadThreadProc, this, 0, nullptr);
+    m_hReadThread = CreateThread(nullptr, 0, ReadThreadProc, context, 0,
+                                 &m_readThreadId);
     const bool created = m_hReadThread != nullptr;
     LeaveCriticalSection(&m_cs);
     if (!created) {
+        delete context;
         FACELOGIN_ERROR(L"Failed to create pipe read thread: %lu", GetLastError());
         MarkDisconnected();
     }
@@ -311,16 +383,21 @@ void PipeClient::Disconnect() {
     CleanupReadThread();
 
     HANDLE pipe = INVALID_HANDLE_VALUE;
+    OnResponseCallback releasedResponse;
+    OnStatusCallback releasedStatus;
     EnterCriticalSection(&m_cs);
     pipe = m_hPipe;
     m_hPipe = INVALID_HANDLE_VALUE;
     m_connected = false;
     m_terminalDelivered = true;
-    m_onResponse = nullptr;
-    m_onStatus = nullptr;
+    m_readDeadlineTick = 0;
+    releasedResponse = std::move(m_onResponse);
+    releasedStatus = std::move(m_onStatus);
     LeaveCriticalSection(&m_cs);
 
     if (pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe);
+    releasedResponse = nullptr;
+    releasedStatus = nullptr;
 }
 
 } // namespace facelogin

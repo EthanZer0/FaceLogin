@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <string>
 #include <functional>
+#include <memory>
 
 namespace facelogin {
 
@@ -21,7 +22,7 @@ namespace facelogin {
 using OnResponseCallback = std::function<void(bool success, const std::wstring& message)>;
 using OnStatusCallback = std::function<void(const std::wstring& message)>;
 
-class PipeClient {
+class PipeClient : public std::enable_shared_from_this<PipeClient> {
 public:
     PipeClient();
     ~PipeClient();
@@ -32,7 +33,7 @@ public:
 
     // Connect to the FaceLogin named pipe server.
     // Retries for up to ~5 seconds (pipe server may not be ready yet).
-    bool Connect(DWORD timeoutMs = 5000);
+    bool Connect(DWORD timeoutMs = 5000, HANDLE cancelEvent = nullptr);
 
     // Lightweight liveness probe: does the service's named pipe exist right
     // now? Attempts one CreateFileW with no wait/retry — used by the
@@ -50,7 +51,8 @@ public:
     // Terminal messages (AUTH_SUCCESS/AUTH_TIMEOUT/AUTH_ERROR/etc.) trigger
     // onResponse and the thread exits.
     bool StartBackgroundRead(OnResponseCallback onResponse = nullptr,
-                             OnStatusCallback onStatus = nullptr);
+                             OnStatusCallback onStatus = nullptr,
+                             DWORD timeoutMs = 0);
 
     // Check if connected
     bool IsConnected() const;
@@ -73,12 +75,14 @@ private:
 
     // Background blocking read
     HANDLE m_hReadThread = nullptr;
+    DWORD m_readThreadId = 0;
     HANDLE m_hReadStop = nullptr;        // manual-reset: signaled to stop the read thread
 
     // Callbacks
     OnResponseCallback m_onResponse;
     OnStatusCallback   m_onStatus;
     bool m_terminalDelivered = false;
+    ULONGLONG m_readDeadlineTick = 0;
 
     CRITICAL_SECTION m_cs;
     bool m_csInitialized = false;

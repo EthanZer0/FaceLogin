@@ -22,7 +22,7 @@ public:
     PipeServer& operator=(const PipeServer&) = delete;
 
     // Create the named pipe and wait for a client connection.
-    // Blocks until a client connects or the handle is closed (via Close()).
+    // Blocks until a client connects or RequestStop() supplies a wake client.
     // Returns true when a client has connected.
     bool WaitForClient(DWORD timeoutMs = 30000);
 
@@ -48,8 +48,8 @@ public:
     // Close the pipe entirely. Unblocks any pending I/O.
     void Close();
 
-    // Called by the service control callback. Signals the owner thread to
-    // stop and closes the current handle without touching camera/model state.
+    // Called by the service control callback. Signals the owner thread and
+    // wakes a pending connection wait without releasing owner-thread state.
     void RequestStop();
 
     // Get the raw pipe handle (for FlushFileBuffers, etc.)
