@@ -3,6 +3,8 @@
 #include "../common/ipc_protocol.h"
 #include "../common/secure_buffer.h"
 #include "../common/registry_util.h"
+#include "../common/boot_evidence.h"
+#include "../common/session_util.h"
 #include "../common/config_util.h"
 #include "../common/image_utils.h"
 #include "liveness_detector.h"
@@ -292,35 +294,51 @@ DWORD WINAPI FaceService::HandlerEx(DWORD control, DWORD eventType,
         // PBT_APMRESUMESUSPEND = resumed from sleep/hibernate. The camera may
         // still be in low-power recovery, so force a fresh camera init on the
         // next auth instead of reusing a stale SourceReader.
-        if (eventType == PBT_APMRESUMESUSPEND) {
+        if (eventType == PBT_APMRESUMESUSPEND ||
+            eventType == PBT_APMRESUMEAUTOMATIC) {
             FACELOGIN_INFO(L"Power resume event — forcing camera re-init on next auth");
             pService->m_resumedFlag.store(true);
+            // Kernel-Boot/Event 27 is the authoritative boundary between a
+            // fast startup and a hibernate resume. This path only reads that
+            // evidence and updates the small login-entry registry state; it
+            // never touches camera or model resources from the SCM callback.
+            pService->ProcessKernelBootEvidence(L"power-resume");
         }
         return NO_ERROR;
     }
     case SERVICE_CONTROL_SESSIONCHANGE: {
-        // Only respond to LOGON (user signed in) and LOGOFF (user signed out).
-        // Ignore other events like WTS_SESSION_LOCK (7), WTS_SESSION_UNLOCK (8),
-        // WTS_CONSOLE_CONNECT (1), etc. — those don't change logged-in state.
+        // Session notifications describe the login state directly. Only a
+        // logoff starts a new login-entry generation; lock/unlock do not.
         auto* evt = reinterpret_cast<WTSSESSION_NOTIFICATION*>(eventData);
-        if (evt && evt->cbSize == sizeof(WTSSESSION_NOTIFICATION)
-            && evt->dwSessionId == WTSGetActiveConsoleSessionId()) {
-            if (eventType == WTS_SESSION_LOGON) {
-                FACELOGIN_INFO(L"Session LOGON: session=%lu → UserLoggedIn=1",
-                              evt->dwSessionId);
-                WriteRegDword(REGVAL_USER_LOGGED_IN, 1);
-            } else if (eventType == WTS_SESSION_LOGOFF) {
-                FACELOGIN_INFO(L"Session LOGOFF: session=%lu → UserLoggedIn=0",
-                              evt->dwSessionId);
-                WriteRegDword(REGVAL_USER_LOGGED_IN, 0);
-                // Clear the service start uptime so the next logon is
-                // detected as a cold boot (fresh ServiceStartUptime written
-                // on next service restart, or if the service stays running,
-                // the CP will see ServiceStartUptime=0 and treat it as cold
-                // boot via the UserLoggedIn=0 fallback).
-                WriteRegQword(REGVAL_SERVICE_START_UPTIME, 0);
-            } else {
-                FACELOGIN_INFO(L"Session change ignored: eventType=%lu", eventType);
+        if (evt && evt->cbSize == sizeof(WTSSESSION_NOTIFICATION)) {
+            const DWORD activeSession = WTSGetActiveConsoleSessionId();
+            if (evt->dwSessionId == activeSession || activeSession == 0xFFFFFFFF) {
+                if (eventType == WTS_SESSION_LOGOFF) {
+                    const ULONGLONG generation =
+                        BeginLoginEntryGeneration(evt->dwSessionId);
+                    FACELOGIN_INFO(L"LoginEntry generation published: reason=session-logoff "
+                                   L"sessionId=%lu generation=%llu",
+                                   evt->dwSessionId, generation);
+                } else if (eventType == WTS_SESSION_LOGON) {
+                    // Service startup can precede creation of the interactive
+                    // console session. Retry the current Kernel-Boot record
+                    // now that this session is available; do not complete the
+                    // generation here, because LogonUI still needs to claim it.
+                    pService->ProcessKernelBootEvidence(L"session-logon");
+                    FACELOGIN_INFO(L"Console session logon: session=%lu", evt->dwSessionId);
+                } else if (eventType == WTS_SESSION_DESKTOP_READY) {
+                    CompleteLoginEntryGeneration(evt->dwSessionId);
+                    FACELOGIN_INFO(L"Console desktop ready: session=%lu", evt->dwSessionId);
+                } else if (eventType == WTS_SESSION_LOCK) {
+                    // Locking can be emitted while LogonUI is preparing a
+                    // fresh cold-start entry. It is not proof that an entry
+                    // has completed, so it must not consume its generation.
+                    FACELOGIN_INFO(L"Console session locked: session=%lu (generation retained)",
+                                   evt->dwSessionId);
+                } else if (eventType == WTS_SESSION_UNLOCK) {
+                    FACELOGIN_INFO(L"Console session unlocked: session=%lu",
+                                   evt->dwSessionId);
+                }
             }
         }
         return NO_ERROR;
@@ -372,45 +390,7 @@ bool FaceService::Initialize() {
     }
     FACELOGIN_INFO(L"Loaded %zu registered user(s)", m_store->GetUserCount());
 
-    // Write both the service uptime and a boot-session marker for the CP's
-    // cold-boot detection.  Uptime alone is insufficient: after a reboot the
-    // new service can start late enough that its uptime is greater than the
-    // value left by the previous boot.  The CP uses the boot marker first and
-    // falls back to the legacy uptime/UserLoggedIn decision when the marker is
-    // unavailable.
-    //
-    // ALWAYS overwrite — registry persists across reboots, and GetTickCount64
-    // resets to 0 on each boot, so a stale value from a prior boot would
-    // corrupt detection if we skipped the write.
-    {
-        ULONGLONG uptime = GetTickCount64();
-        ULONGLONG previousBootTime = ReadRegQword(REGVAL_SERVICE_BOOT_TIME, 0);
-        ULONGLONG bootTime = GetCurrentBootTimeFileTime();
-
-        const bool bootChanged =
-            previousBootTime != 0 && bootTime != 0 &&
-            (previousBootTime > bootTime
-                ? previousBootTime - bootTime
-                : bootTime - previousBootTime) > BOOT_TIME_TOLERANCE_100NS;
-        const bool firstRunDuringEarlyBoot =
-            previousBootTime == 0 && uptime < EARLY_SYSTEM_BOOT_WINDOW_MS;
-
-        if (bootChanged || firstRunDuringEarlyBoot) {
-            // UserLoggedIn is deliberately persisted for same-boot service
-            // restarts, but it is stale after a reboot (and on first startup
-            // after upgrading from a version without ServiceBootTime).
-            WriteRegDword(REGVAL_USER_LOGGED_IN, 0);
-            FACELOGIN_INFO(L"Initialize: new/early system boot detected "
-                           L"(previousBoot=%llu, currentBoot=%llu, uptime=%llu); "
-                           L"cleared stale UserLoggedIn",
-                           previousBootTime, bootTime, uptime);
-        }
-
-        WriteRegQword(REGVAL_SERVICE_START_UPTIME, uptime);
-        WriteRegQword(REGVAL_SERVICE_BOOT_TIME, bootTime);
-        FACELOGIN_INFO(L"Initialize: ServiceStartUptime = %llu, ServiceBootTime = %llu",
-                       uptime, bootTime);
-    }
+    ProcessKernelBootEvidence(L"service-start");
 
     m_detector = nullptr;  // loaded by the background thread — see StartBackgroundModelLoad()
 
@@ -846,10 +826,30 @@ void FaceService::Run() {
     CleanupSessionResources();
 }
 
-// Session events arrive via HandlerEx → SERVICE_CONTROL_SESSIONCHANGE.
-// eventType carries WTS_SESSION_LOGON / WTS_SESSION_LOGOFF.
-// eventData is a WTSSESSION_NOTIFICATION with the session ID.
-// We only care about the console session (session 1).
+void FaceService::ProcessKernelBootEvidence(const wchar_t* reason) {
+    const KernelBootEvidence evidence = QueryLatestKernelBootEvidence();
+    if (!evidence.valid) {
+        FACELOGIN_WARN(L"KernelBoot: reason=%s query failed error=%lu",
+                       reason, evidence.error);
+        return;
+    }
+
+    const bool createsLoginEntry = evidence.kind == KernelBootKind::FullStartup ||
+        evidence.kind == KernelBootKind::FastStartup;
+    const DWORD sessionId = WTSGetActiveConsoleSessionId();
+    const KernelBootRegistration registration = RegisterKernelBootEvidence(
+        evidence.recordId, sessionId, createsLoginEntry);
+
+    FACELOGIN_INFO(L"KernelBoot: reason=%s record=%llu bootType=%lu kind=%s "
+                   L"sessionId=%lu createsLoginEntry=%d observed=%d seeded=%d "
+                   L"generation=%llu created=%d",
+                   reason, evidence.recordId, evidence.bootType,
+                   KernelBootKindName(evidence.kind), sessionId,
+                   static_cast<int>(createsLoginEntry),
+                   static_cast<int>(registration.observed),
+                   static_cast<int>(registration.seeded), registration.generation,
+                   static_cast<int>(registration.createdLoginEntry));
+}
 
 void FaceService::Stop() {
     m_stopRequested.store(true);
@@ -1648,14 +1648,6 @@ bool FaceService::ProcessAuthRequest() {
             authSent = true;
             FACELOGIN_INFO(L"Credentials sent for %s\\%s",
                           domain.c_str(), match->username.c_str());
-
-            // Mark user as logged in IMMEDIATELY after sending credentials.
-            // This prevents a race condition: the user can lock (Win+L)
-            // before Windows fires WTS_SESSION_LOGON (which can take
-            // seconds), causing the CP to misdetect the unlock as a cold
-            // boot because UserLoggedIn is still 0.
-            WriteRegDword(REGVAL_USER_LOGGED_IN, 1);
-            FACELOGIN_INFO(L"UserLoggedIn=1 written after auth success");
 
             // Stop the capture graph NOW (camera LED off) before the bounded
             // pipe drain below. The graph keeps streaming during auth; pausing

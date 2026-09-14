@@ -69,6 +69,7 @@ private:
     bool ProcessAuthRequest();  // Handle one auth session
     void BeginAuthSession();
     bool SendAuthTerminal(const std::wstring& message);
+    void ProcessKernelBootEvidence(const wchar_t* reason);
 
     // Camera lifecycle for one auth session: pick the backend (service mode:
     // MF preferred, DS fallback; standalone: MF) and release it afterwards.

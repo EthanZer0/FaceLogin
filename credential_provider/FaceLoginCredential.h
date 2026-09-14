@@ -33,6 +33,7 @@ class FaceLoginCredential : public ICredentialProviderCredential {
 public:
     // Allow the input-detection thread to access private members
     friend unsigned __stdcall InputDetectionThreadProc(void* pParam);
+    friend unsigned __stdcall AuthConnectThreadProc(void* pParam);
 
     FaceLoginCredential();
     virtual ~FaceLoginCredential();
@@ -43,6 +44,7 @@ public:
     // Provider-level advise/unadvise (called by FaceLoginProvider::Advise/UnAdvise)
     void AdviseProvider(ICredentialProviderEvents* pEvents, UINT_PTR upAdviseContext);
     void UnadviseProvider();
+    bool IsAutoSubmitReady() const;
 
     // IUnknown
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override;
@@ -78,6 +80,13 @@ public:
 
 private:
     using AuthAttemptId = unsigned long long;
+    using InputActivationId = unsigned long long;
+
+    enum class AuthTrigger {
+        LoginEntryAutomatic,
+        LoginEntryKeyPress,
+        UnlockKeyPress
+    };
 
     // State enum
     enum class State {
@@ -118,10 +127,14 @@ private:
     void NotifyCredentialsChanged();
     void ClearCredentials();
     void CancelActiveAttempt(bool resetToWaiting);
+    AuthTrigger InputAuthTrigger() const;
 
-    // Start the authentication pipeline (connect pipe + send AUTH_REQUEST).
-    // Called from Advise() (cold boot) or input-detection thread (unlock).
-    void StartAuth();
+    // Start the authentication pipeline without blocking the LogonUI or input
+    // thread. The connection worker owns a COM reference until it exits.
+    bool StartAuthAsync(AuthTrigger trigger,
+                        InputActivationId expectedInputActivationId = 0);
+    void JoinAuthConnectThread();
+    bool IsInputActivationValid(InputActivationId activationId) const;
 
     // Start / stop the background input-detection thread (unlock scenario).
     void StartInputDetectionThread();
@@ -145,6 +158,9 @@ private:
     std::shared_ptr<facelogin::PipeClient> m_pipeClient;
     AuthAttemptId m_nextAttemptId = 0;
     AuthAttemptId m_activeAttemptId = 0;
+    AuthTrigger m_authTrigger = AuthTrigger::UnlockKeyPress;
+    bool m_autoSubmitEligible = false;
+    bool m_autoStartConsumed = false;
 
     // Received credentials (zeroed after serialization)
     facelogin::SecureBuffer m_authData;
@@ -166,8 +182,16 @@ private:
     // starts, then reacts only to rising edges on keyboard keys or mouse
     // buttons. Mouse movement alone is intentionally ignored.
     HANDLE m_hInputThread = nullptr;   // background input-detection thread
+    DWORD m_inputThreadId = 0;
     HANDLE m_hInputStop = nullptr;     // event: signal to stop the thread
     bool m_inputThreadRunning = false;
+    InputActivationId m_inputActivationId = 0;
+    bool m_inputDetectionEnabled = false;
+
+    HANDLE m_hAuthThread = nullptr;
+    HANDLE m_hAuthStop = nullptr;
+    bool m_authThreadRunning = false;
+    bool m_deselected = false;
 
     // Synchronization
     HANDLE m_hCredsReady = nullptr;  // Set when auth result received

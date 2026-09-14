@@ -6,6 +6,8 @@ add_library(facelogin_common STATIC
     config_util.cpp
     locale_util.cpp
     account_identity.cpp
+    boot_evidence.cpp
+    session_util.cpp
     photometric_pipeline.cpp
 )
 
@@ -17,6 +19,8 @@ target_link_libraries(facelogin_common PUBLIC
     advapi32
     kernel32
     crypt32
+    wevtapi
+    wtsapi32
     dlib::dlib
 )
 

@@ -64,7 +64,9 @@ public:
     CREDENTIAL_PROVIDER_USAGE_SCENARIO GetUsageScenario() const { return m_cpus; }
     ICredentialProviderEvents* GetEvents() const { return m_pEvents; }
     UINT_PTR GetAdviseContext() const { return m_upAdviseContext; }
-    bool IsColdBoot() const { return m_isColdBoot; }
+    bool IsLoginEntry() const { return m_isLoginEntry; }
+    ULONGLONG GetLoginEntryGeneration() const { return m_loginEntryGeneration; }
+    DWORD GetLoginEntrySessionId() const { return m_loginEntrySessionId; }
     bool IsCredUI() const { return m_cpus == CPUS_CREDUI || m_cpus == CPUS_PLAP; }
 
 private:
@@ -79,9 +81,11 @@ private:
     // Our credential object (one instance)
     FaceLoginCredential* m_pCredential = nullptr;
 
-    // True = cold boot / first logon (no active user session)
-    // False = unlock / switch user (existing user session)
-    bool m_isColdBoot = true;
+    // True for an initial/after-logoff console entry with no interactive user.
+    // Ordinary lock/unlock remains key-triggered.
+    bool m_isLoginEntry = false;
+    ULONGLONG m_loginEntryGeneration = 0;
+    DWORD m_loginEntrySessionId = 0xFFFFFFFF;
 
     // Check if we're in a domain-joined environment
     bool IsDomainJoined() const;
