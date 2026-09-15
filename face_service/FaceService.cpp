@@ -40,7 +40,6 @@ FaceService::FaceService() {
 }
 
 FaceService::~FaceService() {
-    m_running.store(false);
     CleanupSessionResources();
     if (m_wicFactory) m_wicFactory->Release();
     m_wicFactory = nullptr;
@@ -296,13 +295,9 @@ DWORD WINAPI FaceService::HandlerEx(DWORD control, DWORD eventType,
         // next auth instead of reusing a stale SourceReader.
         if (eventType == PBT_APMRESUMESUSPEND ||
             eventType == PBT_APMRESUMEAUTOMATIC) {
-            FACELOGIN_INFO(L"Power resume event — forcing camera re-init on next auth");
-            pService->m_resumedFlag.store(true);
-            // Kernel-Boot/Event 27 is the authoritative boundary between a
-            // fast startup and a hibernate resume. This path only reads that
-            // evidence and updates the small login-entry registry state; it
-            // never touches camera or model resources from the SCM callback.
-            pService->ProcessKernelBootEvidence(L"power-resume");
+            FACELOGIN_INFO(L"Power resume event — refreshing boot evidence");
+            pService->QueueServiceEvent(
+                ServiceEventType::KernelBootRefresh, 0xFFFFFFFF);
         }
         return NO_ERROR;
     }
@@ -314,21 +309,18 @@ DWORD WINAPI FaceService::HandlerEx(DWORD control, DWORD eventType,
             const DWORD activeSession = WTSGetActiveConsoleSessionId();
             if (evt->dwSessionId == activeSession || activeSession == 0xFFFFFFFF) {
                 if (eventType == WTS_SESSION_LOGOFF) {
-                    const ULONGLONG generation =
-                        BeginLoginEntryGeneration(evt->dwSessionId);
-                    FACELOGIN_INFO(L"LoginEntry generation published: reason=session-logoff "
-                                   L"sessionId=%lu generation=%llu",
-                                   evt->dwSessionId, generation);
+                    pService->QueueServiceEvent(
+                        ServiceEventType::SessionLogoff, evt->dwSessionId);
                 } else if (eventType == WTS_SESSION_LOGON) {
                     // Service startup can precede creation of the interactive
                     // console session. Retry the current Kernel-Boot record
                     // now that this session is available; do not complete the
                     // generation here, because LogonUI still needs to claim it.
-                    pService->ProcessKernelBootEvidence(L"session-logon");
-                    FACELOGIN_INFO(L"Console session logon: session=%lu", evt->dwSessionId);
+                    pService->QueueServiceEvent(
+                        ServiceEventType::KernelBootRefresh, evt->dwSessionId);
                 } else if (eventType == WTS_SESSION_DESKTOP_READY) {
-                    CompleteLoginEntryGeneration(evt->dwSessionId);
-                    FACELOGIN_INFO(L"Console desktop ready: session=%lu", evt->dwSessionId);
+                    pService->QueueServiceEvent(
+                        ServiceEventType::DesktopReady, evt->dwSessionId);
                 } else if (eventType == WTS_SESSION_LOCK) {
                     // Locking can be emitted while LogonUI is preparing a
                     // fresh cold-start entry. It is not proof that an entry
@@ -447,20 +439,13 @@ FACELOGIN_INFO(L"Camera pipeline: MF preferred, DirectShow fallback — initiali
 }
 
 // ============================================================================
-// Lazy model loading (1.5.0)
+// Lazy model loading
 //
 // The pipe listener must be up as soon as possible so the credential provider
-// connects the moment the lock screen appears. Loading the 99.7MB dlib shape
-// predictor + 3 ONNX sessions synchronously in Initialize() pushed that by
-// seconds on a cold boot. Instead:
-//   - SCRFD (2.5MB) loads synchronously in Initialize() — light, needed for
-//     the first frame, and its absence would block even a liveness-less auth.
-//   - Everything heavier loads in this background thread, kicked off right
-//     before Run() enters the pipe loop. The lock screen shows ~10-20s after
-//     SCM starts the service, which is normally enough for the loads to finish
-//     in the background — the user never waits.
-//   - If a request arrives before they finish, ProcessAuthRequest() calls
-//     EnsureModelsLoaded(), which blocks until ready (or fails/stop).
+// connects when the lock screen appears. Loading all ONNX sessions
+// synchronously delays cold boot, so the detector and remaining sessions load
+// in a background thread before the pipe loop. If a request arrives first,
+// EnsureModelsLoaded() waits until the sessions are ready or loading fails.
 // ============================================================================
 
 bool FaceService::LoadHeavyModels() {
@@ -497,8 +482,7 @@ bool FaceService::LoadHeavyModels() {
         }
     }
 
-    // 1. 106-point landmark detector (2d106det.onnx, ~5MB — replaces the
-    // 99.7MB dlib shape predictor).
+    // 1. 106-point landmark detector (2d106det.onnx).
     {
         auto detector = std::make_unique<OnnxLandmarkDetector>();
         std::wstring path = m_modelsDir + L"\\2d106det.onnx";
@@ -571,9 +555,7 @@ void FaceService::UnloadHeavyModels() {
     if (m_detector)         { m_detector.reset(); }
     if (m_onnxRecognizer)   { m_onnxRecognizer.reset(); }
     if (m_antiSpoof)        { m_antiSpoof.reset(); }
-    m_modelsLoading.store(false);
-    m_modelsReady.store(false);
-    m_modelsFailed.store(false);
+    m_modelState.store(ModelLoadState::NotLoaded);
     FACELOGIN_INFO(L"Heavy models unloaded after auth");
 }
 
@@ -605,7 +587,7 @@ void FaceService::TrimWorkingSet() {
 }
 
 void FaceService::StartBackgroundModelLoad() {
-    m_modelsLoading.store(true);
+    m_modelState.store(ModelLoadState::Loading);
     m_modelLoadThread = std::thread([this]() {
         // Load under a scoped RAII so the flags are cleared on every exit path
         // (including exceptions).
@@ -613,9 +595,10 @@ void FaceService::StartBackgroundModelLoad() {
             FaceService* svc;
             bool ok;
             ~LoadGuard() {
-                svc->m_modelsLoading.store(false);
-                svc->m_modelsReady.store(ok);
-                svc->m_modelsFailed.store(!ok);
+                if (svc->m_modelState.load() != ModelLoadState::Stopping) {
+                    svc->m_modelState.store(ok ? ModelLoadState::Ready
+                                               : ModelLoadState::Failed);
+                }
                 svc->m_modelCv.notify_all();
             }
         };
@@ -650,8 +633,8 @@ void FaceService::ValidateLivenessMethod() {
 // Returns false only if a REQUIRED model failed to load (auth cannot proceed)
 // or the service is stopping.
 bool FaceService::EnsureModelsLoaded() {
-    if (m_modelsReady.load()) return true;
-    if (m_modelsAbort.load()) return false;
+    if (m_modelState.load() == ModelLoadState::Ready) return true;
+    if (m_modelState.load() == ModelLoadState::Stopping) return false;
 
     // Unloaded after a prior auth, or the startup background load is still in
     // flight. Wait for any in-flight load; if none is running, load now on this
@@ -659,19 +642,16 @@ bool FaceService::EnsureModelsLoaded() {
     {
         std::unique_lock<std::mutex> lock(m_modelMutex);
         m_modelCv.wait(lock, [this]() {
-            return !m_modelsLoading.load() || m_modelsReady.load() ||
-                   m_modelsFailed.load() || m_modelsAbort.load();
+            return m_modelState.load() != ModelLoadState::Loading;
         });
-        if (m_modelsReady.load()) return true;
-        if (m_modelsFailed.load() && !m_modelsLoading.load()) return false;
-        if (m_modelsAbort.load()) return false;
+        if (m_modelState.load() == ModelLoadState::Ready) return true;
+        if (m_modelState.load() == ModelLoadState::Failed) return false;
+        if (m_modelState.load() == ModelLoadState::Stopping) return false;
     }
 
     // No load in flight and not ready — load synchronously on this thread.
     bool ok = LoadHeavyModels();
-    m_modelsLoading.store(false);
-    m_modelsReady.store(ok);
-    m_modelsFailed.store(!ok);
+    m_modelState.store(ok ? ModelLoadState::Ready : ModelLoadState::Failed);
     m_modelCv.notify_all();
     return ok;
 }
@@ -679,7 +659,7 @@ bool FaceService::EnsureModelsLoaded() {
 // Release anyone blocked in EnsureModelsLoaded() during service shutdown so
 // Stop() can join the loader thread without deadlocking.
 void FaceService::AbortModelLoadWait() {
-    m_modelsAbort.store(true);
+    m_modelState.store(ModelLoadState::Stopping);
     m_modelCv.notify_all();
     if (m_modelLoadThread.joinable()) {
         m_modelLoadThread.join();
@@ -688,11 +668,11 @@ void FaceService::AbortModelLoadWait() {
 
 void FaceService::Run() {
     m_stopRequested.store(false);
-    m_running.store(true);
 
-    while (m_running.load() && !m_stopRequested.load()) {
+    while (!m_stopRequested.load()) {
+        ProcessPendingServiceEvents();
         if (!m_pipeServer->WaitForClient(60000)) {
-            if (!m_running.load() || m_stopRequested.load()) break;
+            if (m_stopRequested.load()) break;
             continue;
         }
 
@@ -706,13 +686,10 @@ void FaceService::Run() {
         if (request == ipc::MSG_AUTH_REQUEST) requestKind = L"auth";
         else if (request == ipc::MSG_RELOAD_DB) requestKind = L"reload_db";
         else if (request == ipc::MSG_CONFIG_RELOAD) requestKind = L"config_reload";
-        else if (request == ipc::MSG_GET_LOGS) requestKind = L"get_logs";
-        else if (request == ipc::MSG_PING) requestKind = L"ping";
         FACELOGIN_INFO(L"PipeRequest: kind=%s chars=%zu", requestKind, request.size());
 
         if (request == ipc::MSG_RELOAD_DB) {
             m_store->ReloadDatabase();   // force re-read (LoadDatabase is cached)
-            m_pipeServer->WriteMessage(ipc::MSG_RELOAD_OK);
             m_pipeServer->Disconnect();
             FACELOGIN_INFO(L"Database reloaded");
         }
@@ -732,9 +709,6 @@ void FaceService::Run() {
             // configure, so fail the reload with a descriptive error.
             if (!EnsureModelsLoaded()) {
                 FACELOGIN_ERROR(L"CONFIG_RELOAD: required models failed to load");
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_MODEL_LOAD_FAILED));
-                FlushFileBuffers(m_pipeServer->GetHandle());
-                m_pipeServer->DrainOutput(5000);
                 m_pipeServer->Disconnect();
                 continue;
             }
@@ -768,7 +742,6 @@ void FaceService::Run() {
                     m_antiSpoof.reset();
                 }
             }
-            m_pipeServer->WriteMessage(ipc::MSG_CONFIG_RELOAD_OK);
             m_pipeServer->Disconnect();
             FACELOGIN_INFO(L"Configuration reloaded: rec=%hs det=%hs live=%hs thr=%.2f rotation=%d",
                           m_config.recognition_model.c_str(), m_config.detector.c_str(),
@@ -776,50 +749,8 @@ void FaceService::Run() {
                           m_livenessMethod == LivenessMethod::AntiSpoof ? "antispoof" : "none",
                           m_matchThreshold, m_config.camera_rotation);
         }
-        else if (request == ipc::MSG_GET_LOGS) {
-            auto lines = Logger::Instance().GetRecentLogs(500);
-            std::wstring resp(ipc::MSG_GET_LOGS_OK_PREFIX);
-            for (size_t i = 0; i < lines.size(); i++) {
-                if (i > 0) resp += L"\x1E"; // ASCII record separator
-                // Escape backslashes and the separator char itself
-                std::wstring safe = lines[i];
-                // Remove trailing \r\n from each line
-                while (!safe.empty() && (safe.back() == L'\r' || safe.back() == L'\n'))
-                    safe.pop_back();
-                resp += safe;
-            }
-            m_pipeServer->WriteMessage(resp);
-            m_pipeServer->Disconnect();
-            FACELOGIN_DEBUG(L"Sent %zu log lines to client", lines.size());
-        }
         else if (request == ipc::MSG_AUTH_REQUEST) {
-            BeginAuthSession();
-            // Lazy-init camera: create + start on demand, then fully shutdown
-            // after auth to free the device for other processes.
-            if (!EnsureCameraForAuth()) {
-                SendAuthTerminal(ipc::BuildAuthErrorMessage(ipc::L10N_CAMERA_UNAVAILABLE));
-                m_pipeServer->Disconnect();
-                continue;            }            ProcessAuthRequest();
-            ReleaseCamera();
-            // Free the heavy model sessions now that the auth pipeline has fully
-            // unwound, dropping idle RSS back to baseline. Reload happens on the
-            // next auth (see EnsureModelsLoaded). Note: this intentionally does
-            // NOT unload SCRFD — it's the lightest model and needed for the very
-            // first frame of the next auth. Gated by config (default off — keep
-            // models resident for the fastest auth).
-            if (m_config.unload_models_after_auth) {
-                UnloadHeavyModels();
-                // Empty the working set so the freed model pages actually leave
-                // the resident set (heap free ≠ physical-page return on
-                // Windows). Pages are paged out and re-faulted in on demand —
-                // the next auth must reload the models from disk anyway, so
-                // this only costs a few extra page faults.
-                TrimWorkingSet();
-            }
-            m_pipeServer->Disconnect();
-        }
-        else if (request == ipc::MSG_PING) {
-            m_pipeServer->WriteMessage(ipc::MSG_PONG);
+            HandleAuthRequest();
             m_pipeServer->Disconnect();
         }
         else {
@@ -856,13 +787,50 @@ void FaceService::ProcessKernelBootEvidence(const wchar_t* reason) {
                    static_cast<int>(registration.createdLoginEntry));
 }
 
+void FaceService::QueueServiceEvent(ServiceEventType type, DWORD sessionId) {
+    {
+        std::lock_guard<std::mutex> lock(m_serviceEventMutex);
+        m_pendingServiceEvents.push_back({type, sessionId});
+    }
+    if (m_pipeServer) m_pipeServer->WakeWait();
+}
+
+void FaceService::ProcessPendingServiceEvents() {
+    std::vector<ServiceEvent> events;
+    {
+        std::lock_guard<std::mutex> lock(m_serviceEventMutex);
+        events.swap(m_pendingServiceEvents);
+    }
+
+    for (const auto& event : events) {
+        switch (event.type) {
+        case ServiceEventType::KernelBootRefresh:
+            ProcessKernelBootEvidence(L"service-event");
+            if (event.sessionId != 0xFFFFFFFF) {
+                FACELOGIN_INFO(L"Console session logon: session=%lu", event.sessionId);
+            }
+            break;
+        case ServiceEventType::SessionLogoff: {
+            const ULONGLONG generation = BeginLoginEntryGeneration(event.sessionId);
+            FACELOGIN_INFO(L"LoginEntry generation published: reason=session-logoff "
+                           L"sessionId=%lu generation=%llu",
+                           event.sessionId, generation);
+            break;
+        }
+        case ServiceEventType::DesktopReady:
+            CompleteLoginEntryGeneration(event.sessionId);
+            FACELOGIN_INFO(L"Console desktop ready: session=%lu", event.sessionId);
+            break;
+        }
+    }
+}
+
 void FaceService::Stop() {
     m_stopRequested.store(true);
-    m_running.store(false);
     // The SCM callback only requests cancellation. Camera, photometric and
     // model objects are owned and released by the Run() thread after the
     // active request has unwound.
-    m_modelsAbort.store(true);
+    m_modelState.store(ModelLoadState::Stopping);
     m_modelCv.notify_all();
     if (m_pipeServer) m_pipeServer->RequestStop();
 }
@@ -923,16 +891,8 @@ bool FaceService::EnsureCameraForAuth() {
         return false;
     }
 
-    // Standalone: Media Foundation only.
-    // After a system resume the camera may still be in low-power recovery.
-    // Drop the stale instance so Initialize() rebuilds a fresh SourceReader
-    // instead of reusing the one that stalled.
-    if (m_resumedFlag.exchange(false) && m_webcamMF) {
-        FACELOGIN_INFO(L"Resume detected — rebuilding MF camera");
-        m_photometric.End();
-        m_webcamMF->Shutdown();
-        m_webcamMF.reset();
-    }
+    // Standalone: Media Foundation only. Every completed authentication
+    // releases the camera, so each later attempt starts with a fresh reader.
     if (!m_webcamMF) {
         m_webcamMF = std::make_unique<WebcamCapture>();
         if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
@@ -979,98 +939,148 @@ void FaceService::ReleaseCamera() {
     m_cameraPipeline = CameraPipeline::None;
 }
 
-void FaceService::BeginAuthSession() {
-    m_authTerminalSent = false;
-}
-
 bool FaceService::SendAuthTerminal(const std::wstring& message) {
-    if (m_authTerminalSent) {
+    if (m_terminalSentForCurrentRequest) {
         FACELOGIN_WARN(L"Ignoring duplicate authentication terminal response");
         return false;
     }
-    m_authTerminalSent = true;
+    m_terminalSentForCurrentRequest = true;
 
     if (!m_pipeServer || !m_pipeServer->IsConnected()) return false;
     const bool written = m_pipeServer->WriteMessage(message);
-    HANDLE pipe = m_pipeServer->GetHandle();
-    if (written && pipe != INVALID_HANDLE_VALUE) FlushFileBuffers(pipe);
-    if (written) m_pipeServer->DrainOutput(5000);
     return written;
+}
+
+bool FaceService::HandleAuthRequest() {
+    m_terminalSentForCurrentRequest = false;
+    bool authenticated = false;
+    if (EnsureCameraForAuth()) {
+        authenticated = ProcessAuthRequest();
+    } else {
+        SendAuthTerminal(ipc::BuildAuthErrorMessage(
+            ipc::L10N_CAMERA_UNAVAILABLE));
+    }
+
+    // The service main thread owns camera and photometric teardown for every
+    // outcome, including disconnect, timeout and model failure.
+    ReleaseCamera();
+    if (m_config.unload_models_after_auth) {
+        UnloadHeavyModels();
+        TrimWorkingSet();
+    }
+    return authenticated;
+}
+
+bool FaceService::GrabAuthFrame(dlib::matrix<dlib::rgb_pixel>& frame) {
+    bool captured = false;
+    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
+        captured = m_webcamMF->GrabFrame(frame);
+    } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
+        captured = m_webcamDS->GrabFrame(frame);
+    }
+    if (captured) RotateFrame(frame, m_config.camera_rotation);
+    return captured;
+}
+
+bool FaceService::PrepareAuthFaceFrame(
+    dlib::matrix<dlib::rgb_pixel>& frame,
+    dlib::rectangle& faceRect,
+    dlib::full_object_detection& landmarks,
+    HeadPoseStats* pose) {
+    if (pose) *pose = {};
+
+    auto detect = [this, &faceRect, &landmarks](
+                      const dlib::matrix<dlib::rgb_pixel>& candidate) {
+        const auto detected = m_onnxDetector->DetectLargestFace(candidate);
+        if (!detected) return false;
+        faceRect = dlib::rectangle(
+            static_cast<long>(detected->x1), static_cast<long>(detected->y1),
+            static_cast<long>(detected->x2), static_cast<long>(detected->y2));
+        landmarks = dlib::full_object_detection();
+        return m_detector->DetectLandmarks(candidate, faceRect, landmarks);
+    };
+
+    const dlib::matrix<dlib::rgb_pixel> rawFrame = frame;
+    if (!detect(rawFrame)) {
+        dlib::matrix<dlib::rgb_pixel> detectionFrame = rawFrame;
+        m_photometric.NormalizeForDetection(detectionFrame);
+        if (!detect(detectionFrame)) {
+            frame = rawFrame;
+            return false;
+        }
+    }
+
+    if (pose && m_headPose && m_headPose->IsInitialized()) {
+        *pose = m_headPose->Estimate(rawFrame, faceRect);
+    }
+
+    UnifiedFaceFrame unified;
+    UnifiedFacePipeline pipeline(m_photometric);
+    const bool accepted = pipeline.ProcessFrame(
+        rawFrame, faceRect, landmarks, unified);
+    if (pose) unified.pose = *pose;
+    if (accepted && unified.normalizedFrame.size() != 0) {
+        frame = std::move(unified.normalizedFrame);
+        faceRect = unified.faceRect;
+        landmarks = std::move(unified.landmarks);
+    } else {
+        frame = rawFrame;
+    }
+    return accepted && unified.qualityAccepted;
+}
+
+const wchar_t* FaceService::PoseStatusKey(
+    const HeadPoseStats& pose,
+    const HeadPoseEvaluation& evaluation) {
+    if (evaluation.legality == HeadPoseLegality::Invalid) {
+        return ipc::L10N_POSE_INVALID;
+    }
+    if (evaluation.legality == HeadPoseLegality::Front) {
+        return ipc::L10N_RECOGNIZING;
+    }
+    if (evaluation.legality == HeadPoseLegality::Acceptable) {
+        return ipc::L10N_POSE_ACCEPTABLE;
+    }
+
+    const float yawScore = std::abs(pose.yaw) / 25.0f;
+    const float pitchScore = std::abs(pose.pitch) / 18.0f;
+    const float rollScore = std::abs(pose.roll) / 18.0f;
+    if (yawScore >= pitchScore && yawScore >= rollScore) {
+        return pose.yaw > 0.0f ? ipc::L10N_POSE_YAW_LEFT
+                               : ipc::L10N_POSE_YAW_RIGHT;
+    }
+    if (pitchScore >= rollScore) {
+        return pose.pitch > 0.0f ? ipc::L10N_POSE_PITCH_DOWN
+                                 : ipc::L10N_POSE_PITCH_UP;
+    }
+    return pose.roll > 0.0f ? ipc::L10N_POSE_ROLL_RIGHT
+                            : ipc::L10N_POSE_ROLL_LEFT;
+}
+
+FaceService::AuthFrameResult FaceService::AcquireLegalPoseFrame(
+    dlib::matrix<dlib::rgb_pixel>& frame,
+    dlib::rectangle& faceRect,
+    dlib::full_object_detection& landmarks,
+    HeadPoseStats& pose,
+    const std::function<void(const wchar_t*)>& publishStatus) {
+    if (!GrabAuthFrame(frame)) return AuthFrameResult::NoFrame;
+    if (!PrepareAuthFaceFrame(frame, faceRect, landmarks, &pose)) {
+        publishStatus(ipc::L10N_POSE_INVALID);
+        return AuthFrameResult::Invalid;
+    }
+
+    const HeadPoseEvaluation evaluation = EvaluateHeadPose(pose);
+    if (!evaluation.accepted) {
+        publishStatus(PoseStatusKey(pose, evaluation));
+        return AuthFrameResult::Rejected;
+    }
+    return AuthFrameResult::Accepted;
 }
 
 bool FaceService::ProcessAuthRequest() {
     const char* camName = m_cameraPipeline == CameraPipeline::MF ? "MF" :
                           m_cameraPipeline == CameraPipeline::DS ? "DS" : "none";
     FACELOGIN_INFO(L"Starting face authentication... (camera=%hs)", camName);
-
-    // Single grab helper used by ALL auth stages (match, anti-spoof, blink,
-    // final verify): it applies the configured camera rotation so every stage
-    // operates on identically-oriented frames. Previously rotation was only
-    // applied in the match loop, leaving the liveness/verify stages to process
-    // unrotated frames — with 90/270 rotation the face was sideways there and
-    // detection/landmarks/EAR failed, blocking unlock.
-    // grabRaw: one frame straight from the active camera + rotation. Every
-    // auth stage now applies the same face-aware photometric processing after
-    // detection; no fixed session gain is reused between frames.
-    auto grabRaw = [this](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
-        bool ok = false;
-        if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
-            ok = m_webcamMF->GrabFrame(f);
-        } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
-            ok = m_webcamDS->GrabFrame(f);
-        }
-        if (ok) RotateFrame(f, m_config.camera_rotation);
-        return ok;
-    };
-    auto grabFrame = [&grabRaw](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
-        return grabRaw(f);
-    };
-
-    // First try detection on the camera frame. In a dark scene, normalize a
-    // temporary copy and retry once. Once a face is available, the very same
-    // session updates hardware feedback and normalizes the frame consumed by
-    // recognition, liveness and final verification.
-    auto prepareFaceFrame = [this](dlib::matrix<dlib::rgb_pixel>& f,
-                                   dlib::rectangle& rect,
-                                   dlib::full_object_detection& landmarks,
-                                   HeadPoseStats* outPose = nullptr) -> bool {
-        if (outPose) *outPose = {};
-        auto detect = [this, &rect, &landmarks](
-                          const dlib::matrix<dlib::rgb_pixel>& candidate) -> bool {
-            auto det = m_onnxDetector->DetectLargestFace(candidate);
-            if (!det) return false;
-            rect = dlib::rectangle(static_cast<long>(det->x1),
-                                   static_cast<long>(det->y1),
-                                   static_cast<long>(det->x2),
-                                   static_cast<long>(det->y2));
-            landmarks = dlib::full_object_detection();
-            return m_detector->DetectLandmarks(candidate, rect, landmarks);
-        };
-        const dlib::matrix<dlib::rgb_pixel> rawFrame = f;
-        if (!detect(rawFrame)) {
-            dlib::matrix<dlib::rgb_pixel> detectionFrame = rawFrame;
-            m_photometric.NormalizeForDetection(detectionFrame);
-            if (!detect(detectionFrame)) {
-                f = rawFrame;
-                return false;
-            }
-        }
-        if (outPose && m_headPose && m_headPose->IsInitialized()) {
-            *outPose = m_headPose->Estimate(rawFrame, rect);
-        }
-        UnifiedFaceFrame unified;
-        UnifiedFacePipeline pipeline(m_photometric);
-        const bool accepted = pipeline.ProcessFrame(rawFrame, rect, landmarks, unified);
-        if (outPose) unified.pose = *outPose;
-        if (accepted && unified.normalizedFrame.size() != 0) {
-            f = std::move(unified.normalizedFrame);
-            rect = unified.faceRect;
-            landmarks = std::move(unified.landmarks);
-        } else {
-            f = rawFrame;
-        }
-        return accepted && unified.qualityAccepted;
-    };
 
     if (m_store->GetUserCount() == 0) {
         FACELOGIN_WARN(L"No registered users");
@@ -1086,7 +1096,7 @@ bool FaceService::ProcessAuthRequest() {
     // "正在加载模型..." rather than a frozen "识别中". The message is NOT
     // flushed until after the wait below — if the models are already ready,
     // this whole block is a no-op and no extra STATUS message is sent.
-    if (!m_modelsReady.load() && m_modelsLoading.load()) {
+    if (m_modelState.load() == ModelLoadState::Loading) {
         m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_LOADING_MODELS);
     }
 
@@ -1119,7 +1129,7 @@ bool FaceService::ProcessAuthRequest() {
         int dropped = 0;
 
         for (; dropped < kWarmupMaxFrames; dropped++) {
-            if (!grabFrame(warmFrame)) {
+            if (!GrabAuthFrame(warmFrame)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
@@ -1149,33 +1159,6 @@ bool FaceService::ProcessAuthRequest() {
         m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + key);
     };
 
-    auto poseStatusKey = [](const HeadPoseStats& pose,
-                            const HeadPoseEvaluation& evaluation) -> const wchar_t* {
-        if (evaluation.legality == HeadPoseLegality::Invalid) {
-            return ipc::L10N_POSE_INVALID;
-        }
-        if (evaluation.legality == HeadPoseLegality::Front) {
-            return ipc::L10N_RECOGNIZING;
-        }
-        if (evaluation.legality == HeadPoseLegality::Acceptable) {
-            return ipc::L10N_POSE_ACCEPTABLE;
-        }
-
-        const float yawScore = std::abs(pose.yaw) / 25.0f;
-        const float pitchScore = std::abs(pose.pitch) / 18.0f;
-        const float rollScore = std::abs(pose.roll) / 18.0f;
-        if (yawScore >= pitchScore && yawScore >= rollScore) {
-            return pose.yaw > 0.0f ? ipc::L10N_POSE_YAW_LEFT
-                                   : ipc::L10N_POSE_YAW_RIGHT;
-        }
-        if (pitchScore >= rollScore) {
-            return pose.pitch > 0.0f ? ipc::L10N_POSE_PITCH_DOWN
-                                     : ipc::L10N_POSE_PITCH_UP;
-        }
-        return pose.roll > 0.0f ? ipc::L10N_POSE_ROLL_RIGHT
-                                : ipc::L10N_POSE_ROLL_LEFT;
-    };
-
     dlib::matrix<dlib::rgb_pixel> frame;  // reused by the match loop below
     auto startTime = std::chrono::steady_clock::now();
     bool authSent = false;
@@ -1199,7 +1182,7 @@ bool FaceService::ProcessAuthRequest() {
     // detect+landmark+embed+match pass (~100ms) from the happy path.
     static constexpr int CONSENSUS_FRAMES = 2;
 
-    while (m_running) {
+    while (!m_stopRequested.load()) {
         // Abort early if the client (LogonUI) has gone away — e.g. the user
         // switched to password/fingerprint unlock. Otherwise we'd keep the
         // camera on until the timeout.
@@ -1217,8 +1200,8 @@ bool FaceService::ProcessAuthRequest() {
             return false;
         }
 
-        if (!grabFrame(frame)) {
-            if (!m_running) return false;
+        if (!GrabAuthFrame(frame)) {
+            if (m_stopRequested.load()) return false;
             // A stalled camera (e.g. after resume) self-shut-down in
             // GrabFrame. Rebuild it here so auth can continue instead of
             // spinning on a dead SourceReader until timeout.
@@ -1262,7 +1245,7 @@ bool FaceService::ProcessAuthRequest() {
         dlib::full_object_detection landmarks;
         dlib::rectangle faceRect;
         HeadPoseStats pose;
-        if (!prepareFaceFrame(frame, faceRect, landmarks, &pose)) {
+        if (!PrepareAuthFaceFrame(frame, faceRect, landmarks, &pose)) {
             sendStatusKey(ipc::L10N_POSE_INVALID);
             consecutiveMatches = 0;
             consecutiveNoMatch = 0;
@@ -1272,7 +1255,7 @@ bool FaceService::ProcessAuthRequest() {
 
         const HeadPoseEvaluation poseEvaluation = EvaluateHeadPose(pose);
         if (!poseEvaluation.accepted) {
-            sendStatusKey(poseStatusKey(pose, poseEvaluation));
+            sendStatusKey(PoseStatusKey(pose, poseEvaluation));
             poseRejectedSeen = true;
             consecutiveMatches = 0;
             consecutiveNoMatch = 0;
@@ -1281,7 +1264,7 @@ bool FaceService::ProcessAuthRequest() {
         }
 
         acceptedPoseSeen = true;
-        sendStatusKey(poseStatusKey(pose, poseEvaluation));
+        sendStatusKey(PoseStatusKey(pose, poseEvaluation));
 
         // Recognition always consumes the normalized frame. There is one
         // embedding path for old templates; no alternate photometric variant
@@ -1345,7 +1328,6 @@ bool FaceService::ProcessAuthRequest() {
                     // translates it.
                     m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) +
                         ipc::L10N_NO_MATCH);
-                    FlushFileBuffers(m_pipeServer->GetHandle());
                     SendAuthTerminal(ipc::MSG_AUTH_NO_MATCH);
                     return false;
                 }
@@ -1396,9 +1378,6 @@ bool FaceService::ProcessAuthRequest() {
                 } else if (method == LivenessMethod::Blink) {
                     sendStatusKey(ipc::L10N_BLINK_PROMPT);
                 }
-                if (method != LivenessMethod::None) {
-                    FlushFileBuffers(m_pipeServer->GetHandle());
-                }
 
                 bool livenessPassed = false;
                 bool livenessAcceptedPoseSeen = false;
@@ -1415,35 +1394,29 @@ bool FaceService::ProcessAuthRequest() {
                                    m_antiSpoofThreshold, totalChecks, passRequired);
                     auto asStart = std::chrono::steady_clock::now();
                     int passCount = 0, totalChecked = 0;
-                    while (m_running && totalChecked < totalChecks) {
+                    while (!m_stopRequested.load() && totalChecked < totalChecks) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during anti-spoof — aborting");
-                            SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                             return false;
                         }
-                        auto elapsed = std::chrono::steady_clock::now() - asStart;
-                        if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= 5) break;
+                        auto antiSpoofElapsed = std::chrono::steady_clock::now() - asStart;
+                        if (std::chrono::duration_cast<std::chrono::seconds>(antiSpoofElapsed).count() >= 5) break;
 
                         dlib::matrix<dlib::rgb_pixel> asFrame;
-                        if (!grabFrame(asFrame)) {
-                            if (!m_running) break;
-                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                            continue;
-                        }
-
                         dlib::full_object_detection asLandmarks;
                         dlib::rectangle asRect;
                         HeadPoseStats asPose;
-                        if (!prepareFaceFrame(asFrame, asRect, asLandmarks, &asPose)) {
-                            sendStatusKey(ipc::L10N_POSE_INVALID);
+                        const AuthFrameResult frameResult = AcquireLegalPoseFrame(
+                            asFrame, asRect, asLandmarks, asPose, sendStatusKey);
+                        if (frameResult == AuthFrameResult::NoFrame) {
+                            if (m_stopRequested.load()) break;
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
-
-                        const HeadPoseEvaluation asPoseEvaluation = EvaluateHeadPose(asPose);
-                        if (!asPoseEvaluation.accepted) {
-                            sendStatusKey(poseStatusKey(asPose, asPoseEvaluation));
-                            livenessPoseRejected = true;
+                        if (frameResult != AuthFrameResult::Accepted) {
+                            if (frameResult == AuthFrameResult::Rejected) {
+                                livenessPoseRejected = true;
+                            }
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
@@ -1477,10 +1450,9 @@ bool FaceService::ProcessAuthRequest() {
                                        m_config.blink_glasses_mode);
                     auto livenessStart = std::chrono::steady_clock::now();
                     bool blinked = false;
-                    while (m_running) {
+                    while (!m_stopRequested.load()) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during blink check — aborting");
-                            SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                             return false;
                         }
                         auto livenessElapsed = std::chrono::steady_clock::now() - livenessStart;
@@ -1492,28 +1464,23 @@ bool FaceService::ProcessAuthRequest() {
                             break;
                         }
                         dlib::matrix<dlib::rgb_pixel> livenessFrame;
-                        if (!grabFrame(livenessFrame)) {
-                            if (!m_running) break;
-                            liveness.ResetBlinkProgress();
-                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                            continue;
-                        }
                         dlib::full_object_detection livenessLandmarks;
                         dlib::rectangle lRect;
                         HeadPoseStats livenessPose;
-                        if (!prepareFaceFrame(livenessFrame, lRect, livenessLandmarks,
-                                              &livenessPose)) {
-                            sendStatusKey(ipc::L10N_POSE_INVALID);
+                        const AuthFrameResult frameResult = AcquireLegalPoseFrame(
+                            livenessFrame, lRect, livenessLandmarks,
+                            livenessPose, sendStatusKey);
+                        if (frameResult == AuthFrameResult::NoFrame) {
+                            if (m_stopRequested.load()) break;
                             liveness.ResetBlinkProgress();
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
-                        const HeadPoseEvaluation livenessEvaluation =
-                            EvaluateHeadPose(livenessPose);
-                        if (!livenessEvaluation.accepted) {
-                            sendStatusKey(poseStatusKey(livenessPose, livenessEvaluation));
+                        if (frameResult != AuthFrameResult::Accepted) {
+                            if (frameResult == AuthFrameResult::Rejected) {
+                                livenessPoseRejected = true;
+                            }
                             liveness.ResetBlinkProgress();
-                            livenessPoseRejected = true;
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
@@ -1538,7 +1505,6 @@ bool FaceService::ProcessAuthRequest() {
                             : method == LivenessMethod::AntiSpoof
                                 ? ipc::L10N_ANTI_SPOOF_FAILED
                                 : ipc::L10N_BLINK_FAILED));
-                    SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                     return false;
                 }
 
@@ -1558,38 +1524,30 @@ bool FaceService::ProcessAuthRequest() {
                     bool verifyOk = false;
                     bool verifyAcceptedPoseSeen = false;
                     bool verifyPoseRejected = false;
-                    while (m_running && !verifyOk) {
+                    while (!m_stopRequested.load() && !verifyOk) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during final verify — aborting");
-                            SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                             return false;
                         }
                         auto vElapsed = std::chrono::steady_clock::now() - verifyStart;
                         if (std::chrono::duration_cast<std::chrono::seconds>(vElapsed).count() >= 2) break;
 
                         dlib::matrix<dlib::rgb_pixel> verifyFrame;
-                        if (!grabFrame(verifyFrame)) {
-                            if (!m_running) break;
-                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                            continue;
-                        }
-
-                        // Same normalized frame pipeline as the recognition loop.
                         dlib::full_object_detection verifyLandmarks;
                         dlib::rectangle verifyRect;
                         HeadPoseStats verifyPose;
-                        if (!prepareFaceFrame(verifyFrame, verifyRect, verifyLandmarks,
-                                              &verifyPose)) {
-                            sendStatusKey(ipc::L10N_POSE_INVALID);
+                        const AuthFrameResult frameResult = AcquireLegalPoseFrame(
+                            verifyFrame, verifyRect, verifyLandmarks,
+                            verifyPose, sendStatusKey);
+                        if (frameResult == AuthFrameResult::NoFrame) {
+                            if (m_stopRequested.load()) break;
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
-
-                        const HeadPoseEvaluation verifyEvaluation =
-                            EvaluateHeadPose(verifyPose);
-                        if (!verifyEvaluation.accepted) {
-                            sendStatusKey(poseStatusKey(verifyPose, verifyEvaluation));
-                            verifyPoseRejected = true;
+                        if (frameResult != AuthFrameResult::Accepted) {
+                            if (frameResult == AuthFrameResult::Rejected) {
+                                verifyPoseRejected = true;
+                            }
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
@@ -1601,10 +1559,11 @@ bool FaceService::ProcessAuthRequest() {
                         sendStatusKey(ipc::L10N_FINAL_VERIFYING);
 
                         std::optional<CredentialStore::MatchResult> verifyMatch;
-                        auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(
+                        auto verifyEmbedding = m_onnxRecognizer->ComputeEmbedding(
                             verifyFrame, verifyLandmarks, m_photometric.Enabled());
-                        if (!onnxEmb.empty()) {
-                            verifyMatch = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
+                        if (!verifyEmbedding.empty()) {
+                            verifyMatch = m_store->FindBestMatch(
+                                verifyEmbedding.data(), verifyEmbedding.size(), m_matchThreshold);
                         }
 
                         if (verifyMatch) {
@@ -1633,7 +1592,6 @@ bool FaceService::ProcessAuthRequest() {
                             verifyPoseRejected && !verifyAcceptedPoseSeen
                                 ? ipc::L10N_POSE_TIMEOUT
                                 : ipc::L10N_FINAL_MATCH_FAILED));
-                        SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                         return false;
                     }
                 }
@@ -1651,8 +1609,7 @@ bool FaceService::ProcessAuthRequest() {
                 msg.clear();
             }
 
-            SecureZeroMemory(match->password.data(),
-                           match->password.size() * sizeof(wchar_t));
+            match->WipePassword();
 
             if (!credentialsSent) {
                 FACELOGIN_WARN(L"Credentials could not be delivered to the credential provider");
@@ -1663,8 +1620,7 @@ bool FaceService::ProcessAuthRequest() {
             FACELOGIN_INFO(L"AuthTerminal: outcome=success delivered=1 accountKind=%s",
                            match->upn.empty() ? L"local_or_domain" : L"online");
 
-            // Stop the capture graph NOW (camera LED off) before the bounded
-            // pipe drain below. The graph keeps streaming during auth; pausing
+            // Stop the capture graph now. The graph keeps streaming during auth; pausing
             // it immediately after success frees the camera without waiting for
             // the full teardown.
             if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
@@ -1673,11 +1629,6 @@ bool FaceService::ProcessAuthRequest() {
                 m_webcamMF->Shutdown();
             }
 
-            // Bounded drain: wait briefly for the client to consume the
-            // AUTH_SUCCESS message, then return. The old code did an
-            // unbounded ReadFile(dummy) here — if the client closed the pipe
-            // or never read, the service blocked forever and SCM killed it.
-            m_pipeServer->DrainOutput(5000);
             break;
         }
 

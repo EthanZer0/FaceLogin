@@ -7,9 +7,15 @@
 // ISampleGrabberCB::BufferCB copies frames into a shared buffer protected
 // by a CRITICAL_SECTION.  GrabFrame() copies out.
 
-#define WINVER       0x0602
+#ifndef WINVER
+#define WINVER 0x0602
+#endif
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0602
+#endif
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 
 #include <dlib/matrix.h>
 #include <dlib/pixel.h>

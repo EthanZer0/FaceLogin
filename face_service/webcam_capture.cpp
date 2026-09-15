@@ -259,7 +259,7 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
     for (DWORD i = 0; ; ++i) {
         IMFMediaType* pNative = nullptr;
         hr = m_pReader->GetNativeMediaType(
-            MF_SOURCE_READER_FIRST_VIDEO_STREAM, i, &pNative);
+            static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), i, &pNative);
         if (FAILED(hr)) break;   // MF_E_NO_MORE_TYPES ends the list
 
         GUID subtype = GUID_NULL;
@@ -302,7 +302,7 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
             pYuy2->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2);
             MFSetAttributeSize(pYuy2, MF_MT_FRAME_SIZE, mjpgW, mjpgH);
             hr = m_pReader->SetCurrentMediaType(
-                MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, pYuy2);
+                static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), nullptr, pYuy2);
             pYuy2->Release();
         }
         if (SUCCEEDED(hr)) {
@@ -317,7 +317,7 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
 
     if (pBestNative) {
         hr = m_pReader->SetCurrentMediaType(
-            MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, pBestNative);
+            static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), nullptr, pBestNative);
         if (SUCCEEDED(hr)) {
             m_isNV12 = bestIsNV12;
             m_width = static_cast<int>(bestW);
@@ -394,7 +394,7 @@ bool WebcamCapture::IsFrameReady() {
     IMFSample* pSample = nullptr;
 
     HRESULT hr = m_pReader->ReadSample(
-        MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0,
+        static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0,
         &streamIndex, &flags, &timestamp, &pSample);
 
     if (pSample) pSample->Release();
