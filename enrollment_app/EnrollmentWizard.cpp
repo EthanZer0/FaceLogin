@@ -1525,8 +1525,6 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
     // Same-person distances are typically well below 0.80 (the ONNX boundary);
     // different people exceed it.
     //
-    // The cap is calibrated via EmbeddingThresholdForDim: 512-D InsightFace
-    // ONNX uses 0.80 (measured same-person boundary, see credential_store.h).
     {
         double totalDist = 0.0;
         int pairs = 0;
@@ -1542,11 +1540,9 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
             }
         }
         double avgPairDist = (pairs > 0) ? totalDist / pairs : 0.0;
-        // All samples share one dimensionality (enrollment uses one recognizer).
-        size_t dim = m_embeddings.empty() ? 0 : static_cast<size_t>(m_embeddings[0].size());
-        float maxAllowed = EmbeddingThresholdForDim(0.45f, dim);
-        FACELOGIN_INFO(L"Enrollment consistency: avg pairwise dist=%.4f (max=%.3f, %d pairs, %zu-D)",
-                      avgPairDist, maxAllowed, pairs, dim);
+        const float maxAllowed = 0.45f;
+        FACELOGIN_INFO(L"Enrollment consistency: avg pairwise dist=%.4f (max=%.3f, %d pairs)",
+                      avgPairDist, maxAllowed, pairs);
         if (avgPairDist > maxAllowed) {
             FACELOGIN_ERROR(L"Embedding consistency check failed: avg pairwise dist %.4f > %.3f. "
                            L"Samples may be from different faces.", avgPairDist, maxAllowed);

@@ -654,16 +654,7 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
         return std::nullopt;
     }
 
-    // The base threshold is dlib-calibrated. For 512-D ONNX embeddings,
-    // EmbeddingThresholdForDim returns 0.80, measured to separate same-person
-    // (0.14–0.80) from other-person photos (0.94–0.99). For 128-D dlib it
-    // returns the base unchanged.
-    // (DEBUG level: this runs on every frame and would spam the log.)
-    float effThreshold = EmbeddingThresholdForDim(threshold, probeDim);
-    if (effThreshold != threshold) {
-        FACELOGIN_DEBUG(L"FindBestMatch: dim=%zu → threshold %.3f scaled to %.3f",
-                        probeDim, threshold, effThreshold);
-    }
+    const float effThreshold = threshold;
 
     // Reject if best match is not meaningfully better than second-best.
     // A ratio >= 0.75 means the probe is ambiguous between two accounts

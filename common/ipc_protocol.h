@@ -23,23 +23,15 @@ constexpr wchar_t MSG_AUTH_REQUEST[] = L"AUTH_REQUEST";
 constexpr wchar_t MSG_AUTH_SUCCESS_PREFIX[] = L"AUTH_SUCCESS:";
 constexpr wchar_t MSG_AUTH_TIMEOUT[] = L"AUTH_TIMEOUT";
 constexpr wchar_t MSG_AUTH_POSE_TIMEOUT[] = L"AUTH_POSE_TIMEOUT";
-constexpr wchar_t MSG_AUTH_NO_FACE[] = L"AUTH_NO_FACE";
 // A face WAS detected (embedding computed) but no enrolled face matched it —
 // distinct from AUTH_TIMEOUT (nothing useful seen for the whole window) and
 // AUTH_NO_FACE (no face at all). The CP shows "人脸匹配失败" for this and
 // reserves "未识别到人脸" for the timeout case.
 constexpr wchar_t MSG_AUTH_NO_MATCH[] = L"AUTH_NO_MATCH";
 constexpr wchar_t MSG_AUTH_ERROR_PREFIX[] = L"AUTH_ERROR:";
-constexpr wchar_t MSG_AUTH_CANCELLED[] = L"AUTH_CANCELLED";
 constexpr wchar_t MSG_STATUS_PREFIX[] = L"STATUS:";
 constexpr wchar_t MSG_RELOAD_DB[] = L"RELOAD_DB";
-constexpr wchar_t MSG_RELOAD_OK[] = L"RELOAD_OK";
 constexpr wchar_t MSG_CONFIG_RELOAD[] = L"CONFIG_RELOAD";
-constexpr wchar_t MSG_CONFIG_RELOAD_OK[] = L"CONFIG_RELOAD_OK";
-constexpr wchar_t MSG_GET_LOGS[] = L"GET_LOGS";
-constexpr wchar_t MSG_GET_LOGS_OK_PREFIX[] = L"GET_LOGS_OK:";
-constexpr wchar_t MSG_PING[] = L"PING";
-constexpr wchar_t MSG_PONG[] = L"PONG";
 
 // Locale keys carried by STATUS:/AUTH_ERROR: payloads. The values MUST match
 // keys in locales/*.json — the JSON packs are the single source of truth.
@@ -69,23 +61,14 @@ constexpr wchar_t L10N_ANTI_SPOOF_FAILED[] = L"service.antiSpoofFailed";
 constexpr wchar_t L10N_BLINK_FAILED[] = L"service.blinkFailed";
 constexpr wchar_t L10N_FINAL_MATCH_FAILED[] = L"service.finalMatchFailed";
 
-// Legacy AUTH_ERROR payload for a passwordless account (MSA with no password
-// — PIN/Hello only). No longer sent by the service (passwordless accounts now
-// unlock via blank-password submission), but kept so the credential provider
-// can still recognize the notice if an older service version sends it. The
-// value is a locale key, not display text.
-constexpr wchar_t MSG_PASSWORDLESS_NOTICE[] = L"credential.passwordless";
-
 // Parsed authentication result
 struct AuthResult {
     enum class Status {
         Success,
         Timeout,
         PoseTimeout,
-        NoFace,
         NoMatch,
-        Error,
-        Cancelled
+        Error
     };
 
     Status status = Status::Error;
@@ -112,9 +95,7 @@ struct AuthResult {
 //   "AUTH_SUCCESS:SID::DOMAIN\\USER:PASSWORD"  (no UPN, e.g. local account)
 //   "AUTH_TIMEOUT"
 //   "AUTH_POSE_TIMEOUT"
-//   "AUTH_NO_FACE"
 //   "AUTH_ERROR:some error message"
-//   "AUTH_CANCELLED"
 AuthResult ParseAuthMessage(const std::wstring& message);
 
 // Build a success message to send through the pipe.

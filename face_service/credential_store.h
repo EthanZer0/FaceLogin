@@ -8,28 +8,9 @@
 #include <cstdint>
 #include <cmath>
 #include <utility>
+#include "../common/secure_string.h"
 
 namespace facelogin {
-
-// Map a base "strictness" threshold to the embedding dimensionality actually
-// in use.
-//
-// The system now uses InsightFace ONNX (512-D) embeddings exclusively (the dlib
-// recognizer was removed). L2-normalized embeddings have Euclidean distance
-// bounded by sqrt(2) ≈ 1.414 regardless of dimension, so sqrt(dim/128) scaling
-// is invalid.
-//
-// For 512-D ONNX the user's match_threshold (from the strictness slider) is
-// used directly — no fixed override. Calibrated on real data (1.6.0):
-//   same-person (12 live frames): 0.34–0.45
-//   other-person photos:          1.24–1.40
-// The slider maps strictness 20–90 → threshold 1.15–0.45, all comfortably
-// inside the 0.45→1.24 safety gap, so the setting is effective and safe.
-// Any other (legacy) dimension falls back to the base threshold.
-inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
-    if (dim >= 256) return baseThreshold;         // ONNX 512-D: user setting applies
-    return baseThreshold;                         // dlib 128-D and unknown: caller base
-}
 
 // Stores and retrieves encrypted user credentials and face embeddings.
 //
@@ -213,7 +194,7 @@ public:
         std::wstring upn;
         std::wstring sid;
         std::wstring password;  // Decrypted — zero after use!
-        bool         passwordless = false;  // true: no password stored, must NOT submit LSA creds
+        bool         passwordless = false;  // true: submit an empty password and let LSA apply policy
         float distance = 0.0f;
         uint32_t     matchedFaceId = 0;     // V4: id of the closest face in the matched account
         size_t       accountFaceCount = 0;  // V4: total faces of the matched account
@@ -252,10 +233,7 @@ public:
         }
 
         void WipePassword() noexcept {
-            if (!password.empty()) {
-                SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-                password.clear();
-            }
+            SecureErase(password);
         }
     };
     // probeDim is the number of floats in probeEmbedding (128 for dlib,

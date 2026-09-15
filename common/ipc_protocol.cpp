@@ -1,36 +1,13 @@
 #include "ipc_protocol.h"
+#include "secure_string.h"
 #include <algorithm>
 #include <utility>
 
 namespace facelogin {
 namespace ipc {
 
-namespace {
-
-class ScopedStringWipe {
-public:
-    explicit ScopedStringWipe(std::wstring& value) noexcept : value_(value) {}
-    ~ScopedStringWipe() {
-        if (!value_.empty()) {
-            SecureZeroMemory(value_.data(), value_.size() * sizeof(wchar_t));
-            value_.clear();
-        }
-    }
-
-    ScopedStringWipe(const ScopedStringWipe&) = delete;
-    ScopedStringWipe& operator=(const ScopedStringWipe&) = delete;
-
-private:
-    std::wstring& value_;
-};
-
-} // namespace
-
 void AuthResult::WipePassword() noexcept {
-    if (!password.empty()) {
-        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-        password.clear();
-    }
+    SecureErase(password);
 }
 
 AuthResult::~AuthResult() {
@@ -76,7 +53,7 @@ AuthResult ParseAuthMessage(const std::wstring& message) {
     // Older format: "AUTH_SUCCESS:DOMAIN\\USER:PASSWORD" (no SID/UPN prefix)
     if (message.starts_with(MSG_AUTH_SUCCESS_PREFIX)) {
         std::wstring payload = message.substr(wcslen(MSG_AUTH_SUCCESS_PREFIX));
-        ScopedStringWipe payloadWipe(payload);
+        ScopedWStringWipe payloadWipe(payload);
 
         // Split by colons. New format has 4 parts: SID:UPN:USERNAME:PASSWORD
         // Old format has 1 colon separating USER and PASSWORD.
@@ -150,18 +127,8 @@ AuthResult ParseAuthMessage(const std::wstring& message) {
         return result;
     }
 
-    if (message == MSG_AUTH_NO_FACE) {
-        result.status = AuthResult::Status::NoFace;
-        return result;
-    }
-
     if (message == MSG_AUTH_NO_MATCH) {
         result.status = AuthResult::Status::NoMatch;
-        return result;
-    }
-
-    if (message == MSG_AUTH_CANCELLED) {
-        result.status = AuthResult::Status::Cancelled;
         return result;
     }
 
