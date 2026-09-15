@@ -5,7 +5,6 @@
 #include "../common/config_util.h"
 #include "../common/locale_util.h"
 #include "../common/session_util.h"
-#include <dsrole.h>
 #include <shlwapi.h>
 #include <shlobj.h>
 #include <wtsapi32.h>
@@ -63,15 +62,19 @@ FaceLoginProvider::FaceLoginProvider() {
 
 FaceLoginProvider::~FaceLoginProvider() {
     FACELOGIN_INFO(L"FaceLoginProvider destroyed");
-    if (m_pCredential) {
-        m_pCredential->UnadviseProvider();
-        m_pCredential->Release();
-        m_pCredential = nullptr;
-    }
+    ReleaseCredential(true);
     if (m_pEvents) {
         m_pEvents->Release();
         m_pEvents = nullptr;
     }
+}
+
+void FaceLoginProvider::ReleaseCredential(bool contextChange) {
+    if (!m_pCredential) return;
+    if (contextChange) m_pCredential->ShutdownForContextChange();
+    else m_pCredential->UnadviseProvider();
+    m_pCredential->Release();
+    m_pCredential = nullptr;
 }
 
 // ============================================================================
@@ -102,9 +105,11 @@ static DWORD ReadUserCountFromDatabase() {
 
     // Read header: magic (4), version (4), count (4)
     uint32_t magic = 0, version = 0, count = 0;
-    file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-    file.read(reinterpret_cast<char*>(&version), sizeof(version));
-    file.read(reinterpret_cast<char*>(&count), sizeof(count));
+    if (!file.read(reinterpret_cast<char*>(&magic), sizeof(magic)) ||
+        !file.read(reinterpret_cast<char*>(&version), sizeof(version)) ||
+        !file.read(reinterpret_cast<char*>(&count), sizeof(count))) {
+        return 0;
+    }
 
     // Accept v1..v5 databases. The header fields this function reads
     // (magic / version / count) are identical across all versions —
@@ -115,7 +120,8 @@ static DWORD ReadUserCountFromDatabase() {
         return 0;  // Invalid database → treat as no users
     }
 
-    return count;
+    constexpr uint32_t kMaximumSupportedUsers = 100000;
+    return count <= kMaximumSupportedUsers ? count : 0;
 }
 
 // ============================================================================
@@ -168,10 +174,7 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     // recognition. Let the built-in password provider handle this.
     if (cpus == CPUS_CHANGE_PASSWORD) {
         FACELOGIN_INFO(L"SetUsageScenario: CPUS_CHANGE_PASSWORD — delegating to password provider");
-        if (m_pCredential) {
-            m_pCredential->Release();
-            m_pCredential = nullptr;
-        }
+        ReleaseCredential(true);
         return E_NOTIMPL;
     }
 
@@ -183,10 +186,7 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     // to the built-in password/pin providers.
     if (cpus == CPUS_CREDUI || cpus == CPUS_PLAP) {
         FACELOGIN_INFO(L"SetUsageScenario: CPUS_CREDUI/CPUS_PLAP — delegating to password provider");
-        if (m_pCredential) {
-            m_pCredential->Release();
-            m_pCredential = nullptr;
-        }
+        ReleaseCredential(true);
         return E_NOTIMPL;
     }
 
@@ -220,10 +220,7 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
         RegCloseKey(hKey);
         if (disabled) {
             FACELOGIN_INFO(L"Provider is disabled via registry");
-            if (m_pCredential) {
-                m_pCredential->Release();
-                m_pCredential = nullptr;
-            }
+            ReleaseCredential(true);
             return E_NOTIMPL;  // This will cause LogonUI to skip this provider
         }
     }
@@ -234,10 +231,7 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     FACELOGIN_INFO(L"User count from database: %lu", userCount);
     if (userCount == 0) {
         FACELOGIN_INFO(L"No enrolled users — hiding face login tile");
-        if (m_pCredential) {
-            m_pCredential->Release();
-            m_pCredential = nullptr;
-        }
+        ReleaseCredential(true);
         return E_NOTIMPL;
     }
 
@@ -254,15 +248,17 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
         previousSessionId == m_loginEntrySessionId;
 
     if (!sameContext) {
-        if (m_pCredential) {
-            m_pCredential->Release();
-            m_pCredential = nullptr;
-        }
+        ReleaseCredential(true);
         m_pCredential = new FaceLoginCredential();
         if (!m_pCredential) {
             return E_OUTOFMEMORY;
         }
-        m_pCredential->Initialize(this);
+        CredentialContext context;
+        context.usageScenario = m_cpus;
+        context.loginEntry = m_isLoginEntry;
+        context.loginEntryGeneration = m_loginEntryGeneration;
+        context.loginEntrySessionId = m_loginEntrySessionId;
+        m_pCredential->Initialize(context);
     } else {
         FACELOGIN_INFO(L"CredentialLifecycle: preserving active credential across re-enumeration");
     }
@@ -374,21 +370,4 @@ STDMETHODIMP FaceLoginProvider::GetCredentialAt(
 
     return m_pCredential->QueryInterface(IID_ICredentialProviderCredential,
                                          reinterpret_cast<void**>(ppcpc));
-}
-
-bool FaceLoginProvider::IsDomainJoined() const {
-    PDSROLE_PRIMARY_DOMAIN_INFO_BASIC info = nullptr;
-    bool result = false;
-
-    if (DsRoleGetPrimaryDomainInformation(nullptr,
-            DsRolePrimaryDomainInfoBasic,
-            reinterpret_cast<PBYTE*>(&info)) == ERROR_SUCCESS) {
-        result = (info->MachineRole == DsRole_RoleMemberWorkstation ||
-                  info->MachineRole == DsRole_RoleMemberServer ||
-                  info->MachineRole == DsRole_RoleBackupDomainController ||
-                  info->MachineRole == DsRole_RolePrimaryDomainController);
-        DsRoleFreeMemory(info);
-    }
-
-    return result;
 }

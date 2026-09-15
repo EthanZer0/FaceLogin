@@ -34,14 +34,6 @@ public:
     // Write a null-terminated UTF-16LE message to the pipe (synchronous).
     bool WriteMessage(const std::wstring& message);
 
-    // Wait (bounded) until the client has consumed pending output and the
-    // pipe is idle — i.e. no more bytes remain to be read. This replaces the
-    // unbounded ReadFile(dummy) handshake: it never blocks forever, and
-    // returns immediately if the client has already closed its end.
-    // Returns true if the pipe drained (or the client closed); false on
-    // timeout.
-    bool DrainOutput(DWORD timeoutMs = 5000);
-
     // Disconnect current client (allows a new client to connect).
     void Disconnect();
 
@@ -51,9 +43,7 @@ public:
     // Called by the service control callback. Signals the owner thread and
     // wakes a pending connection wait without releasing owner-thread state.
     void RequestStop();
-
-    // Get the raw pipe handle (for FlushFileBuffers, etc.)
-    HANDLE GetHandle() const { return m_hPipe.load(); }
+    void WakeWait();
 
     bool IsConnected() const { return m_connected.load(); }
 
@@ -68,6 +58,7 @@ private:
     std::atomic<HANDLE> m_hPipe{INVALID_HANDLE_VALUE};
     std::atomic<bool> m_connected{false};
     std::atomic<bool> m_stopRequested{false};
+    std::atomic<bool> m_wakeRequested{false};
 };
 
 } // namespace facelogin

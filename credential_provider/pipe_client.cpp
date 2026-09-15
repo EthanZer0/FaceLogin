@@ -210,9 +210,7 @@ bool PipeClient::IsTerminalMessage(const std::wstring& msg) {
            msg.starts_with(ipc::MSG_AUTH_ERROR_PREFIX) ||
            msg == ipc::MSG_AUTH_TIMEOUT ||
            msg == ipc::MSG_AUTH_POSE_TIMEOUT ||
-           msg == ipc::MSG_AUTH_NO_FACE ||
-           msg == ipc::MSG_AUTH_NO_MATCH ||
-           msg == ipc::MSG_AUTH_CANCELLED;
+           msg == ipc::MSG_AUTH_NO_MATCH;
 }
 
 DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
@@ -236,7 +234,8 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
         if (timedOut) {
             FACELOGIN_WARN(L"Background read timed out waiting for terminal response");
             if (timeoutCallback && !self->IsStopping()) {
-                timeoutCallback(true, ipc::MSG_AUTH_TIMEOUT);
+                timeoutCallback(PipeTerminalTransport::Message,
+                                ipc::MSG_AUTH_TIMEOUT);
             }
             break;
         }
@@ -263,7 +262,7 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
                 EnterCriticalSection(&self->m_cs);
                 callback = self->m_onResponse;
                 LeaveCriticalSection(&self->m_cs);
-                if (callback) callback(false, L"");
+                if (callback) callback(PipeTerminalTransport::Failed, L"");
             }
             break;
         }
@@ -282,7 +281,7 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
                 EnterCriticalSection(&self->m_cs);
                 callback = self->m_onResponse;
                 LeaveCriticalSection(&self->m_cs);
-                if (callback) callback(false, L"");
+                if (callback) callback(PipeTerminalTransport::Failed, L"");
             }
             break;
         }
@@ -298,9 +297,7 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
         else if (msg.starts_with(ipc::MSG_AUTH_ERROR_PREFIX)) messageKind = L"auth_error";
         else if (msg == ipc::MSG_AUTH_TIMEOUT) messageKind = L"auth_timeout";
         else if (msg == ipc::MSG_AUTH_POSE_TIMEOUT) messageKind = L"auth_pose_timeout";
-        else if (msg == ipc::MSG_AUTH_NO_FACE) messageKind = L"auth_no_face";
         else if (msg == ipc::MSG_AUTH_NO_MATCH) messageKind = L"auth_no_match";
-        else if (msg == ipc::MSG_AUTH_CANCELLED) messageKind = L"auth_cancelled";
         FACELOGIN_INFO(L"PipeRead: kind=%s chars=%zu", messageKind, len);
 
         if (msg.starts_with(ipc::MSG_STATUS_PREFIX)) {
@@ -334,7 +331,7 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
         LeaveCriticalSection(&self->m_cs);
 
         if (deliver && callback && !self->IsStopping()) {
-            callback(true, msg);
+            callback(PipeTerminalTransport::Message, msg);
         }
         if (!msg.empty()) {
             SecureZeroMemory(msg.data(), msg.size() * sizeof(wchar_t));

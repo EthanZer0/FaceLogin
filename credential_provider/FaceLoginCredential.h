@@ -6,13 +6,20 @@
 #include <memory>
 #include <vector>
 
-#include "../common/secure_buffer.h"
 #include "../common/locale_util.h"
 #include "pipe_client.h"
 #include "status_overlay.h"
 
-// Forward declarations
-class FaceLoginProvider;
+struct CredentialContext {
+    CREDENTIAL_PROVIDER_USAGE_SCENARIO usageScenario = CPUS_LOGON;
+    bool loginEntry = false;
+    ULONGLONG loginEntryGeneration = 0;
+    DWORD loginEntrySessionId = 0xFFFFFFFF;
+
+    bool IsCredUI() const {
+        return usageScenario == CPUS_CREDUI || usageScenario == CPUS_PLAP;
+    }
+};
 
 // ============================================================================
 // FaceLoginCredential — ICredentialProviderCredential implementation
@@ -24,10 +31,11 @@ class FaceLoginProvider;
 //   4. Auto-logon two-pass pattern
 //
 // State machine:
-//   Waiting        — Initial state, trying to establish pipe connection
-//   Authenticating — Pipe connected, waiting for face recognition result
-//   Ready          — Credentials received, ready to serialize
-//   Failed         — Auth timed out or error
+//   Waiting        — Selected tile is waiting for a new input trigger
+//   Authenticating — Recognition is running for the current attempt
+//   Ready          — Credentials are ready to serialize
+//   Submitted      — Credentials have been handed to LogonUI once
+//   Failed/Error   — Attempt ended and requires a new input to retry
 // ============================================================================
 
 class FaceLoginCredential : public ICredentialProviderCredential {
@@ -39,8 +47,10 @@ public:
     FaceLoginCredential();
     virtual ~FaceLoginCredential();
 
-    // Called by FaceLoginProvider after creation
-    void Initialize(FaceLoginProvider* pProvider);
+    // Called by FaceLoginProvider after creation. The immutable snapshot keeps
+    // worker threads independent from the provider object's lifetime.
+    void Initialize(const CredentialContext& context);
+    void ShutdownForContextChange();
 
     // Provider-level advise/unadvise (called by FaceLoginProvider::Advise/UnAdvise)
     void AdviseProvider(ICredentialProviderEvents* pEvents, UINT_PTR upAdviseContext);
@@ -96,8 +106,7 @@ private:
         Ready,
         Submitted,  // credential packed & handed to LogonUI — no re-submit
         Failed,
-        Error,
-        Blocked  // Passwordless account: show notice, never submit creds
+        Error
     };
 
     // Authentication package lookup
@@ -148,11 +157,13 @@ private:
     void StopInputDetectionThread();
 
     // Pipe callbacks — called from background read thread
-    void OnPipeResponse(AuthAttemptId attemptId, bool success, const std::wstring& message);
+    void OnPipeResponse(AuthAttemptId attemptId,
+                        facelogin::PipeTerminalTransport transport,
+                        const std::wstring& message);
     void OnPipeStatus(AuthAttemptId attemptId, const std::wstring& message);
 
     LONG m_refCount = 1;
-    FaceLoginProvider* m_pProvider = nullptr;
+    CredentialContext m_context;
     // FaceLogin supports Windows 8 and later only. Retain Events2
     // exclusively: status updates stay inside the active tile instead of
     // falling back to the legacy re-enumeration-prone event API.
@@ -162,10 +173,6 @@ private:
     facelogin::StatusOverlay m_statusOverlay;
 
     State m_state = State::Waiting;
-    // Set when the service reported AUTH_NO_MATCH (face seen, no enrolled
-    // face matched). The Failed-state status text then shows "人脸匹配失败"
-    // instead of the generic timeout wording. Cleared at each StartAuth.
-    bool m_noMatchFailed = false;
     std::shared_ptr<facelogin::PipeClient> m_pipeClient;
     AuthAttemptId m_nextAttemptId = 0;
     AuthAttemptId m_activeAttemptId = 0;
@@ -179,7 +186,6 @@ private:
         facelogin::StatusOverlayTone::Neutral;
 
     // Received credentials (zeroed after serialization)
-    facelogin::SecureBuffer m_authData;
     std::wstring m_sid;
     std::wstring m_upn;
     std::wstring m_domain;
@@ -210,7 +216,6 @@ private:
     bool m_deselected = false;
 
     // Synchronization
-    HANDLE m_hCredsReady = nullptr;  // Set when auth result received
     mutable CRITICAL_SECTION m_cs;
     bool m_csInitialized = false;
 };

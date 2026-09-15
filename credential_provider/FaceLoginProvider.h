@@ -62,8 +62,6 @@ public:
 
     // Accessors for our credential
     CREDENTIAL_PROVIDER_USAGE_SCENARIO GetUsageScenario() const { return m_cpus; }
-    ICredentialProviderEvents* GetEvents() const { return m_pEvents; }
-    UINT_PTR GetAdviseContext() const { return m_upAdviseContext; }
     bool IsLoginEntry() const { return m_isLoginEntry; }
     ULONGLONG GetLoginEntryGeneration() const { return m_loginEntryGeneration; }
     DWORD GetLoginEntrySessionId() const { return m_loginEntrySessionId; }
@@ -87,6 +85,5 @@ private:
     ULONGLONG m_loginEntryGeneration = 0;
     DWORD m_loginEntrySessionId = 0xFFFFFFFF;
 
-    // Check if we're in a domain-joined environment
-    bool IsDomainJoined() const;
+    void ReleaseCredential(bool contextChange);
 };

@@ -118,6 +118,9 @@ bool PipeServer::WaitForClient(DWORD timeoutMs) {
     if (m_stopRequested.load()) {
         return false;
     }
+    if (m_wakeRequested.exchange(false)) {
+        return false;
+    }
 
     PSECURITY_DESCRIPTOR pSD = CreateSecurityDescriptor();
     if (!pSD) return false;
@@ -151,7 +154,7 @@ bool PipeServer::WaitForClient(DWORD timeoutMs) {
     // RequestStop() may have raced with pipe creation. In that case the
     // service owner thread closes the newly-created handle itself instead of
     // entering a blocking ConnectNamedPipe call.
-    if (m_stopRequested.load()) {
+    if (m_stopRequested.load() || m_wakeRequested.exchange(false)) {
         Close();
         return false;
     }
@@ -165,8 +168,8 @@ bool PipeServer::WaitForClient(DWORD timeoutMs) {
     DWORD err = GetLastError();
 
     if (connected) {
-        if (m_stopRequested.load()) {
-            FACELOGIN_INFO(L"Pipe wait cancelled by service stop");
+        if (m_stopRequested.load() || m_wakeRequested.exchange(false)) {
+            FACELOGIN_DEBUG(L"Pipe wait cancelled by service event");
             Close();
             return false;
         }
@@ -176,8 +179,8 @@ bool PipeServer::WaitForClient(DWORD timeoutMs) {
     }
 
     if (err == ERROR_PIPE_CONNECTED) {
-        if (m_stopRequested.load()) {
-            FACELOGIN_INFO(L"Pipe wait cancelled by service stop");
+        if (m_stopRequested.load() || m_wakeRequested.exchange(false)) {
+            FACELOGIN_DEBUG(L"Pipe wait cancelled by service event");
             Close();
             return false;
         }
@@ -269,44 +272,6 @@ bool PipeServer::ReadMessage(std::wstring& outMessage, DWORD timeoutMs) {
     return true;
 }
 
-// Bounded "wait for the client to drain what we wrote". Previously the code
-// did an unbounded ReadFile(dummy) after every WriteMessage to handshake the
-// disconnect; if the client never read or never closed, the service blocked
-// forever (SCM killed it → 7034, no crash event). We poll PeekNamedPipe:
-// when no bytes remain to be read, the client has consumed everything (or
-// closed its end) and it is safe to Disconnect().
-bool PipeServer::DrainOutput(DWORD timeoutMs) {
-    HANDLE pipe = m_hPipe.load();
-    if (!m_connected.load() || pipe == INVALID_HANDLE_VALUE) return true;
-
-    DWORD bytesAvail = 0, totalBytes = 0;
-    for (DWORD waited = 0; waited < timeoutMs; ) {
-        if (m_stopRequested.load()) return false;
-        if (PeekNamedPipe(pipe, nullptr, 0, nullptr, &bytesAvail, &totalBytes)) {
-            if (bytesAvail == 0) {
-                // All output consumed (or client already closed). Done.
-                return true;
-            }
-            DWORD sleepMs = (timeoutMs - waited < 50) ? (timeoutMs - waited) : 50;
-            Sleep(sleepMs);
-            waited += sleepMs;
-            continue;
-        }
-        // PeekNamedPipe failed → client closed its end. Fine, nothing to drain.
-        DWORD err = GetLastError();
-        if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
-            err == ERROR_PIPE_NOT_CONNECTED) {
-            m_connected.store(false);
-            return true;
-        }
-        FACELOGIN_ERROR(L"DrainOutput: PeekNamedPipe failed: %lu", err);
-        return false;
-    }
-    // Timed out with unread bytes still pending — do NOT block further.
-    FACELOGIN_WARN(L"DrainOutput: timed out with unread bytes pending");
-    return false;
-}
-
 bool PipeServer::WriteMessage(const std::wstring& message) {
     HANDLE pipe = m_hPipe.load();
     if (m_stopRequested.load() || !m_connected.load() || pipe == INVALID_HANDLE_VALUE) return false;
@@ -353,7 +318,6 @@ bool PipeServer::IsClientDisconnected() const {
 void PipeServer::Disconnect() {
     HANDLE pipe = m_hPipe.load();
     if (pipe != INVALID_HANDLE_VALUE) {
-        FlushFileBuffers(pipe);
         DisconnectNamedPipe(pipe);
         m_connected.store(false);
     }
@@ -370,6 +334,12 @@ void PipeServer::Close() {
 
 void PipeServer::RequestStop() {
     m_stopRequested.store(true);
+
+    WakeWait();
+}
+
+void PipeServer::WakeWait() {
+    m_wakeRequested.store(true);
 
     // CloseHandle from the service-control callback can itself block while
     // the owner thread is inside a synchronous ConnectNamedPipe. Connect a
@@ -389,7 +359,7 @@ void PipeServer::RequestStop() {
         nullptr);
     if (wakeClient != INVALID_HANDLE_VALUE) {
         CloseHandle(wakeClient);
-        FACELOGIN_INFO(L"Pipe connection wait awakened for service stop");
+        FACELOGIN_DEBUG(L"Pipe connection wait awakened");
         return;
     }
 

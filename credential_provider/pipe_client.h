@@ -19,7 +19,10 @@ namespace facelogin {
 // response arrives (or the pipe breaks).  The credential uses this to
 // transition state and signal LogonUI to re-serialize immediately.
 
-using OnResponseCallback = std::function<void(bool success, const std::wstring& message)>;
+enum class PipeTerminalTransport { Message, Failed };
+using OnResponseCallback =
+    std::function<void(PipeTerminalTransport transport,
+                       const std::wstring& message)>;
 using OnStatusCallback = std::function<void(const std::wstring& message)>;
 
 class PipeClient : public std::enable_shared_from_this<PipeClient> {

@@ -1,11 +1,11 @@
 #include "FaceLoginCredential.h"
-#include "FaceLoginProvider.h"
 #include "resource.h"
 #include "../common/logger.h"
 #include "../common/ipc_protocol.h"
 #include "../common/registry_util.h"
 #include "../common/config_util.h"
 #include "../common/session_util.h"
+#include "../common/secure_string.h"
 #include <wincred.h>
 #include <ntstatus.h>
 #include <ntsecapi.h>
@@ -21,23 +21,6 @@
 #pragma comment(lib, "ntdll.lib")
 
 namespace {
-
-class ScopedSensitiveWstring {
-public:
-    explicit ScopedSensitiveWstring(std::wstring& value) noexcept : value_(value) {}
-    ~ScopedSensitiveWstring() {
-        if (!value_.empty()) {
-            SecureZeroMemory(value_.data(), value_.size() * sizeof(wchar_t));
-            value_.clear();
-        }
-    }
-
-    ScopedSensitiveWstring(const ScopedSensitiveWstring&) = delete;
-    ScopedSensitiveWstring& operator=(const ScopedSensitiveWstring&) = delete;
-
-private:
-    std::wstring& value_;
-};
 
 facelogin::StatusOverlayTone OverlayToneForStatusKey(
     const std::wstring& key) {
@@ -129,9 +112,7 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
     FACELOGIN_INFO(L"[InputThread] Started — polling keyboard and mouse-button states every %lums",
                    kInputPollIntervalMs);
 
-    const DWORD timeoutSec = 30;
-    ULONGLONG startTick = GetTickCount64();
-    const ULONGLONG baselineGraceUntil = startTick + kInputBaselineGraceMs;
+    const ULONGLONG baselineGraceUntil = GetTickCount64() + kInputBaselineGraceMs;
     std::array<bool, 256> previousDown{};
 
     // Prime the snapshot so the click/key used to select the credential tile
@@ -142,9 +123,8 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
     FACELOGIN_INFO(L"[InputThread] Baseline captured; selection-input grace=%llums",
                    kInputBaselineGraceMs);
 
-    // Loop forever (until the stop event is signaled).  The 30s timeout does
-    // NOT kill the thread — it only restarts the idle window so a user who
-    // waits longer than 30s before pressing a key can still trigger auth.
+    // Keep waiting until the binding is stopped or a fresh input edge starts
+    // authentication. There is intentionally no idle timeout.
     while (true) {
         // Check stop signal (non-blocking)
         DWORD waitResult = WaitForSingleObject(stopEvent, 0);
@@ -153,15 +133,7 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
             break;
         }
 
-        // Idle-window timeout: restart the window instead of exiting, so a
-        // late keypress still works. (Previously the thread exited after 30s
-        // of no input, leaving no path to restart it — a later keypress did
-        // nothing.)
         ULONGLONG nowTick = GetTickCount64();
-        if (nowTick - startTick > static_cast<ULONGLONG>(timeoutSec) * 1000) {
-            FACELOGIN_INFO(L"[InputThread] 30s idle — restarting idle window");
-            startTick = nowTick;
-        }
 
         bool inputDetected = false;
         for (int virtualKey = 1; virtualKey <= 0xFF; ++virtualKey) {
@@ -267,8 +239,9 @@ unsigned __stdcall AuthConnectThreadProc(void* pParam) {
             : 1;
         auto lifetime = std::make_shared<CredentialCallbackLifetime>(cred);
         startedReader = client->StartBackgroundRead(
-            [lifetime, attemptId](bool success, const std::wstring& msg) {
-                lifetime->cred->OnPipeResponse(attemptId, success, msg);
+            [lifetime, attemptId](facelogin::PipeTerminalTransport transport,
+                                  const std::wstring& msg) {
+                lifetime->cred->OnPipeResponse(attemptId, transport, msg);
             },
             [lifetime, attemptId](const std::wstring& msg) {
                 lifetime->cred->OnPipeStatus(attemptId, msg);
@@ -285,7 +258,8 @@ unsigned __stdcall AuthConnectThreadProc(void* pParam) {
                                !cred->IsAttemptActive(attemptId);
         client->Disconnect();
         if (!cancelled && cred->IsAttemptActive(attemptId)) {
-            cred->OnPipeResponse(attemptId, false, L"");
+            cred->OnPipeResponse(
+                attemptId, facelogin::PipeTerminalTransport::Failed, L"");
         }
         FACELOGIN_INFO(L"AuthAttempt: attempt=%llu connectionFinished started=0 cancelled=%d",
                        attemptId, static_cast<int>(cancelled));
@@ -306,10 +280,6 @@ FaceLoginCredential::FaceLoginCredential() {
     InitializeCriticalSection(&m_cs);
     m_csInitialized = true;
 
-    m_hCredsReady = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!m_hCredsReady) {
-        FACELOGIN_ERROR(L"Failed to create credentials ready event");
-    }
     m_hAuthStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!m_hAuthStop) {
         FACELOGIN_ERROR(L"Failed to create auth stop event");
@@ -346,10 +316,6 @@ FaceLoginCredential::~FaceLoginCredential() {
     // SENSITIVE: Zero the password from memory
     ClearCredentials();
 
-    if (m_hCredsReady) {
-        CloseHandle(m_hCredsReady);
-        m_hCredsReady = nullptr;
-    }
     if (m_hAuthStop) {
         CloseHandle(m_hAuthStop);
         m_hAuthStop = nullptr;
@@ -363,9 +329,24 @@ FaceLoginCredential::~FaceLoginCredential() {
     FACELOGIN_DEBUG(L"FaceLoginCredential destroyed");
 }
 
-void FaceLoginCredential::Initialize(FaceLoginProvider* pProvider) {
-    m_pProvider = pProvider;
-    FACELOGIN_DEBUG(L"FaceLoginCredential initialized with provider");
+void FaceLoginCredential::Initialize(const CredentialContext& context) {
+    m_context = context;
+    FACELOGIN_DEBUG(L"FaceLoginCredential initialized with context snapshot");
+}
+
+void FaceLoginCredential::ShutdownForContextChange() {
+    EnterCriticalSection(&m_cs);
+    m_deselected = true;
+    m_statusOverlayAllowed = false;
+    ++m_inputActivationId;
+    m_inputDetectionEnabled = false;
+    LeaveCriticalSection(&m_cs);
+
+    m_statusOverlay.Destroy(L"context_change");
+    StopInputDetectionThread();
+    CancelActiveAttempt(false);
+    ClearCredentials();
+    UnadviseProvider();
 }
 
 void FaceLoginCredential::AdviseProvider(ICredentialProviderEvents* pEvents, UINT_PTR upAdviseContext) {
@@ -397,7 +378,7 @@ bool FaceLoginCredential::IsAutoSubmitReady() const {
 }
 
 FaceLoginCredential::AuthTrigger FaceLoginCredential::InputAuthTrigger() const {
-    return m_pProvider && m_pProvider->IsLoginEntry()
+    return m_context.loginEntry
         ? AuthTrigger::LoginEntryKeyPress
         : AuthTrigger::UnlockKeyPress;
 }
@@ -454,7 +435,6 @@ FaceLoginCredential::CurrentStatusPresentation() const {
     facelogin::StatusOverlayPresentation presentation;
     State state;
     std::wstring statusText;
-    bool noMatchFailed = false;
     bool overlayAllowed = false;
     bool deselected = false;
     facelogin::StatusOverlayTone liveTone =
@@ -462,7 +442,6 @@ FaceLoginCredential::CurrentStatusPresentation() const {
     EnterCriticalSection(const_cast<CRITICAL_SECTION*>(&m_cs));
     state = m_state;
     statusText = m_statusText;
-    noMatchFailed = m_noMatchFailed;
     overlayAllowed = m_statusOverlayAllowed;
     deselected = m_deselected;
     liveTone = m_statusOverlayTone;
@@ -493,19 +472,10 @@ FaceLoginCredential::CurrentStatusPresentation() const {
     case State::Failed:
         if (!statusText.empty()) {
             presentation.text = statusText;
-        } else if (noMatchFailed) {
-            presentation.text =
-                Text("credential.noMatch", L"人脸匹配失败，请重试或使用密码登录");
         } else {
             presentation.text =
                 Text("credential.noFace", L"未识别到人脸，请重试或使用密码登录");
         }
-        presentation.tone = facelogin::StatusOverlayTone::Error;
-        break;
-    case State::Blocked:
-        presentation.text = statusText.empty()
-            ? Text("credential.passwordless", L"该账号无密码，人脸识别无法用于解锁，请使用 PIN/Hello 登录")
-            : statusText;
         presentation.tone = facelogin::StatusOverlayTone::Error;
         break;
     case State::Error:
@@ -582,7 +552,7 @@ void FaceLoginCredential::NotifyCredentialsChanged() {
 bool FaceLoginCredential::EnsureStatusOverlay(
     const facelogin::StatusOverlayPresentation& presentation,
     const wchar_t* reason) {
-    if (m_pProvider && m_pProvider->IsCredUI()) return false;
+    if (m_context.IsCredUI()) return false;
 
     if (!presentation.visible) {
         m_statusOverlay.Hide();
@@ -620,12 +590,11 @@ bool FaceLoginCredential::EnsureStatusOverlay(
 
 void FaceLoginCredential::ClearCredentials() {
     EnterCriticalSection(&m_cs);
-    SecureZeroMemory(m_password.data(), m_password.size() * sizeof(wchar_t));
+    facelogin::SecureErase(m_password);
     m_sid.clear();
     m_upn.clear();
     m_domain.clear();
     m_username.clear();
-    m_password.clear();
     LeaveCriticalSection(&m_cs);
 }
 
@@ -658,13 +627,11 @@ void FaceLoginCredential::CancelActiveAttempt(bool resetToWaiting) {
         m_authDeadlineTick = 0;
 
         if (!preserveCredentials) {
-            SecureZeroMemory(m_password.data(), m_password.size() * sizeof(wchar_t));
+            facelogin::SecureErase(m_password);
             m_sid.clear();
             m_upn.clear();
             m_domain.clear();
             m_username.clear();
-            m_password.clear();
-            m_noMatchFailed = false;
             if (resetToWaiting && authenticating) {
                 m_state = State::Waiting;
                 m_statusText.clear();
@@ -764,14 +731,6 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         return S_OK;
     }
 
-    // Blocked (passwordless notice shown): keep showing the notice — do not
-    // auto-restart authentication on re-enumeration (would loop forever).
-    if (state == State::Blocked) {
-        FACELOGIN_INFO(L"Advise: blocked (passwordless notice), skipping auth restart");
-        PublishCurrentStatus();
-        return S_OK;
-    }
-
     // A connection worker may still be waiting for the service, so state is
     // the authoritative guard; pipe connectivity is deliberately irrelevant.
     if (state == State::Authenticating) {
@@ -823,10 +782,9 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     //     the camera could still fire once.
     // SetSelected is only called for OUR tile, so deferring activation is
     // exact — no guessing about which UI flow loaded us.
-    bool loginEntry = m_pProvider ? m_pProvider->IsLoginEntry() : false;
-    bool credUI = m_pProvider ? m_pProvider->IsCredUI() : false;
-    FACELOGIN_INFO(L"Advise: loginEntry=%d, credUI=%d, m_pProvider=%p",
-                  loginEntry, credUI, m_pProvider);
+    const bool loginEntry = m_context.loginEntry;
+    const bool credUI = m_context.IsCredUI();
+    FACELOGIN_INFO(L"Advise: loginEntry=%d, credUI=%d", loginEntry, credUI);
 
     EnterCriticalSection(&m_cs);
     m_state = State::Waiting;
@@ -846,12 +804,8 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
             }
             LeaveCriticalSection(&m_cs);
 
-            const ULONGLONG generation = m_pProvider
-                ? m_pProvider->GetLoginEntryGeneration()
-                : 0;
-            const DWORD sessionId = m_pProvider
-                ? m_pProvider->GetLoginEntrySessionId()
-                : 0xFFFFFFFF;
+            const ULONGLONG generation = m_context.loginEntryGeneration;
+            const DWORD sessionId = m_context.loginEntrySessionId;
             const bool generationClaimed = firstInstanceAttempt &&
                 facelogin::TryClaimAutomaticLoginEntry(generation, sessionId);
             FACELOGIN_INFO(L"LoginEntry: generation=%llu sessionId=%lu "
@@ -932,8 +886,8 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
                   static_cast<int>(GetState()),
                   pbAutoLogon ? static_cast<int>(*pbAutoLogon) : -1);
 
-    bool loginEntry = m_pProvider ? m_pProvider->IsLoginEntry() : false;
-    bool credUI = m_pProvider ? m_pProvider->IsCredUI() : false;
+    const bool loginEntry = m_context.loginEntry;
+    const bool credUI = m_context.IsCredUI();
 
     EnterCriticalSection(&m_cs);
     m_deselected = false;
@@ -1196,13 +1150,6 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
         return S_OK;
     }
 
-    // Blocked (passwordless account): show the notice, finish without
-    // submitting credentials so the tile never hangs.
-    if (initialState == State::Blocked) {
-        *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
-        return S_OK;
-    }
-
     // If we're in Error state, service is not available — don't block login
     if (initialState == State::Error) {
         *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
@@ -1211,38 +1158,6 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
 
     // Auth failed earlier — don't retry, let user use password
     if (initialState == State::Failed) {
-        *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
-        return S_OK;
-    }
-
-    // Terminal responses are parsed only by OnPipeResponse on the pipe read
-    // thread. GetSerialization is deliberately a state consumer now.
-    ULONGLONG deadline = 0;
-    EnterCriticalSection(&m_cs);
-    deadline = m_authDeadlineTick;
-    LeaveCriticalSection(&m_cs);
-    if (initialState == State::Authenticating && deadline != 0 &&
-        GetTickCount64() >= deadline) {
-        FACELOGIN_WARN(L"Auth timed out waiting for service response");
-        const std::wstring timeoutStatus =
-            Text("credential.noFace", L"未识别到人脸，请重试或使用密码登录");
-        EnterCriticalSection(&m_cs);
-        if (m_state == State::Authenticating) {
-            m_statusText = timeoutStatus;
-            m_autoSubmitEligible = false;
-            m_state = State::Failed;
-        }
-        LeaveCriticalSection(&m_cs);
-        PublishCurrentStatus();
-        CancelActiveAttempt(false);
-        bool canWaitForRetry = false;
-        EnterCriticalSection(&m_cs);
-        canWaitForRetry = m_state == State::Failed && m_pCredentialEvents2 != nullptr;
-        LeaveCriticalSection(&m_cs);
-        if (canWaitForRetry) {
-            FACELOGIN_INFO(L"Local auth timeout: waiting for a new input to retry");
-            StartInputDetectionThread();
-        }
         *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
         return S_OK;
     }
@@ -1320,8 +1235,7 @@ STDMETHODIMP FaceLoginCredential::ReportResult(
         m_state = State::Failed;
         m_autoSubmitEligible = false;
         m_statusText = status;
-        SecureZeroMemory(m_password.data(), m_password.size() * sizeof(wchar_t));
-        m_password.clear();
+        facelogin::SecureErase(m_password);
         LeaveCriticalSection(&m_cs);
         PublishCurrentStatus();
         CancelActiveAttempt(false);
@@ -1352,6 +1266,7 @@ bool FaceLoginCredential::StartAuthAsync(
     std::shared_ptr<facelogin::PipeClient> client =
         std::make_shared<facelogin::PipeClient>();
     AuthAttemptId attemptId = 0;
+    ULONGLONG deadlineTick = 0;
     ResetEvent(m_hAuthStop);
     EnterCriticalSection(&m_cs);
     const bool inputActivationValid =
@@ -1383,14 +1298,13 @@ bool FaceLoginCredential::StartAuthAsync(
         m_statusOverlayAllowed = true;
     }
     m_statusOverlayTone = facelogin::StatusOverlayTone::Progress;
-    m_noMatchFailed = false;
-    m_authDeadlineTick = GetTickCount64() + 20000ULL;
-    SecureZeroMemory(m_password.data(), m_password.size() * sizeof(wchar_t));
+    deadlineTick = GetTickCount64() + 20000ULL;
+    m_authDeadlineTick = deadlineTick;
+    facelogin::SecureErase(m_password);
     m_sid.clear();
     m_upn.clear();
     m_domain.clear();
     m_username.clear();
-    m_password.clear();
     m_statusText = Text("credential.recognizing", L"识别中...");
     m_pipeClient = client;
     m_authThreadRunning = true;
@@ -1443,7 +1357,7 @@ bool FaceLoginCredential::StartAuthAsync(
     LeaveCriticalSection(&m_cs);
     FACELOGIN_INFO(L"AuthAttempt: attempt=%llu trigger=%d thread=%u deadline=%llu",
                    attemptId, static_cast<int>(trigger), threadId,
-                   GetTickCount64() + 20000ULL);
+                   deadlineTick);
     return true;
 }
 
@@ -1643,7 +1557,7 @@ HRESULT FaceLoginCredential::PackCredentials(
     std::wstring username;
     std::wstring upn;
     std::wstring password;
-    ScopedSensitiveWstring passwordWipe(password);
+    facelogin::ScopedWStringWipe passwordWipe(password);
     bool sidPresent = false;
     EnterCriticalSection(&m_cs);
     domain = m_domain;
@@ -1727,10 +1641,9 @@ HRESULT FaceLoginCredential::PackCredentials(
     }
 
     // CRITICAL: Zero the password immediately after packing
-    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+    facelogin::SecureErase(password);
     EnterCriticalSection(&m_cs);
-    SecureZeroMemory(m_password.data(), m_password.size() * sizeof(wchar_t));
-    m_password.clear();
+    facelogin::SecureErase(m_password);
     LeaveCriticalSection(&m_cs);
 
     pcpcs->rgbSerialization = pPackedCreds;
@@ -1804,24 +1717,32 @@ std::wstring FaceLoginCredential::LocalizeKey(const std::wstring& key) const {
 }
 
 void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
-                                         bool success,
+                                         facelogin::PipeTerminalTransport transport,
                                          const std::wstring& message) {
-    // Ignore LATE results: if the auth was cancelled in the meantime
-    // (SetDeselected — user switched to another tile), the read thread may
-    // still deliver a terminal message after Disconnect. Applying it would
-    // overwrite the Waiting state and make a later tile re-selection auto-
-    // restart auth (camera flashes on/off while the user just browses tiles).
     if (!IsAttemptActive(attemptId)) {
         FACELOGIN_INFO(L"OnPipeResponse: auth no longer active (state=%d) — ignoring late result",
                        static_cast<int>(GetState()));
         return;
     }
 
-    std::wstring statusToNotify;
-    bool notifyChanged = false;
-    if (success) {
-        auto result = facelogin::ipc::ParseAuthMessage(message);
+    auto completeFailure = [this, attemptId](
+                               State state, const std::wstring& status) {
+        EnterCriticalSection(&m_cs);
+        if (m_state != State::Authenticating ||
+            m_activeAttemptId != attemptId) {
+            LeaveCriticalSection(&m_cs);
+            return false;
+        }
+        m_state = state;
+        m_statusText = status;
+        m_authDeadlineTick = 0;
+        m_autoSubmitEligible = false;
+        LeaveCriticalSection(&m_cs);
+        return true;
+    };
 
+    if (transport == facelogin::PipeTerminalTransport::Message) {
+        auto result = facelogin::ipc::ParseAuthMessage(message);
         if (result.status == facelogin::ipc::AuthResult::Status::Success) {
             FACELOGIN_INFO(L"OnPipeResponse: outcome=success attempt=%llu sidPresent=%d upnPresent=%d",
                            attemptId, result.sid.empty() ? 0 : 1,
@@ -1843,7 +1764,6 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
             LeaveCriticalSection(&m_cs);
             FACELOGIN_INFO(L"AutoSubmit: attempt=%llu state=Ready eligible=%d",
                            attemptId, static_cast<int>(IsAutoSubmitReady()));
-            SetEvent(m_hCredsReady);
             // Ready credentials are the only state that needs a provider
             // re-enumeration: it asks LogonUI to consume our default tile for
             // automatic submission.  All other state changes update the
@@ -1851,93 +1771,58 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
             PublishCurrentStatus();
             TriggerReEnumeration();
             return;
-        } else if (result.status == facelogin::ipc::AuthResult::Status::Timeout) {
-            FACELOGIN_INFO(L"OnPipeResponse: Auth timeout");
-            statusToNotify =
-                Text("credential.noFace", L"未识别到人脸，请重试或使用密码登录");
-            EnterCriticalSection(&m_cs);
-            m_statusText = statusToNotify;
-            m_noMatchFailed = false;
-            m_authDeadlineTick = 0;
-            m_autoSubmitEligible = false;
-            m_state = State::Failed;
-            LeaveCriticalSection(&m_cs);
-            notifyChanged = true;
-        } else if (result.status == facelogin::ipc::AuthResult::Status::PoseTimeout) {
-            FACELOGIN_INFO(L"OnPipeResponse: Auth timed out without a legal head pose");
-            statusToNotify = LocalizeKey(facelogin::ipc::L10N_POSE_TIMEOUT);
-            EnterCriticalSection(&m_cs);
-            m_statusText = statusToNotify;
-            m_noMatchFailed = false;
-            m_authDeadlineTick = 0;
-            m_autoSubmitEligible = false;
-            m_state = State::Failed;
-            LeaveCriticalSection(&m_cs);
-            notifyChanged = true;
-        } else if (result.status == facelogin::ipc::AuthResult::Status::NoMatch) {
-            // A face was seen but did not match any enrolled face. Show the
-            // specific wording (and keep it — the timeout case below shows the
-            // generic "未识别到人脸" instead).
-            FACELOGIN_INFO(L"OnPipeResponse: Face present but no match");
-            statusToNotify = Text("credential.noMatch", L"人脸匹配失败，请重试或使用密码登录");
-            EnterCriticalSection(&m_cs);
-            m_statusText = statusToNotify;
-            m_noMatchFailed = true;
-            m_authDeadlineTick = 0;
-            m_autoSubmitEligible = false;
-            m_state = State::Failed;
-            LeaveCriticalSection(&m_cs);
-            notifyChanged = true;
-        } else if (result.status == facelogin::ipc::AuthResult::Status::Error) {
-            FACELOGIN_WARN(L"OnPipeResponse: Auth error: %s", result.errorMessage.c_str());
-            // Passwordless account: show the notice in-place and stop — do NOT
-            // trigger re-enumeration or submit any credentials.
-            if (result.errorMessage == facelogin::ipc::MSG_PASSWORDLESS_NOTICE) {
-                statusToNotify = LocalizeKey(result.errorMessage);
-                EnterCriticalSection(&m_cs);
-                m_statusText = statusToNotify;
-                m_authDeadlineTick = 0;
-                m_autoSubmitEligible = false;
-                m_state = State::Blocked;
-                LeaveCriticalSection(&m_cs);
-                PublishCurrentStatus();
-                return;
-            }
-            // Surface the service's specific error (e.g. the anti-spoof
-            // rejection key) on the lock screen instead of the generic
-            // "service unavailable".
-            if (!result.errorMessage.empty()) {
-                statusToNotify = LocalizeKey(result.errorMessage);
-            }
-            EnterCriticalSection(&m_cs);
-            m_authDeadlineTick = 0;
-            m_autoSubmitEligible = false;
-            if (!statusToNotify.empty()) m_statusText = statusToNotify;
-            m_state = State::Error;
-            LeaveCriticalSection(&m_cs);
-            notifyChanged = true;
         }
+
+        State failureState = State::Error;
+        std::wstring failureText;
+        switch (result.status) {
+        case facelogin::ipc::AuthResult::Status::Timeout:
+            FACELOGIN_INFO(L"OnPipeResponse: Auth timeout");
+            failureState = State::Failed;
+            failureText =
+                Text("credential.noFace", L"未识别到人脸，请重试或使用密码登录");
+            break;
+        case facelogin::ipc::AuthResult::Status::PoseTimeout:
+            FACELOGIN_INFO(L"OnPipeResponse: Auth timed out without a legal head pose");
+            failureState = State::Failed;
+            failureText = LocalizeKey(facelogin::ipc::L10N_POSE_TIMEOUT);
+            break;
+        case facelogin::ipc::AuthResult::Status::NoMatch:
+            FACELOGIN_INFO(L"OnPipeResponse: Face present but no match");
+            failureState = State::Failed;
+            failureText = Text(
+                "credential.noMatch", L"人脸匹配失败，请重试或使用密码登录");
+            break;
+        case facelogin::ipc::AuthResult::Status::Error:
+            FACELOGIN_WARN(L"OnPipeResponse: Auth error: %s", result.errorMessage.c_str());
+            if (!result.errorMessage.empty()) {
+                failureText = LocalizeKey(result.errorMessage);
+            }
+            if (failureText.empty()) {
+                failureText = Text(
+                    "credential.serviceUnavailable", L"人脸登录服务不可用");
+            }
+            break;
+        case facelogin::ipc::AuthResult::Status::Success:
+            return;
+        }
+
+        if (!completeFailure(failureState, failureText)) return;
     } else {
         FACELOGIN_WARN(L"OnPipeResponse: Read failed — server disconnected?");
-        statusToNotify =
-            Text("credential.serviceUnavailable", L"人脸登录服务不可用");
-        EnterCriticalSection(&m_cs);
-        m_statusText = statusToNotify;
-        m_authDeadlineTick = 0;
-        m_autoSubmitEligible = false;
-        m_state = State::Error;
-        LeaveCriticalSection(&m_cs);
-        notifyChanged = true;
+        if (!completeFailure(
+                State::Error,
+                Text("credential.serviceUnavailable", L"人脸登录服务不可用"))) {
+            return;
+        }
     }
-    if (notifyChanged) PublishCurrentStatus();
-    if (notifyChanged) {
-        bool canWaitForRetry = false;
-        EnterCriticalSection(&m_cs);
-        canWaitForRetry = (m_state == State::Failed || m_state == State::Error) &&
-                          m_pCredentialEvents2 != nullptr && !m_deselected;
-        LeaveCriticalSection(&m_cs);
-        if (canWaitForRetry) StartInputDetectionThread();
-    }
+
+    PublishCurrentStatus();
+    bool canWaitForRetry = false;
+    EnterCriticalSection(&m_cs);
+    canWaitForRetry = m_pCredentialEvents2 != nullptr && !m_deselected;
+    LeaveCriticalSection(&m_cs);
+    if (canWaitForRetry) StartInputDetectionThread();
 }
 
 // ============================================================================
