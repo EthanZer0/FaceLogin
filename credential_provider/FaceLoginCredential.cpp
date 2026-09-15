@@ -22,6 +22,23 @@
 
 namespace {
 
+class ScopedSensitiveWstring {
+public:
+    explicit ScopedSensitiveWstring(std::wstring& value) noexcept : value_(value) {}
+    ~ScopedSensitiveWstring() {
+        if (!value_.empty()) {
+            SecureZeroMemory(value_.data(), value_.size() * sizeof(wchar_t));
+            value_.clear();
+        }
+    }
+
+    ScopedSensitiveWstring(const ScopedSensitiveWstring&) = delete;
+    ScopedSensitiveWstring& operator=(const ScopedSensitiveWstring&) = delete;
+
+private:
+    std::wstring& value_;
+};
+
 facelogin::StatusOverlayTone OverlayToneForStatusKey(
     const std::wstring& key) {
     if (key == facelogin::ipc::L10N_POSE_ACCEPTABLE ||
@@ -301,8 +318,8 @@ FaceLoginCredential::FaceLoginCredential() {
     const std::wstring installDir = ReadRegString(REGVAL_INSTALL_PATH, L"");
     const std::string uiLang = facelogin::LoadConfig(installDir).ui_language;
     const bool localeOk = m_locale.Load(installDir, uiLang);
-    FACELOGIN_INFO(L"[l10n] Credential: installDir='%ls' ui_language='%hs' locale='%hs' loadOk=%d",
-                   installDir.c_str(), uiLang.c_str(), m_locale.locale().c_str(), localeOk);
+    FACELOGIN_INFO(L"[l10n] Credential: ui_language='%hs' locale='%hs' loadOk=%d",
+                   uiLang.c_str(), m_locale.locale().c_str(), localeOk);
 
     FACELOGIN_DEBUG(L"FaceLoginCredential created");
 }
@@ -324,6 +341,7 @@ FaceLoginCredential::~FaceLoginCredential() {
     m_pCredentialEvents2 = nullptr;
     LeaveCriticalSection(&m_cs);
     if (events2) events2->Release();
+    UnadviseProvider();
 
     // SENSITIVE: Zero the password from memory
     ClearCredentials();
@@ -351,17 +369,22 @@ void FaceLoginCredential::Initialize(FaceLoginProvider* pProvider) {
 }
 
 void FaceLoginCredential::AdviseProvider(ICredentialProviderEvents* pEvents, UINT_PTR upAdviseContext) {
+    if (pEvents) pEvents->AddRef();
     EnterCriticalSection(&m_cs);
+    ICredentialProviderEvents* previous = m_pProviderEvents;
     m_pProviderEvents = pEvents;
     m_upAdviseContext = upAdviseContext;
     LeaveCriticalSection(&m_cs);
+    if (previous) previous->Release();
 }
 
 void FaceLoginCredential::UnadviseProvider() {
     EnterCriticalSection(&m_cs);
+    ICredentialProviderEvents* previous = m_pProviderEvents;
     m_pProviderEvents = nullptr;
     m_upAdviseContext = 0;
     LeaveCriticalSection(&m_cs);
+    if (previous) previous->Release();
 }
 
 bool FaceLoginCredential::IsAutoSubmitReady() const {
@@ -831,25 +854,13 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
                 : 0xFFFFFFFF;
             const bool generationClaimed = firstInstanceAttempt &&
                 facelogin::TryClaimAutomaticLoginEntry(generation, sessionId);
-            const bool resumeClaimed = firstInstanceAttempt &&
-                !generationClaimed && m_pProvider &&
-                m_pProvider->ConsumeAutomaticResume(generation);
             FACELOGIN_INFO(L"LoginEntry: generation=%llu sessionId=%lu "
-                           L"autoAttemptGeneration=%llu keyTrigger=0 autoClaim=%d autoResume=%d",
+                           L"autoAttemptGeneration=%llu keyTrigger=0 autoClaim=%d",
                            generation, sessionId,
                            facelogin::GetAutoAttemptGeneration(),
-                           static_cast<int>(generationClaimed),
-                           static_cast<int>(resumeClaimed));
+                           static_cast<int>(generationClaimed));
             if (generationClaimed) {
                 StartAuthAsync(AuthTrigger::LoginEntryAutomatic);
-            } else if (resumeClaimed) {
-                // Wait until LogonUI confirms that the replacement credential
-                // is actually selected. This prevents a transient rebuild from
-                // opening the camera while the password/PIN tile is active.
-                EnterCriticalSection(&m_cs);
-                m_pendingAutomaticResume = true;
-                LeaveCriticalSection(&m_cs);
-                FACELOGIN_INFO(L"AutoResume: continuation pending SetSelected");
             } else {
                 StartInputDetectionThread();
                 PublishCurrentStatus();
@@ -886,35 +897,22 @@ STDMETHODIMP FaceLoginCredential::UnAdvise() {
     UpdateStatusField(L"", false);
     m_statusOverlay.Destroy(L"unadvise");
 
-    bool armAutomaticResume = false;
-    ULONGLONG resumeGeneration = 0;
-
-    // Invalidate UI/input activation before cancelling or joining anything.
+    // Invalidate only this UI binding. Advise/UnAdvise govern callback
+    // validity, not the lifetime of an authentication session. In particular,
+    // LogonUI may rebuild the credential collection during cold-start while
+    // recognition is already running; cancelling here would unnecessarily
+    // tear down the pipe and restart the camera.
     // LogonUI can call UnAdvise while the input worker is between a physical
     // key edge and StartAuthAsync(); the worker must see this fence and drop
     // that stale input instead of creating another pipe request.
     EnterCriticalSection(&m_cs);
-    armAutomaticResume =
-        m_state == State::Authenticating &&
-        m_authTrigger == AuthTrigger::LoginEntryAutomatic &&
-        !m_deselected;
-    m_deselected = true;
-    m_pendingAutomaticResume = false;
     ++m_inputActivationId;
     m_inputDetectionEnabled = false;
     LeaveCriticalSection(&m_cs);
 
-    if (armAutomaticResume && m_pProvider && m_pProvider->IsLoginEntry()) {
-        resumeGeneration = m_pProvider->GetLoginEntryGeneration();
-        m_pProvider->ArmAutomaticResume(resumeGeneration);
-        FACELOGIN_INFO(L"AutoResume: interrupted automatic attempt generation=%llu",
-                       resumeGeneration);
-    }
-
-    CancelActiveAttempt(false);
-    // Stop the input-detection thread after invalidating its activation and
-    // cancelling the pipe. StartAuthAsync() may currently be connecting from
-    // that thread, and the cancellation event must wake it before we join it.
+    // The input detector belongs to the transient UI binding and must stop.
+    // The authentication connection/read workers belong to the credential
+    // object retained by the provider and deliberately continue running.
     StopInputDetectionThread();
 
     EnterCriticalSection(&m_cs);
@@ -937,32 +935,18 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
     bool loginEntry = m_pProvider ? m_pProvider->IsLoginEntry() : false;
     bool credUI = m_pProvider ? m_pProvider->IsCredUI() : false;
 
-    bool resumeAutomaticAttempt = false;
     EnterCriticalSection(&m_cs);
     m_deselected = false;
     m_statusOverlayAllowed = !credUI;
     m_statusOverlayUnavailable = false;
-    if (m_state == State::Waiting && m_pendingAutomaticResume) {
-        m_pendingAutomaticResume = false;
-        resumeAutomaticAttempt = true;
-    }
     LeaveCriticalSection(&m_cs);
 
     PublishCurrentStatus();
-
-    if (resumeAutomaticAttempt) {
-        FACELOGIN_INFO(L"AutoResume: selected replacement credential — resuming automatic authentication");
-        if (!StartAuthAsync(AuthTrigger::LoginEntryAutomatic)) {
-            StartInputDetectionThread();
-        }
-    }
 
     // Activation model (user-specified):
     //   - ONLY the claimed login entry triggers auth automatically, from
     //     Advise(). autoLogon remains FALSE until its credentials are Ready.
     //     The "开机启动需按键触发" setting governs that first trigger.
-    //   - A one-shot continuation interrupted by LogonUI re-enumeration starts
-    //     here only after the replacement face tile is selected.
     //   - Every other later activation — re-selecting after switching away, or
     //     retrying after a failure/timeout — must wait for a key press. This
     //     preserves the lock-screen behavior the user already relies on.
@@ -971,7 +955,7 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
     EnterCriticalSection(&m_cs);
     inputThreadRunning = m_inputThreadRunning;
     LeaveCriticalSection(&m_cs);
-    if (!resumeAutomaticAttempt && (state == State::Failed || state == State::Error)) {
+    if (state == State::Failed || state == State::Error) {
         // Failed (no match / timeout / submission rejected) / Error (anti-spoof,
         // blink liveness, service unavailable) + tile re-selected: start waiting
         // for a key press to retry. Never auto-restart — the failure text stays
@@ -979,7 +963,7 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
         FACELOGIN_INFO(L"SetSelected: %s state — restarting input detection (key press retries)",
                        state == State::Failed ? L"failed" : L"error");
         StartInputDetectionThread();
-    } else if (!resumeAutomaticAttempt && state == State::Waiting && !inputThreadRunning) {
+    } else if (state == State::Waiting && !inputThreadRunning) {
         // Waiting + (re)selected — either the initial selection after a cold
         // boot that did NOT auto-start (key-trigger on), or the user switched
         // back to the face tile after SetDeselected stopped everything.
@@ -1010,7 +994,6 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
 STDMETHODIMP FaceLoginCredential::SetDeselected() {
     EnterCriticalSection(&m_cs);
     m_deselected = true;
-    m_pendingAutomaticResume = false;
     m_statusOverlayAllowed = false;
     const State state = m_state;
     LeaveCriticalSection(&m_cs);
@@ -1018,9 +1001,6 @@ STDMETHODIMP FaceLoginCredential::SetDeselected() {
     UpdateStatusField(L"", false);
     m_statusOverlay.Destroy(L"tile_deselected");
 
-    if (m_pProvider) {
-        m_pProvider->CancelAutomaticResume(m_pProvider->GetLoginEntryGeneration());
-    }
     FACELOGIN_INFO(L"=== SetDeselected called (state=%d) ===", static_cast<int>(state));
 
     // The user moved to ANOTHER tile (e.g. the password tile) — stop
@@ -1663,16 +1643,19 @@ HRESULT FaceLoginCredential::PackCredentials(
     std::wstring username;
     std::wstring upn;
     std::wstring password;
+    ScopedSensitiveWstring passwordWipe(password);
+    bool sidPresent = false;
     EnterCriticalSection(&m_cs);
     domain = m_domain;
     username = m_username;
     upn = m_upn;
     password = m_password;
+    sidPresent = !m_sid.empty();
     LeaveCriticalSection(&m_cs);
 
-    FACELOGIN_INFO(L"Packing credentials for: %s\\%s (UPN=%s)",
-                  domain.c_str(), username.c_str(),
-                  upn.empty() ? L"<none>" : upn.c_str());
+    FACELOGIN_INFO(L"Serialization: identity sidPresent=%d upnPresent=%d accountKind=%s",
+                   sidPresent ? 1 : 0, upn.empty() ? 0 : 1,
+                   upn.empty() ? L"local_or_domain" : L"online");
 
     // Auth package: MSV1_0 for LOGON/UNLOCK.
     // (CredUI/PLAP never reach here — they're filtered in SetUsageScenario.)
@@ -1710,7 +1693,7 @@ HRESULT FaceLoginCredential::PackCredentials(
     } else {
         packedUser = domain + L"\\" + username;
     }
-    FACELOGIN_INFO(L"CredPack user: \"%s\"", packedUser.c_str());
+    FACELOGIN_INFO(L"Serialization: preparing authentication buffer");
 
     if (!CredPackAuthenticationBufferW(
             packFlags,
@@ -1840,10 +1823,9 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
         auto result = facelogin::ipc::ParseAuthMessage(message);
 
         if (result.status == facelogin::ipc::AuthResult::Status::Success) {
-            FACELOGIN_INFO(L"OnPipeResponse: Auth success: domain=%s, username=%s (SID=%s, UPN=%s)",
-                          result.domain.c_str(), result.username.c_str(),
-                          result.sid.c_str(), result.upn.c_str());
-            // NOTE: the password itself is never logged — only metadata.
+            FACELOGIN_INFO(L"OnPipeResponse: outcome=success attempt=%llu sidPresent=%d upnPresent=%d",
+                           attemptId, result.sid.empty() ? 0 : 1,
+                           result.upn.empty() ? 0 : 1);
             EnterCriticalSection(&m_cs);
             if (m_state != State::Authenticating || m_activeAttemptId != attemptId) {
                 LeaveCriticalSection(&m_cs);
@@ -1853,7 +1835,7 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
             m_upn = result.upn;
             m_domain = result.domain;
             m_username = result.username;
-            m_password = result.password;
+            m_password = std::move(result.password);
             m_authDeadlineTick = 0;
             m_autoSubmitEligible =
                 m_authTrigger == AuthTrigger::LoginEntryAutomatic;

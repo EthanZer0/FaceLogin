@@ -69,14 +69,6 @@ public:
     DWORD GetLoginEntrySessionId() const { return m_loginEntrySessionId; }
     bool IsCredUI() const { return m_cpus == CPUS_CREDUI || m_cpus == CPUS_PLAP; }
 
-    // LogonUI may rebuild the credential collection while an automatic login
-    // attempt is still running. Preserve one in-process continuation across
-    // that transient replacement; completed attempts and user tile switches
-    // never arm it.
-    void ArmAutomaticResume(ULONGLONG generation);
-    bool ConsumeAutomaticResume(ULONGLONG generation);
-    void CancelAutomaticResume(ULONGLONG generation);
-
 private:
     LONG m_refCount = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus = CPUS_LOGON;
@@ -94,11 +86,6 @@ private:
     bool m_isLoginEntry = false;
     ULONGLONG m_loginEntryGeneration = 0;
     DWORD m_loginEntrySessionId = 0xFFFFFFFF;
-
-    SRWLOCK m_autoResumeLock = SRWLOCK_INIT;
-    ULONGLONG m_autoResumeGeneration = 0;
-    bool m_autoResumeAvailable = false;
-    bool m_autoResumeConsumed = false;
 
     // Check if we're in a domain-joined environment
     bool IsDomainJoined() const;

@@ -172,7 +172,6 @@ private:
     AuthTrigger m_authTrigger = AuthTrigger::UnlockKeyPress;
     bool m_autoSubmitEligible = false;
     bool m_autoStartConsumed = false;
-    bool m_pendingAutomaticResume = false;
     bool m_statusOverlayAllowed = false;
     bool m_statusOverlayUnavailable = false;
     bool m_statusFieldFallbackVisible = false;

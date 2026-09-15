@@ -25,8 +25,8 @@ FaceLoginProvider::FaceLoginProvider() {
     const std::string uiLang = facelogin::LoadConfig(installDir).ui_language;
     facelogin::LocaleCatalog locale;
     const bool localeOk = locale.Load(installDir, uiLang);
-    FACELOGIN_INFO(L"[l10n] Provider: installDir='%ls' ui_language='%hs' locale='%hs' loadOk=%d",
-                   installDir.c_str(), uiLang.c_str(), locale.locale().c_str(), localeOk);
+    FACELOGIN_INFO(L"[l10n] Provider: ui_language='%hs' locale='%hs' loadOk=%d",
+                   uiLang.c_str(), locale.locale().c_str(), localeOk);
     m_fieldLabels[0] = locale.GetWide("credential.title", L"人脸登录");
     m_fieldLabels[1] = locale.GetWide("credential.field.status", L"状态");
     m_fieldLabels[2] = locale.GetWide("credential.field.submit", L"提交");
@@ -64,8 +64,13 @@ FaceLoginProvider::FaceLoginProvider() {
 FaceLoginProvider::~FaceLoginProvider() {
     FACELOGIN_INFO(L"FaceLoginProvider destroyed");
     if (m_pCredential) {
+        m_pCredential->UnadviseProvider();
         m_pCredential->Release();
         m_pCredential = nullptr;
+    }
+    if (m_pEvents) {
+        m_pEvents->Release();
+        m_pEvents = nullptr;
     }
 }
 
@@ -152,6 +157,10 @@ STDMETHODIMP_(ULONG) FaceLoginProvider::Release() {
 
 STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, DWORD dwFlags) {
+    const CREDENTIAL_PROVIDER_USAGE_SCENARIO previousCpus = m_cpus;
+    const bool previousLoginEntry = m_isLoginEntry;
+    const ULONGLONG previousGeneration = m_loginEntryGeneration;
+    const DWORD previousSessionId = m_loginEntrySessionId;
     FACELOGIN_INFO(L"SetUsageScenario: cpus=%d, flags=0x%08X", cpus, dwFlags);
     m_cpus = cpus;
 
@@ -159,6 +168,10 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     // recognition. Let the built-in password provider handle this.
     if (cpus == CPUS_CHANGE_PASSWORD) {
         FACELOGIN_INFO(L"SetUsageScenario: CPUS_CHANGE_PASSWORD — delegating to password provider");
+        if (m_pCredential) {
+            m_pCredential->Release();
+            m_pCredential = nullptr;
+        }
         return E_NOTIMPL;
     }
 
@@ -170,6 +183,10 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     // to the built-in password/pin providers.
     if (cpus == CPUS_CREDUI || cpus == CPUS_PLAP) {
         FACELOGIN_INFO(L"SetUsageScenario: CPUS_CREDUI/CPUS_PLAP — delegating to password provider");
+        if (m_pCredential) {
+            m_pCredential->Release();
+            m_pCredential = nullptr;
+        }
         return E_NOTIMPL;
     }
 
@@ -178,14 +195,6 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     // recognition. The provider deliberately does not inspect WTS user or
     // lock state: those values race LogonUI during startup.
     const ULONGLONG loginEntryGeneration = facelogin::GetLoginEntryGeneration();
-    AcquireSRWLockExclusive(&m_autoResumeLock);
-    if (m_autoResumeGeneration != loginEntryGeneration) {
-        m_autoResumeGeneration = loginEntryGeneration;
-        m_autoResumeAvailable = false;
-        m_autoResumeConsumed = false;
-    }
-    ReleaseSRWLockExclusive(&m_autoResumeLock);
-
     m_loginEntryGeneration = loginEntryGeneration;
     m_loginEntrySessionId = WTSGetActiveConsoleSessionId();
     const bool generationPending = facelogin::IsLoginEntryPending(
@@ -211,6 +220,10 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
         RegCloseKey(hKey);
         if (disabled) {
             FACELOGIN_INFO(L"Provider is disabled via registry");
+            if (m_pCredential) {
+                m_pCredential->Release();
+                m_pCredential = nullptr;
+            }
             return E_NOTIMPL;  // This will cause LogonUI to skip this provider
         }
     }
@@ -221,23 +234,38 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     FACELOGIN_INFO(L"User count from database: %lu", userCount);
     if (userCount == 0) {
         FACELOGIN_INFO(L"No enrolled users — hiding face login tile");
+        if (m_pCredential) {
+            m_pCredential->Release();
+            m_pCredential = nullptr;
+        }
         return E_NOTIMPL;
     }
 
-    // SetUsageScenario can be called again on the same provider when LogonUI
-    // rebuilds its credential collection. Release the provider's ownership of
-    // the old, already-unadvised credential before replacing it.
-    if (m_pCredential) {
-        m_pCredential->Release();
-        m_pCredential = nullptr;
-    }
+    // LogonUI may transiently tear down and rebuild its credential collection
+    // during initial sign-in.  Advise/UnAdvise only govern callback validity;
+    // they are not an authentication-session boundary.  Preserve the same
+    // credential object (and therefore its in-flight pipe/session) when the
+    // usage context is unchanged.  A genuinely new scenario/login entry gets
+    // a fresh object and deterministically tears down the old session.
+    const bool sameContext = m_pCredential &&
+        previousCpus == cpus &&
+        previousLoginEntry == m_isLoginEntry &&
+        previousGeneration == m_loginEntryGeneration &&
+        previousSessionId == m_loginEntrySessionId;
 
-    // Create our credential
-    m_pCredential = new FaceLoginCredential();
-    if (!m_pCredential) {
-        return E_OUTOFMEMORY;
+    if (!sameContext) {
+        if (m_pCredential) {
+            m_pCredential->Release();
+            m_pCredential = nullptr;
+        }
+        m_pCredential = new FaceLoginCredential();
+        if (!m_pCredential) {
+            return E_OUTOFMEMORY;
+        }
+        m_pCredential->Initialize(this);
+    } else {
+        FACELOGIN_INFO(L"CredentialLifecycle: preserving active credential across re-enumeration");
     }
-    m_pCredential->Initialize(this);
 
     return S_OK;
 }
@@ -363,49 +391,4 @@ bool FaceLoginProvider::IsDomainJoined() const {
     }
 
     return result;
-}
-
-void FaceLoginProvider::ArmAutomaticResume(ULONGLONG generation) {
-    bool armed = false;
-    AcquireSRWLockExclusive(&m_autoResumeLock);
-    if (generation != 0 && generation == m_autoResumeGeneration &&
-        !m_autoResumeConsumed) {
-        m_autoResumeAvailable = true;
-        armed = true;
-    }
-    ReleaseSRWLockExclusive(&m_autoResumeLock);
-
-    FACELOGIN_INFO(L"AutoResume: generation=%llu armed=%d",
-                   generation, static_cast<int>(armed));
-}
-
-bool FaceLoginProvider::ConsumeAutomaticResume(ULONGLONG generation) {
-    bool consumed = false;
-    AcquireSRWLockExclusive(&m_autoResumeLock);
-    if (generation != 0 && generation == m_autoResumeGeneration &&
-        m_autoResumeAvailable && !m_autoResumeConsumed) {
-        m_autoResumeAvailable = false;
-        m_autoResumeConsumed = true;
-        consumed = true;
-    }
-    ReleaseSRWLockExclusive(&m_autoResumeLock);
-
-    FACELOGIN_INFO(L"AutoResume: generation=%llu consumed=%d",
-                   generation, static_cast<int>(consumed));
-    return consumed;
-}
-
-void FaceLoginProvider::CancelAutomaticResume(ULONGLONG generation) {
-    bool cancelled = false;
-    AcquireSRWLockExclusive(&m_autoResumeLock);
-    if (generation != 0 && generation == m_autoResumeGeneration &&
-        m_autoResumeAvailable) {
-        m_autoResumeAvailable = false;
-        cancelled = true;
-    }
-    ReleaseSRWLockExclusive(&m_autoResumeLock);
-
-    if (cancelled) {
-        FACELOGIN_INFO(L"AutoResume: generation=%llu cancelled=1", generation);
-    }
 }
