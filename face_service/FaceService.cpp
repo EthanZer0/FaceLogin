@@ -1553,6 +1553,7 @@ bool FaceService::ProcessAuthRequest() {
                 // keep grabbing until a frame both detects a face AND matches
                 // (or ~2s elapses).
                 if (method != LivenessMethod::None) {
+                    sendStatusKey(ipc::L10N_FINAL_VERIFYING);
                     auto verifyStart = std::chrono::steady_clock::now();
                     bool verifyOk = false;
                     bool verifyAcceptedPoseSeen = false;
@@ -1594,7 +1595,10 @@ bool FaceService::ProcessAuthRequest() {
                         }
 
                         verifyAcceptedPoseSeen = true;
-                        sendStatusKey(poseStatusKey(verifyPose, verifyEvaluation));
+                        // Liveness has already passed in this phase. Keep the
+                        // UI on final verification instead of regressing to the
+                        // initial recognition status when the pose is legal.
+                        sendStatusKey(ipc::L10N_FINAL_VERIFYING);
 
                         std::optional<CredentialStore::MatchResult> verifyMatch;
                         auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(

@@ -94,6 +94,7 @@
   "service.loadingModels": "얼굴 인식 모델을 불러오는 중...",
   "service.livenessChecking": "실재 얼굴인지 확인하는 중...",
   "service.blinkPrompt": "눈을 깜박여 실제 사용자임을 확인해 주세요...",
+  "service.finalVerifying": "인증을 완료하는 중...",
   "service.noRegisteredUsers": "등록된 사용자가 없습니다.",
   "service.antiSpoofFailed": "사진 또는 화면으로 의심되는 얼굴을 감지했습니다. 실제 얼굴로 다시 시도하세요.",
   "service.blinkFailed": "눈 깜박임을 감지하지 못했습니다. 눈을 완전히 감았다가 뜨고 다시 시도하세요.",

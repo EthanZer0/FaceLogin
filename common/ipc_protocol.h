@@ -64,6 +64,7 @@ constexpr wchar_t L10N_CAMERA_UNAVAILABLE[] = L"service.cameraUnavailable";
 constexpr wchar_t L10N_NO_MATCH[] = L"credential.noMatch";
 constexpr wchar_t L10N_LIVENESS_CHECKING[] = L"service.livenessChecking";
 constexpr wchar_t L10N_BLINK_PROMPT[] = L"service.blinkPrompt";
+constexpr wchar_t L10N_FINAL_VERIFYING[] = L"service.finalVerifying";
 constexpr wchar_t L10N_ANTI_SPOOF_FAILED[] = L"service.antiSpoofFailed";
 constexpr wchar_t L10N_BLINK_FAILED[] = L"service.blinkFailed";
 constexpr wchar_t L10N_FINAL_MATCH_FAILED[] = L"service.finalMatchFailed";

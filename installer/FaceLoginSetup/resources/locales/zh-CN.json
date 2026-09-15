@@ -94,6 +94,7 @@
   "service.loadingModels": "正在加载模型...",
   "service.livenessChecking": "正在进行活体检测...",
   "service.blinkPrompt": "请眨眼以确认活体...",
+  "service.finalVerifying": "正在完成验证...",
   "service.noRegisteredUsers": "没有注册用户",
   "service.antiSpoofFailed": "检测到攻击，请使用真实人脸",
   "service.blinkFailed": "未检测到眨眼，请动作明确地闭眼再睁开重试",

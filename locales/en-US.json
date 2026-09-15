@@ -94,6 +94,7 @@
   "service.loadingModels": "Loading face models...",
   "service.livenessChecking": "Checking for a live face...",
   "service.blinkPrompt": "Blink to confirm you are present...",
+  "service.finalVerifying": "Completing verification...",
   "service.noRegisteredUsers": "No enrolled user was found",
   "service.antiSpoofFailed": "Spoofing detected; please use your real face",
   "service.blinkFailed": "No blink detected; close and reopen your eyes clearly to retry",
