@@ -79,7 +79,7 @@ PSECURITY_DESCRIPTOR PipeServer::CreateSecurityDescriptor() {
         ea[2].Trustee.TrusteeType = TRUSTEE_IS_USER;
         ea[2].Trustee.ptstrName = qualifiedName;
         entryCount = 3;
-        FACELOGIN_INFO(L"Pipe ACL: added current user %s", qualifiedName);
+        FACELOGIN_INFO(L"Pipe ACL: added current interactive user");
     }
 
     DWORD dwErr = SetEntriesInAclW(entryCount, ea, nullptr, &pACL);

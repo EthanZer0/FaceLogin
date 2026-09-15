@@ -34,7 +34,7 @@ bool OnnxLandmarkDetector::Initialize(const std::wstring& modelPath) {
         m_parts.clear();
         m_parts.reserve(kLandmarkCount);
 
-        FACELOGIN_INFO(L"OnnxLandmarkDetector initialized: %s", modelPath.c_str());
+        FACELOGIN_INFO(L"OnnxLandmarkDetector initialized");
         m_initialized = true;
         return true;
     } catch (const std::exception& e) {

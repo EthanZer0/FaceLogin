@@ -1,11 +1,13 @@
 #pragma once
 
+#include <windows.h>
 #include <dlib/matrix.h>
 #include <string>
 #include <vector>
 #include <optional>
 #include <cstdint>
 #include <cmath>
+#include <utility>
 
 namespace facelogin {
 
@@ -212,9 +214,49 @@ public:
         std::wstring sid;
         std::wstring password;  // Decrypted — zero after use!
         bool         passwordless = false;  // true: no password stored, must NOT submit LSA creds
-        float distance;
+        float distance = 0.0f;
         uint32_t     matchedFaceId = 0;     // V4: id of the closest face in the matched account
         size_t       accountFaceCount = 0;  // V4: total faces of the matched account
+
+        MatchResult() = default;
+        ~MatchResult() { WipePassword(); }
+        MatchResult(const MatchResult&) = delete;
+        MatchResult& operator=(const MatchResult&) = delete;
+
+        MatchResult(MatchResult&& other) noexcept
+            : username(std::move(other.username)),
+              upn(std::move(other.upn)),
+              sid(std::move(other.sid)),
+              password(std::move(other.password)),
+              passwordless(other.passwordless),
+              distance(other.distance),
+              matchedFaceId(other.matchedFaceId),
+              accountFaceCount(other.accountFaceCount) {
+            other.WipePassword();
+        }
+
+        MatchResult& operator=(MatchResult&& other) noexcept {
+            if (this != &other) {
+                WipePassword();
+                username = std::move(other.username);
+                upn = std::move(other.upn);
+                sid = std::move(other.sid);
+                password = std::move(other.password);
+                passwordless = other.passwordless;
+                distance = other.distance;
+                matchedFaceId = other.matchedFaceId;
+                accountFaceCount = other.accountFaceCount;
+                other.WipePassword();
+            }
+            return *this;
+        }
+
+        void WipePassword() noexcept {
+            if (!password.empty()) {
+                SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+                password.clear();
+            }
+        }
     };
     // probeDim is the number of floats in probeEmbedding (128 for dlib,
     // 512 for InsightFace ONNX). Only stored embeddings of the same

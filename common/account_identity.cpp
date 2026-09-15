@@ -108,8 +108,7 @@ std::wstring TranslateMicrosoftAccountSid(PSID pSid) {
     if (email.empty()) return L"";
     if (email.find(L'@') == std::wstring::npos) {
         // Not an email-shaped name — reject rather than mislabel.
-        FACELOGIN_WARN(L"TranslateMicrosoftAccountSid: translated name not an email: '%s'",
-                       email.c_str());
+        FACELOGIN_WARN(L"TranslateMicrosoftAccountSid: translated identity is not an email address");
         return L"";
     }
     return email;
@@ -137,8 +136,7 @@ std::wstring FindMsaShadowSidInToken() {
                 if (IsMicrosoftAccountSid(groups->Groups[i].Sid)) {
                     email = TranslateMicrosoftAccountSid(groups->Groups[i].Sid);
                     if (!email.empty()) {
-                        FACELOGIN_INFO(L"FindMsaShadowSidInToken: MSA shadow SID -> email '%s'",
-                                       email.c_str());
+                        FACELOGIN_INFO(L"FindMsaShadowSidInToken: resolved MSA shadow identity");
                     } else {
                         FACELOGIN_WARN(L"FindMsaShadowSidInToken: MSA shadow SID present but "
                                        L"could not translate to an email");
@@ -163,7 +161,7 @@ bool GetLinkedAccountUpn(std::wstring& outUpn) {
     std::wstring upn = QueryUserNamePrincipal();
     if (!upn.empty()) {
         outUpn = upn;
-        FACELOGIN_INFO(L"GetLinkedAccountUpn: direct UPN '%s'", outUpn.c_str());
+        FACELOGIN_INFO(L"GetLinkedAccountUpn: resolved direct UPN");
         return true;
     }
 
@@ -173,7 +171,7 @@ bool GetLinkedAccountUpn(std::wstring& outUpn) {
     std::wstring shadowEmail = FindMsaShadowSidInToken();
     if (!shadowEmail.empty()) {
         outUpn = shadowEmail;
-        FACELOGIN_INFO(L"GetLinkedAccountUpn: linked MSA email '%s'", outUpn.c_str());
+        FACELOGIN_INFO(L"GetLinkedAccountUpn: resolved linked MSA identity");
         return true;
     }
 

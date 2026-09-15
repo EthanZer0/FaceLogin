@@ -90,7 +90,7 @@ bool CredentialStore::EnsureDataDir() {
     if (CreateDirectoryW(dir.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS) {
         return true;
     }
-    FACELOGIN_ERROR(L"Failed to create data directory: %s", dir.c_str());
+    FACELOGIN_ERROR(L"Failed to create data directory");
     return false;
 }
 
@@ -107,7 +107,7 @@ bool CredentialStore::LoadDatabase() {
 
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {
-        FACELOGIN_INFO(L"No existing database at %s (this is normal on first run)", path.c_str());
+        FACELOGIN_INFO(L"No existing database (this is normal on first run)");
         m_loaded = true;   // empty database is a valid state
         return true;
     }
@@ -266,8 +266,7 @@ bool CredentialStore::LoadDatabase() {
             // V1 → V2 upgrade: look up SID/UPN for existing records
             if (version < 2 && rec.sid.empty()) {
                 LookupUserIdentity(rec.username, rec.sid, rec.upn);
-                FACELOGIN_INFO(L"Upgraded V1 record '%s' → SID=%s UPN=%s",
-                              rec.username.c_str(), rec.sid.c_str(), rec.upn.c_str());
+                FACELOGIN_INFO(L"Upgraded V1 account identity metadata");
             }
             m_users.push_back(std::move(rec));
         } else {
@@ -303,14 +302,14 @@ bool CredentialStore::SaveDatabase() {
     std::wstring dataDir = GetDataDir() + L"\\data";
     CreateDirectoryW(dataDir.c_str(), nullptr);
     if (GetLastError() != ERROR_ALREADY_EXISTS && GetLastError() != 0) {
-        FACELOGIN_ERROR(L"Failed to create data directory: %s", dataDir.c_str());
+        FACELOGIN_ERROR(L"Failed to create data directory");
         return false;
     }
 
     std::wstring path = GetDataDir() + L"\\data\\users.dat";
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file.is_open()) {
-        FACELOGIN_ERROR(L"Failed to open database for writing: %s", path.c_str());
+        FACELOGIN_ERROR(L"Failed to open database for writing");
         return false;
     }
 
@@ -428,8 +427,8 @@ bool CredentialStore::AddFace(const std::wstring& username,
         // Account exists → append a face, never touch stored password/faces.
         UserRecord& rec = m_users[idx];
         if (rec.faces.size() >= kMaxFacesPerUser) {
-            FACELOGIN_WARN(L"AddFace rejected: %s already has %zu faces (max %zu)",
-                           username.c_str(), rec.faces.size(), kMaxFacesPerUser);
+            FACELOGIN_WARN(L"AddFace rejected: account already has %zu faces (max %zu)",
+                           rec.faces.size(), kMaxFacesPerUser);
             return false;
         }
         uint32_t newId = 1;
@@ -446,9 +445,8 @@ bool CredentialStore::AddFace(const std::wstring& username,
         rec.upn = upn;
         rec.sid = sid;
         if (outFaceId) *outFaceId = newId;
-        FACELOGIN_INFO(L"Appended face #%u to %s (SID=%s, emb=%zu-D, total=%zu)",
-                       newId, username.c_str(), sid.c_str(), embedding.size(),
-                       rec.faces.size());
+        FACELOGIN_INFO(L"Appended face #%u (emb=%zu-D, total=%zu)",
+                       newId, embedding.size(), rec.faces.size());
         return true;
     }
 
@@ -465,8 +463,8 @@ bool CredentialStore::AddFace(const std::wstring& username,
     rec.faces.push_back(std::move(face));
     m_users.push_back(std::move(rec));
     if (outFaceId) *outFaceId = 1;
-    FACELOGIN_INFO(L"Created user %s with first face (SID=%s, emb=%zu-D)",
-                   username.c_str(), sid.c_str(), embedding.size());
+    FACELOGIN_INFO(L"Created account record with first face (emb=%zu-D)",
+                   embedding.size());
     return true;
 }
 
@@ -495,8 +493,7 @@ bool CredentialStore::UpdateAccountIdentity(size_t idx,
         rec.upn      = upn;
         rec.sid      = sid;
         rec.encryptedPassword = encryptedPassword;
-        FACELOGIN_INFO(L"Updated identity of '%s' → username=%s SID=%s UPN=%s (faces preserved)",
-                       username.c_str(), username.c_str(), sid.c_str(), upn.c_str());
+        FACELOGIN_INFO(L"Updated account identity metadata (faces preserved)");
         return true;
     }
 
@@ -513,8 +510,7 @@ bool CredentialStore::UpdateAccountIdentity(size_t idx,
         dst.sid      = sid;
         dst.encryptedPassword = encryptedPassword;
         m_users.erase(m_users.begin() + static_cast<ptrdiff_t>(idx));
-        FACELOGIN_INFO(L"Merged identity of empty stale record into existing account %s",
-                       username.c_str());
+        FACELOGIN_INFO(L"Merged identity of empty stale record into existing account");
         return true;
     }
     return false;
@@ -523,25 +519,25 @@ bool CredentialStore::UpdateAccountIdentity(size_t idx,
 bool CredentialStore::DeleteFace(const std::wstring& sid, uint32_t faceId) {
     size_t idx = FindUserIndex(sid, L"", L"");
     if (idx >= m_users.size()) {
-        FACELOGIN_WARN(L"DeleteFace: account not found (SID=%s)", sid.c_str());
+        FACELOGIN_WARN(L"DeleteFace: account not found");
         return false;
     }
     UserRecord& rec = m_users[idx];
     auto it = std::remove_if(rec.faces.begin(), rec.faces.end(),
         [faceId](const FaceRecord& f) { return f.id == faceId; });
     if (it == rec.faces.end()) {
-        FACELOGIN_WARN(L"DeleteFace: face #%u not found for %s", faceId, sid.c_str());
+        FACELOGIN_WARN(L"DeleteFace: face #%u not found", faceId);
         return false;
     }
     rec.faces.erase(it, rec.faces.end());
-    FACELOGIN_INFO(L"Deleted face #%u from %s (%zu remaining)",
-                   faceId, rec.username.c_str(), rec.faces.size());
+    FACELOGIN_INFO(L"Deleted face #%u (%zu remaining)",
+                   faceId, rec.faces.size());
     if (rec.faces.empty()) {
         // Last face removed → drop the account entirely so the login tile
         // (which reads the record count) doesn't show a tile that can never
         // match. Re-enrollment goes through the first-time flow again.
         m_users.erase(m_users.begin() + static_cast<ptrdiff_t>(idx));
-        FACELOGIN_INFO(L"Removed account %s (no faces remain)", rec.username.c_str());
+        FACELOGIN_INFO(L"Removed account record because no faces remain");
     }
     return true;
 }
@@ -553,12 +549,12 @@ bool CredentialStore::ClearAllFaces(const std::wstring& sid) {
 bool CredentialStore::DeleteUserBySid(const std::wstring& sid) {
     size_t idx = FindUserIndex(sid, L"", L"");
     if (idx >= m_users.size()) {
-        FACELOGIN_WARN(L"DeleteUserBySid: account not found (SID=%s)", sid.c_str());
+        FACELOGIN_WARN(L"DeleteUserBySid: account not found");
         return false;
     }
     std::wstring username = m_users[idx].username;
     m_users.erase(m_users.begin() + static_cast<ptrdiff_t>(idx));
-    FACELOGIN_INFO(L"Deleted user %s (SID=%s)", username.c_str(), sid.c_str());
+    FACELOGIN_INFO(L"Deleted account record by SID");
     return true;
 }
 
@@ -568,11 +564,11 @@ bool CredentialStore::DeleteUser(const std::wstring& username) {
 
     if (it != m_users.end()) {
         m_users.erase(it, m_users.end());
-        FACELOGIN_INFO(L"Deleted user: %s", username.c_str());
+        FACELOGIN_INFO(L"Deleted account record by username");
         return true;
     }
 
-    FACELOGIN_WARN(L"User not found for deletion: %s", username.c_str());
+    FACELOGIN_WARN(L"Account not found for deletion");
     return false;
 }
 
@@ -584,8 +580,7 @@ bool CredentialStore::RenameFace(const std::wstring& sid, uint32_t faceId,
     for (auto& f : rec.faces) {
         if (f.id == faceId) {
             f.label = NormalizeFaceLabel(label, faceId);
-            FACELOGIN_INFO(L"Renamed face #%u of %s → %s",
-                           faceId, rec.username.c_str(), f.label.c_str());
+            FACELOGIN_INFO(L"Renamed face #%u", faceId);
             return true;
         }
     }
@@ -722,8 +717,7 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
         }
         // Password-bearing record whose decrypt failed (e.g. DPAPI key
         // lost) — keep the old strict behavior: no match.
-        FACELOGIN_WARN(L"FindBestMatch: match found but password decrypt failed for %s",
-                       m_users[bestIdx].username.c_str());
+        FACELOGIN_WARN(L"FindBestMatch: matched account password decrypt failed");
     }
 
     return std::nullopt;

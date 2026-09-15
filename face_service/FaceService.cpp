@@ -201,8 +201,8 @@ void FaceService::SaveUnknownFace(const dlib::matrix<dlib::rgb_pixel>& frame,
         }
     }
 
-    FACELOGIN_WARN(L"Unknown face captured: %s (distance=%.3f)",
-                   jpgPath.c_str(), bestDistance);
+    FACELOGIN_WARN(L"Unknown face diagnostic frame captured (distance=%.3f)",
+                   bestDistance);
 }
 
 void WINAPI FaceService::ServiceMain(DWORD argc, LPWSTR* argv) {
@@ -379,8 +379,7 @@ bool FaceService::Initialize() {
     Logger::Instance().SetLogFile(logPath);
     Logger::Instance().SetMinLevel(LogLevel::Info);
     FACELOGIN_INFO(L"=== FaceLoginService initializing ===");
-    FACELOGIN_INFO(L"Data dir: %s", m_dataDir.c_str());
-    FACELOGIN_INFO(L"Models dir: %s", m_modelsDir.c_str());
+    FACELOGIN_INFO(L"Data and model directories initialized");
 
     m_store = std::make_unique<CredentialStore>();
     m_store->SetDataDir(m_dataDir);
@@ -703,7 +702,13 @@ void FaceService::Run() {
             continue;
         }
 
-        FACELOGIN_INFO(L"Received request: %s", request.c_str());
+        const wchar_t* requestKind = L"unknown";
+        if (request == ipc::MSG_AUTH_REQUEST) requestKind = L"auth";
+        else if (request == ipc::MSG_RELOAD_DB) requestKind = L"reload_db";
+        else if (request == ipc::MSG_CONFIG_RELOAD) requestKind = L"config_reload";
+        else if (request == ipc::MSG_GET_LOGS) requestKind = L"get_logs";
+        else if (request == ipc::MSG_PING) requestKind = L"ping";
+        FACELOGIN_INFO(L"PipeRequest: kind=%s chars=%zu", requestKind, request.size());
 
         if (request == ipc::MSG_RELOAD_DB) {
             m_store->ReloadDatabase();   // force re-read (LoadDatabase is cached)
@@ -818,7 +823,7 @@ void FaceService::Run() {
             m_pipeServer->Disconnect();
         }
         else {
-            FACELOGIN_WARN(L"Unknown request: %s", request.c_str());
+            FACELOGIN_WARN(L"Unknown pipe request (chars=%zu)", request.size());
             m_pipeServer->Disconnect();
         }
     }
@@ -1290,10 +1295,10 @@ bool FaceService::ProcessAuthRequest() {
         if (match) {
             consecutiveMatches++;
             consecutiveNoMatch = 0;   // a match resets the no-match counter
-            FACELOGIN_INFO(L"Face matched: %s (distance=%.4f, photometric=%d, "
+            FACELOGIN_INFO(L"Face matched: distance=%.4f, photometric=%d, "
                            L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
                            L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f) [%d/%d]",
-                          match->username.c_str(), match->distance,
+                           match->distance,
                           static_cast<int>(m_photometric.State()),
                           static_cast<int>(pose.quality), static_cast<int>(pose.range),
                           pose.yaw, pose.pitch,
@@ -1371,8 +1376,7 @@ bool FaceService::ProcessAuthRequest() {
             // LSA rejects at submission time and the user falls back to PIN.
             if (match->passwordless) {
                 match->password.clear();  // defensive; store already returns empty
-                FACELOGIN_INFO(L"Matched passwordless account '%s' — issuing blank-password unlock",
-                               match->username.c_str());
+                FACELOGIN_INFO(L"Matched passwordless account — issuing blank-password unlock");
             }
 
             std::wstring domain = L".";
@@ -1381,10 +1385,6 @@ bool FaceService::ProcessAuthRequest() {
             if (GetComputerNameW(computerName, &size)) {
                 domain = computerName;
             }
-
-            std::wstring msg = ipc::BuildAuthSuccessMessage(
-                match->sid, match->upn,
-                domain, match->username, match->password);
 
             // === Liveness check ===
             {
@@ -1617,7 +1617,7 @@ bool FaceService::ProcessAuthRequest() {
                                            verifyPose.faceAspect, verifyPose.cropWidth,
                                            verifyPose.cropHeight, verifyPose.cropAspect);
                             // Use the verified match for the credential (fresh, same identity).
-                            match = verifyMatch;
+                            match = std::move(verifyMatch);
                             break;
                         }
                         std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -1635,7 +1635,17 @@ bool FaceService::ProcessAuthRequest() {
                 }
             }
 
+            // Build the sensitive success payload only after every recognition
+            // and liveness gate has passed, keep it alive for the shortest
+            // possible interval, and wipe it immediately after the pipe write.
+            std::wstring msg = ipc::BuildAuthSuccessMessage(
+                match->sid, match->upn,
+                domain, match->username, match->password);
             const bool credentialsSent = SendAuthTerminal(msg);
+            if (!msg.empty()) {
+                SecureZeroMemory(msg.data(), msg.size() * sizeof(wchar_t));
+                msg.clear();
+            }
 
             SecureZeroMemory(match->password.data(),
                            match->password.size() * sizeof(wchar_t));
@@ -1646,8 +1656,8 @@ bool FaceService::ProcessAuthRequest() {
             }
 
             authSent = true;
-            FACELOGIN_INFO(L"Credentials sent for %s\\%s",
-                          domain.c_str(), match->username.c_str());
+            FACELOGIN_INFO(L"AuthTerminal: outcome=success delivered=1 accountKind=%s",
+                           match->upn.empty() ? L"local_or_domain" : L"online");
 
             // Stop the capture graph NOW (camera LED off) before the bounded
             // pipe drain below. The graph keeps streaming during auth; pausing
@@ -1753,7 +1763,7 @@ bool FaceService::Install(const std::wstring& exePath) {
     CloseServiceHandle(hService);
     CloseServiceHandle(hSCManager);
 
-    FACELOGIN_INFO(L"Service installed: %s", exePath.c_str());
+    FACELOGIN_INFO(L"Service installed successfully");
     return true;
 }
 

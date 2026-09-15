@@ -209,8 +209,8 @@ bool LocaleCatalog::Load(const std::wstring& installDir, const std::string& pref
     } else {
         m_jsonZh = ReadUtf8File(installDir + L"\\locales\\zh-CN.json");
     }
-    FACELOGIN_INFO(L"[l10n] LocaleCatalog::Load: locale='%hs' file='%ls' bytes=%zu ok=%d zhFallback=%zu",
-                   m_locale.c_str(), path.c_str(), m_json.size(), !m_json.empty(),
+    FACELOGIN_INFO(L"[l10n] LocaleCatalog::Load: locale='%hs' bytes=%zu ok=%d zhFallback=%zu",
+                   m_locale.c_str(), m_json.size(), !m_json.empty(),
                    m_jsonZh.size());
     return !m_json.empty();
 }

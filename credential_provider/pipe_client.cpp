@@ -289,9 +289,19 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
 
         size_t len = bytesRead / sizeof(wchar_t);
         while (len > 0 && buffer[len - 1] == L'\0') --len;
-        const std::wstring msg(buffer, len);
-        FACELOGIN_INFO(L"Background read received: %s (len=%zu)",
-                       msg.substr(0, 80).c_str(), len);
+        std::wstring msg(buffer, len);
+        SecureZeroMemory(buffer, sizeof(buffer));
+
+        const wchar_t* messageKind = L"unknown";
+        if (msg.starts_with(ipc::MSG_STATUS_PREFIX)) messageKind = L"status";
+        else if (msg.starts_with(ipc::MSG_AUTH_SUCCESS_PREFIX)) messageKind = L"auth_success";
+        else if (msg.starts_with(ipc::MSG_AUTH_ERROR_PREFIX)) messageKind = L"auth_error";
+        else if (msg == ipc::MSG_AUTH_TIMEOUT) messageKind = L"auth_timeout";
+        else if (msg == ipc::MSG_AUTH_POSE_TIMEOUT) messageKind = L"auth_pose_timeout";
+        else if (msg == ipc::MSG_AUTH_NO_FACE) messageKind = L"auth_no_face";
+        else if (msg == ipc::MSG_AUTH_NO_MATCH) messageKind = L"auth_no_match";
+        else if (msg == ipc::MSG_AUTH_CANCELLED) messageKind = L"auth_cancelled";
+        FACELOGIN_INFO(L"PipeRead: kind=%s chars=%zu", messageKind, len);
 
         if (msg.starts_with(ipc::MSG_STATUS_PREFIX)) {
             OnStatusCallback callback;
@@ -301,10 +311,16 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
             if (callback && !self->IsStopping()) {
                 callback(msg.substr(wcslen(ipc::MSG_STATUS_PREFIX)));
             }
+            SecureZeroMemory(msg.data(), msg.size() * sizeof(wchar_t));
+            msg.clear();
             continue;
         }
 
-        if (!IsTerminalMessage(msg)) continue;
+        if (!IsTerminalMessage(msg)) {
+            SecureZeroMemory(msg.data(), msg.size() * sizeof(wchar_t));
+            msg.clear();
+            continue;
+        }
 
         OnResponseCallback callback;
         bool deliver = false;
@@ -319,6 +335,10 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
 
         if (deliver && callback && !self->IsStopping()) {
             callback(true, msg);
+        }
+        if (!msg.empty()) {
+            SecureZeroMemory(msg.data(), msg.size() * sizeof(wchar_t));
+            msg.clear();
         }
         break;
     }

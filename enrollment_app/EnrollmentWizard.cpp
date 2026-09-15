@@ -1015,7 +1015,7 @@ void EnrollmentWizard::SaveAntiSpoofFailFrame(const dlib::matrix<dlib::rgb_pixel
         }
         f.write(reinterpret_cast<const char*>(row.data()), rowSize);
     }
-    FACELOGIN_INFO(L"Saved anti-spoof fail frame: %s (score=%.2f)", path.c_str(), score);
+    FACELOGIN_INFO(L"Saved anti-spoof diagnostic frame (score=%.2f)", score);
 }
 
 bool EnrollmentWizard::RequestFreshFrame(dlib::matrix<dlib::rgb_pixel>& outFrame,
@@ -1407,12 +1407,11 @@ bool EnrollmentWizard::ValidatePassword(const std::wstring& password) {
                              LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &hToken);
         if (ok && hToken) {
             CloseHandle(hToken);
-            FACELOGIN_INFO(L"ValidatePassword: MSA online validation OK (%s)", sessionUpn.c_str());
+            FACELOGIN_INFO(L"ValidatePassword: MSA online validation succeeded");
             return true;
         }
         DWORD err = GetLastError();
-        FACELOGIN_WARN(L"ValidatePassword: MSA interactive logon failed for %s (err=%lu)",
-                       sessionUpn.c_str(), err);
+        FACELOGIN_WARN(L"ValidatePassword: MSA interactive logon failed (err=%lu)", err);
         return false;
     }
 
@@ -1424,8 +1423,7 @@ bool EnrollmentWizard::ValidatePassword(const std::wstring& password) {
         CloseHandle(hToken);
         return true;
     }
-    FACELOGIN_WARN(L"ValidatePassword: local logon failed for %s (err=%lu)",
-                   m_username.c_str(), GetLastError());
+    FACELOGIN_WARN(L"ValidatePassword: local logon failed (err=%lu)", GetLastError());
     return false;
 }
 
@@ -1439,12 +1437,10 @@ bool EnrollmentWizard::SaveEnrollmentNoPassword(const std::wstring& label) {
     // save — the user must be the logged-on owner of this account.
     std::wstring tokenSid = GetCurrentProcessUserSid();
     if (tokenSid.empty() || tokenSid != m_sid) {
-        FACELOGIN_ERROR(L"Passwordless enrollment refused: token SID %s != enrolled SID %s",
-                        tokenSid.c_str(), m_sid.c_str());
+        FACELOGIN_ERROR(L"Passwordless enrollment refused: session identity mismatch");
         return false;
     }
-    FACELOGIN_INFO(L"Passwordless enrollment confirmed for %s (session identity match)",
-                   m_username.c_str());
+    FACELOGIN_INFO(L"Passwordless enrollment confirmed by session identity");
     return SaveEnrollmentImpl(L"", /*passwordless=*/true, label);
 }
 
@@ -1485,8 +1481,7 @@ int EnrollmentWizard::GetPasswordlessState() const {
     // 1) Session identity must be the account being enrolled.
     std::wstring tokenSid = GetCurrentProcessUserSid();
     if (tokenSid.empty() || tokenSid != m_sid) {
-        FACELOGIN_WARN(L"GetPasswordlessState: identity mismatch — tokenSid='%s' vs m_sid='%s' (upn='%s' acct='%s') → state=0",
-                       tokenSid.c_str(), m_sid.c_str(), m_upn.c_str(), m_accountType.c_str());
+        FACELOGIN_WARN(L"GetPasswordlessState: session identity mismatch → state=0");
         return 0;
     }
 
@@ -1495,8 +1490,7 @@ int EnrollmentWizard::GetPasswordlessState() const {
     // online password), so a SAM probe can falsely report "no password" for an
     // MSA account whose local cache was never written. Ask the user instead.
     if (m_accountType == "msa") {
-        FACELOGIN_INFO(L"GetPasswordlessState: MSA account (upn='%s') → state=2 (user confirm)",
-                       m_upn.c_str());
+        FACELOGIN_INFO(L"GetPasswordlessState: MSA account → state=2 (user confirm)");
         return 2;
     }
 
@@ -1601,8 +1595,7 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
         std::vector<uint8_t> protectedPassword;
         if (passwordless) {
             protectedPassword = { facelogin::kPasswordlessSentinelByte };
-            FACELOGIN_INFO(L"Storing passwordless enrollment (sentinel) for %s",
-                           m_username.c_str());
+            FACELOGIN_INFO(L"Storing passwordless enrollment sentinel");
         } else {
             protectedPassword = DpapiUtil::Protect(
                 reinterpret_cast<const uint8_t*>(password.c_str()),
@@ -1610,27 +1603,27 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
             if (protectedPassword.empty()) { FACELOGIN_ERROR(L"DPAPI encryption failed"); return false; }
         }
         if (!m_store.AddFace(m_username, m_upn, m_sid, protectedPassword, ef, label, &newFaceId)) {
-            FACELOGIN_ERROR(L"Failed to create enrollment for %s", m_username.c_str());
+            FACELOGIN_ERROR(L"Failed to create enrollment record");
             return false;
         }
     } else {
         // Append a face to an existing account. AddFace ignores the password
         // argument here, so the stored password/sentinel is preserved.
         if (m_store.GetUsers()[idx].faces.size() >= facelogin::kMaxFacesPerUser) {
-            FACELOGIN_ERROR(L"Cannot append: %s already has %zu faces (max %zu)",
-                            m_username.c_str(), m_store.GetUsers()[idx].faces.size(),
+            FACELOGIN_ERROR(L"Cannot append: account already has %zu faces (max %zu)",
+                            m_store.GetUsers()[idx].faces.size(),
                             facelogin::kMaxFacesPerUser);
             return false;
         }
         if (!m_store.AddFace(m_username, m_upn, m_sid, {}, ef, label, &newFaceId)) {
-            FACELOGIN_ERROR(L"Failed to append face for %s", m_username.c_str());
+            FACELOGIN_ERROR(L"Failed to append face to enrollment record");
             return false;
         }
     }
     if (!m_store.SaveDatabase()) { FACELOGIN_ERROR(L"Failed to save database"); return false; }
 
-    FACELOGIN_INFO(L"Enrollment saved for: %s (face #%u, emb=%zu-D%s)",
-                   m_username.c_str(), newFaceId, ef.size(),
+    FACELOGIN_INFO(L"Enrollment saved (face #%u, emb=%zu-D%s)",
+                   newFaceId, ef.size(),
                    passwordless ? L", passwordless" : L"");
 
     // Notify service to reload database
@@ -1686,8 +1679,7 @@ bool EnrollmentWizard::SaveEnrollmentAppend(const std::wstring& label) {
     // passwordless flow). No password is required for an append.
     std::wstring tokenSid = GetCurrentProcessUserSid();
     if (tokenSid.empty() || tokenSid != m_sid) {
-        FACELOGIN_ERROR(L"Face append refused: token SID %s != enrolled SID %s",
-                        tokenSid.c_str(), m_sid.c_str());
+        FACELOGIN_ERROR(L"Face append refused: session identity mismatch");
         return false;
     }
     return SaveEnrollmentImpl(L"", /*passwordless=*/false, label);
@@ -1748,8 +1740,8 @@ int EnrollmentWizard::GetAccountTypeChanged() {
     if (!sessionIsMsa) {
         // Current account is local. Flag if the record still carries an MSA email.
         if (rec.upn.find(L'@') != std::wstring::npos) {
-            FACELOGIN_INFO(L"GetAccountTypeChanged: stale MSA→local record for %s (UPN=%s, faces=%zu)",
-                           rec.username.c_str(), rec.upn.c_str(), rec.faces.size());
+            FACELOGIN_INFO(L"GetAccountTypeChanged: stale MSA→local record (faces=%zu)",
+                           rec.faces.size());
             return 1;
         }
         return 0;
@@ -1758,9 +1750,8 @@ int EnrollmentWizard::GetAccountTypeChanged() {
     // Current account is MSA. Flag if the record UPN is empty (local-era) or a
     // different email than the current session's MSA identity.
     if (rec.upn.empty() || rec.upn != curUpn) {
-        FACELOGIN_INFO(L"GetAccountTypeChanged: stale local→MSA record for %s (stored UPN=%s, current=%s, faces=%zu)",
-                       rec.username.c_str(), rec.upn.empty() ? L"<empty>" : rec.upn.c_str(),
-                       curUpn.c_str(), rec.faces.size());
+        FACELOGIN_INFO(L"GetAccountTypeChanged: stale local→MSA record (storedUpn=%d, faces=%zu)",
+                       rec.upn.empty() ? 0 : 1, rec.faces.size());
         return 2;
     }
     return 0;
@@ -1839,10 +1830,8 @@ bool EnrollmentWizard::RefreshAccountIdentity(const std::wstring& password) {
     }
 
     NotifyServiceReload();
-    FACELOGIN_INFO(L"RefreshAccountIdentity: refreshed identity of %s (UPN=%s%s, faces preserved)",
-                   m_username.c_str(),
-                   newUpn.empty() ? L"<cleared>" : newUpn.c_str(),
-                   state == 2 ? L", MSA" : L", local");
+    FACELOGIN_INFO(L"RefreshAccountIdentity: identity refreshed (upnPresent=%d accountKind=%s, faces preserved)",
+                   newUpn.empty() ? 0 : 1, state == 2 ? L"online" : L"local");
     return true;
 }
 
@@ -1897,8 +1886,8 @@ bool EnrollmentWizard::ClearStaleAccountUpn() {
     }
 
     NotifyServiceReload();
-    FACELOGIN_INFO(L"ClearStaleAccountUpn: cleared stale MSA UPN for %s (faces=%zu, password untouched)",
-                   rec.username.c_str(), rec.faces.size());
+    FACELOGIN_INFO(L"ClearStaleAccountUpn: cleared stale MSA UPN (faces=%zu, password untouched)",
+                   rec.faces.size());
     return true;
 }
 

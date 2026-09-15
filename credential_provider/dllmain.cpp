@@ -215,7 +215,7 @@ STDAPI DllRegisterServer() {
 
     FACELOGIN_INFO(L"Credential provider registered successfully");
     FACELOGIN_INFO(L"  CLSID: %s", CLSID_STRING);
-    FACELOGIN_INFO(L"  DLL: %s", dllPath);
+    FACELOGIN_INFO(L"  DLL registration path resolved");
 
     return S_OK;
 }

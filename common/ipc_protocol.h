@@ -94,6 +94,15 @@ struct AuthResult {
     std::wstring username;
     std::wstring password;    // NOTE: zero this out ASAP
     std::wstring errorMessage;
+
+    AuthResult() = default;
+    ~AuthResult();
+    AuthResult(const AuthResult&) = delete;
+    AuthResult& operator=(const AuthResult&) = delete;
+    AuthResult(AuthResult&& other) noexcept;
+    AuthResult& operator=(AuthResult&& other) noexcept;
+
+    void WipePassword() noexcept;
 };
 
 // Parse a received message into an AuthResult

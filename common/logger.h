@@ -42,6 +42,7 @@ private:
     Logger() = default;
     void WriteToFile(const std::wstring& line);
     void AppendToRingBuffer(const std::wstring& line);
+    static void PurgeUnsafeLegacyLog(const std::wstring& path);
 
     HANDLE m_hFile = INVALID_HANDLE_VALUE;
     std::wstring m_logPath;        // current log file path (for rotation)

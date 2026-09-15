@@ -249,7 +249,7 @@ bool SaveConfig(const std::wstring& dataDir, const AppConfig& cfg) {
     std::string content = ConfigToJson(cfg);
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file.is_open()) {
-        FACELOGIN_ERROR(L"Failed to write config.json: %s", path.c_str());
+        FACELOGIN_ERROR(L"Failed to write config.json");
         return false;
     }
     file.write(content.c_str(), content.size());

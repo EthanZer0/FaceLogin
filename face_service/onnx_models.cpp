@@ -52,7 +52,7 @@ bool OnnxRecognizer::Initialize(const std::wstring& modelPath) {
         m_input.assign(1 * 3 * 112 * 112, 0.0f);
         m_embedding.clear();
 
-        FACELOGIN_INFO(L"OnnxRecognizer initialized: %s", modelPath.c_str());
+        FACELOGIN_INFO(L"OnnxRecognizer initialized");
         FACELOGIN_INFO(L"  Input: %hs, Output: %hs", m_inputName.c_str(), m_outputName.c_str());
 
         m_initialized = true;
@@ -257,7 +257,7 @@ bool OnnxDetector::Initialize(const std::wstring& modelPath) {
         m_centerX.clear(); m_centerY.clear();
         m_results.clear();
 
-        FACELOGIN_INFO(L"OnnxDetector initialized: %s", modelPath.c_str());
+        FACELOGIN_INFO(L"OnnxDetector initialized");
         m_initialized = true;
         return true;
     } catch (const std::exception& e) {
@@ -548,7 +548,7 @@ bool OnnxHeadPose::Initialize(const std::wstring& modelPath) {
         m_faceChip.set_size(kInputSize, kInputSize);
         m_input.assign(3 * kInputSize * kInputSize, 0.0f);
         m_initialized = true;
-        FACELOGIN_INFO(L"MobileNetV2 head-pose model initialized: %s", modelPath.c_str());
+        FACELOGIN_INFO(L"MobileNetV2 head-pose model initialized");
         FACELOGIN_INFO(L"  Input: %hs [1,3,224,224], Output: %hs [1,3,3]",
                        m_inputName.c_str(), m_outputName.c_str());
         return true;
@@ -735,8 +735,8 @@ bool OnnxAntiSpoof::Initialize(const std::wstring& modelPath) {
         m_resized.set_size(m_inputSize, m_inputSize);
         m_input.assign(1 * 3 * m_inputSize * m_inputSize, 0.0f);
 
-        FACELOGIN_INFO(L"OnnxAntiSpoof initialized: %s (input=%d, outputs=%zu)",
-                      modelPath.c_str(), m_inputSize, numOutputs);
+        FACELOGIN_INFO(L"OnnxAntiSpoof initialized (input=%d, outputs=%zu)",
+                      m_inputSize, numOutputs);
         m_initialized = true;
         return true;
     } catch (const std::exception& e) {
