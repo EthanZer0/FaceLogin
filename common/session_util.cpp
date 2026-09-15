@@ -46,9 +46,13 @@ ULONGLONG BeginLoginEntryGenerationLocked(DWORD sessionId,
         ReadRegQword(REGVAL_LOGIN_ENTRY_SESSION, 0xFFFFFFFF));
     const ULONGLONG activeBootRecord =
         ReadRegQword(REGVAL_LOGIN_ENTRY_BOOT_RECORD, 0);
+    // A zero boot-record ID is not a wildcard: it identifies a login entry
+    // created from WTS_SESSION_LOGOFF.  A later, non-zero Kernel-Boot record
+    // is always a distinct cold-start entry and must receive a new generation.
+    // Otherwise an old AutoAttemptGeneration can collide with the reused
+    // generation and suppress automatic recognition after restart.
     const bool sameEntry = active && activeSession == sessionId &&
-        (bootRecordId == 0 || activeBootRecord == 0 ||
-         activeBootRecord == bootRecordId);
+        activeBootRecord == bootRecordId;
     if (sameEntry) return ReadRegQword(REGVAL_LOGIN_ENTRY_GENERATION, 0);
 
     const ULONGLONG generation = NextGeneration();

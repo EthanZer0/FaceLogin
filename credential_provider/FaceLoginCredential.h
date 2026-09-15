@@ -123,7 +123,9 @@ private:
     bool TransitionState(State expected, State next);
     bool IsAttemptActive(AuthAttemptId attemptId) const;
     void SetStatusText(const std::wstring& text);
+    std::wstring VisibleStatusText() const;
     void NotifyFieldString(const std::wstring& text);
+    void NotifyCurrentStatus();
     void NotifyCredentialsChanged();
     void ClearCredentials();
     void CancelActiveAttempt(bool resetToWaiting);
@@ -146,7 +148,10 @@ private:
 
     LONG m_refCount = 1;
     FaceLoginProvider* m_pProvider = nullptr;
-    ICredentialProviderCredentialEvents* m_pCredentialEvents = nullptr;
+    // FaceLogin supports Windows 8 and later only. Retain Events2
+    // exclusively: status updates stay inside the active tile instead of
+    // falling back to the legacy re-enumeration-prone event API.
+    ICredentialProviderCredentialEvents2* m_pCredentialEvents2 = nullptr;
     ICredentialProviderEvents* m_pProviderEvents = nullptr;
     UINT_PTR m_upAdviseContext = 0;
 
@@ -161,6 +166,7 @@ private:
     AuthTrigger m_authTrigger = AuthTrigger::UnlockKeyPress;
     bool m_autoSubmitEligible = false;
     bool m_autoStartConsumed = false;
+    bool m_pendingAutomaticResume = false;
 
     // Received credentials (zeroed after serialization)
     facelogin::SecureBuffer m_authData;

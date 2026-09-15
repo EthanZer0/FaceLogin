@@ -175,7 +175,16 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     // Only a service-owned Kernel-Boot/logoff generation authorizes automatic
     // recognition. The provider deliberately does not inspect WTS user or
     // lock state: those values race LogonUI during startup.
-    m_loginEntryGeneration = facelogin::GetLoginEntryGeneration();
+    const ULONGLONG loginEntryGeneration = facelogin::GetLoginEntryGeneration();
+    AcquireSRWLockExclusive(&m_autoResumeLock);
+    if (m_autoResumeGeneration != loginEntryGeneration) {
+        m_autoResumeGeneration = loginEntryGeneration;
+        m_autoResumeAvailable = false;
+        m_autoResumeConsumed = false;
+    }
+    ReleaseSRWLockExclusive(&m_autoResumeLock);
+
+    m_loginEntryGeneration = loginEntryGeneration;
     m_loginEntrySessionId = WTSGetActiveConsoleSessionId();
     const bool generationPending = facelogin::IsLoginEntryPending(
         m_loginEntryGeneration, m_loginEntrySessionId);
@@ -211,6 +220,14 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     if (userCount == 0) {
         FACELOGIN_INFO(L"No enrolled users — hiding face login tile");
         return E_NOTIMPL;
+    }
+
+    // SetUsageScenario can be called again on the same provider when LogonUI
+    // rebuilds its credential collection. Release the provider's ownership of
+    // the old, already-unadvised credential before replacing it.
+    if (m_pCredential) {
+        m_pCredential->Release();
+        m_pCredential = nullptr;
     }
 
     // Create our credential
@@ -344,4 +361,49 @@ bool FaceLoginProvider::IsDomainJoined() const {
     }
 
     return result;
+}
+
+void FaceLoginProvider::ArmAutomaticResume(ULONGLONG generation) {
+    bool armed = false;
+    AcquireSRWLockExclusive(&m_autoResumeLock);
+    if (generation != 0 && generation == m_autoResumeGeneration &&
+        !m_autoResumeConsumed) {
+        m_autoResumeAvailable = true;
+        armed = true;
+    }
+    ReleaseSRWLockExclusive(&m_autoResumeLock);
+
+    FACELOGIN_INFO(L"AutoResume: generation=%llu armed=%d",
+                   generation, static_cast<int>(armed));
+}
+
+bool FaceLoginProvider::ConsumeAutomaticResume(ULONGLONG generation) {
+    bool consumed = false;
+    AcquireSRWLockExclusive(&m_autoResumeLock);
+    if (generation != 0 && generation == m_autoResumeGeneration &&
+        m_autoResumeAvailable && !m_autoResumeConsumed) {
+        m_autoResumeAvailable = false;
+        m_autoResumeConsumed = true;
+        consumed = true;
+    }
+    ReleaseSRWLockExclusive(&m_autoResumeLock);
+
+    FACELOGIN_INFO(L"AutoResume: generation=%llu consumed=%d",
+                   generation, static_cast<int>(consumed));
+    return consumed;
+}
+
+void FaceLoginProvider::CancelAutomaticResume(ULONGLONG generation) {
+    bool cancelled = false;
+    AcquireSRWLockExclusive(&m_autoResumeLock);
+    if (generation != 0 && generation == m_autoResumeGeneration &&
+        m_autoResumeAvailable) {
+        m_autoResumeAvailable = false;
+        cancelled = true;
+    }
+    ReleaseSRWLockExclusive(&m_autoResumeLock);
+
+    if (cancelled) {
+        FACELOGIN_INFO(L"AutoResume: generation=%llu cancelled=1", generation);
+    }
 }
