@@ -287,11 +287,12 @@ button{font-family:inherit}
   background:#FFFFFF;position:relative;transition:border-color .15s,background .15s}
 .check:hover .cbx{border-color:var(--live)}
 .check input:focus-visible ~ .cbx{box-shadow:0 0 0 3px rgba(14,159,110,.18)}
-.cbx::after{content:'';position:absolute;left:3.25px;top:1px;width:5px;height:8px;
-  border:#fff;border-width:0 2.5px 2.5px 0;border-style:solid;transform:rotate(45deg) scale(0);opacity:0;
+.cbx::after{content:'';position:absolute;left:50%;top:50%;width:8px;height:7px;
+  background:#fff;clip-path:polygon(0 42%,18% 24%,40% 50%,82% 0,100% 18%,40% 100%);
+  transform:translate(-50%,-50%) scale(0);transform-origin:center;opacity:0;
   transition:transform .12s ease,opacity .12s}
 .check input:checked ~ .cbx{background-color:var(--live);border-color:var(--live)}
-.check input:checked ~ .cbx::after{transform:rotate(45deg) scale(1);opacity:1}
+.check input:checked ~ .cbx::after{transform:translate(-50%,-50%) scale(1);opacity:1}
 .check input:disabled ~ .cbx{opacity:.4}
 .range-wrap{width:100%}
 .rng{position:relative;width:100%;height:24px;cursor:pointer}
