@@ -14,8 +14,8 @@ class FaceLoginCredential;
 // one credential tile that supports auto-logon.
 //
 // Field layout (no tile image):
-//   0: CPFT_LARGE_TEXT — "Face Login"
-//   1: CPFT_SMALL_TEXT — Status message
+//   0: CPFT_LARGE_TEXT — Hidden title retained for layout compatibility
+//   1: CPFT_SMALL_TEXT — Hidden status fallback if the overlay is unavailable
 //   2: CPFT_SUBMIT_BUTTON — Submit (hidden, auto-logon)
 //   3: CPFT_COMMAND_LINK — "Switch to password login"
 // ============================================================================

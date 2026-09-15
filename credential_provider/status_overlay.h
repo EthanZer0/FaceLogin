@@ -35,7 +35,7 @@ public:
     bool Create(ICredentialProviderCredentialEvents2* events,
                 const StatusOverlayPresentation& presentation,
                 const wchar_t* reason);
-    void Update(const StatusOverlayPresentation& presentation);
+    bool Update(const StatusOverlayPresentation& presentation);
     void Hide();
     void Destroy(const wchar_t* reason);
     bool IsCreated() const;

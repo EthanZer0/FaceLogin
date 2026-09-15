@@ -501,33 +501,44 @@ FaceLoginCredential::CurrentStatusPresentation() const {
     return presentation;
 }
 
-void FaceLoginCredential::NotifyFieldString(const std::wstring& text) {
+void FaceLoginCredential::UpdateStatusField(
+    const std::wstring& text, bool visible) {
     ICredentialProviderCredentialEvents2* events2 = nullptr;
     EnterCriticalSection(&m_cs);
+    m_statusFieldFallbackVisible = visible;
     events2 = m_pCredentialEvents2;
     if (events2) events2->AddRef();
     LeaveCriticalSection(&m_cs);
 
     if (events2) {
-        // Do not hold m_cs while calling LogonUI.  Callbacks can re-enter the
-        // credential provider, and Events2 keeps a single status transition
-        // from being rendered as intermediate blank/stale text.
+        // Do not hold m_cs while calling LogonUI. Callbacks can re-enter the
+        // credential provider. The field is normally hidden; it is shown only
+        // when the secure-desktop overlay cannot be created or updated.
         const HRESULT beginHr = events2->BeginFieldUpdates();
         events2->SetFieldString(this, 1, text.c_str());
+        events2->SetFieldState(
+            this, 1,
+            visible ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN);
         if (SUCCEEDED(beginHr)) events2->EndFieldUpdates();
         events2->Release();
     }
-
-    const auto presentation = CurrentStatusPresentation();
-    if (presentation.visible) {
-        EnsureStatusOverlay(L"status_publish");
-    } else {
-        m_statusOverlay.Hide();
-    }
 }
 
-void FaceLoginCredential::NotifyCurrentStatus() {
-    NotifyFieldString(VisibleStatusText());
+void FaceLoginCredential::PublishCurrentStatus() {
+    const auto presentation = CurrentStatusPresentation();
+    if (!presentation.visible) {
+        m_statusOverlay.Hide();
+        UpdateStatusField(presentation.text, false);
+        FACELOGIN_INFO(L"StatusPresentation: mode=hidden");
+        return;
+    }
+
+    const bool overlayReady =
+        EnsureStatusOverlay(presentation, L"status_publish");
+    UpdateStatusField(presentation.text, !overlayReady);
+    FACELOGIN_INFO(L"StatusPresentation: mode=%s fieldVisible=%d",
+                   overlayReady ? L"overlay" : L"field_fallback",
+                   overlayReady ? 0 : 1);
 }
 
 void FaceLoginCredential::NotifyCredentialsChanged() {
@@ -545,29 +556,34 @@ void FaceLoginCredential::NotifyCredentialsChanged() {
     }
 }
 
-void FaceLoginCredential::EnsureStatusOverlay(const wchar_t* reason) {
-    if (m_pProvider && m_pProvider->IsCredUI()) return;
+bool FaceLoginCredential::EnsureStatusOverlay(
+    const facelogin::StatusOverlayPresentation& presentation,
+    const wchar_t* reason) {
+    if (m_pProvider && m_pProvider->IsCredUI()) return false;
 
-    const auto presentation = CurrentStatusPresentation();
     if (!presentation.visible) {
         m_statusOverlay.Hide();
-        return;
+        return false;
     }
     if (m_statusOverlay.IsCreated()) {
-        m_statusOverlay.Update(presentation);
-        return;
+        if (m_statusOverlay.Update(presentation)) return true;
+        m_statusOverlay.Destroy(L"update_failed");
+        EnterCriticalSection(&m_cs);
+        m_statusOverlayUnavailable = true;
+        LeaveCriticalSection(&m_cs);
+        return false;
     }
 
     ICredentialProviderCredentialEvents2* events2 = nullptr;
     EnterCriticalSection(&m_cs);
     if (m_statusOverlayUnavailable) {
         LeaveCriticalSection(&m_cs);
-        return;
+        return false;
     }
     events2 = m_pCredentialEvents2;
     if (events2) events2->AddRef();
     LeaveCriticalSection(&m_cs);
-    if (!events2) return;
+    if (!events2) return false;
 
     const bool created = m_statusOverlay.Create(events2, presentation, reason);
     events2->Release();
@@ -576,6 +592,7 @@ void FaceLoginCredential::EnsureStatusOverlay(const wchar_t* reason) {
         m_statusOverlayUnavailable = true;
         LeaveCriticalSection(&m_cs);
     }
+    return created;
 }
 
 void FaceLoginCredential::ClearCredentials() {
@@ -694,6 +711,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     auto* previousEvents2 = m_pCredentialEvents2;
     m_pCredentialEvents2 = advisedEvents2;
     m_statusOverlayUnavailable = false;
+    m_statusFieldFallbackVisible = false;
     LeaveCriticalSection(&m_cs);
     if (previousEvents2) previousEvents2->Release();
 
@@ -712,7 +730,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // state only.
     if (state == State::Ready) {
         FACELOGIN_INFO(L"Advise: credentials already ready, skipping auth restart");
-        NotifyCurrentStatus();
+        PublishCurrentStatus();
         return S_OK;
     }
 
@@ -727,7 +745,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // auto-restart authentication on re-enumeration (would loop forever).
     if (state == State::Blocked) {
         FACELOGIN_INFO(L"Advise: blocked (passwordless notice), skipping auth restart");
-        NotifyCurrentStatus();
+        PublishCurrentStatus();
         return S_OK;
     }
 
@@ -735,7 +753,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // the authoritative guard; pipe connectivity is deliberately irrelevant.
     if (state == State::Authenticating) {
         FACELOGIN_INFO(L"Advise: already authenticating, skipping auth restart");
-        NotifyCurrentStatus();
+        PublishCurrentStatus();
         return S_OK;
     }
 
@@ -757,7 +775,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         // clicks the tile — SetSelected handles that).
         FACELOGIN_INFO(L"Advise: %s state — restarting input detection (key press retries)",
                        state == State::Failed ? L"failed" : L"error");
-        NotifyCurrentStatus();
+        PublishCurrentStatus();
         if (!deselected) StartInputDetectionThread();
         return S_OK;
     }
@@ -795,7 +813,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         if (ReadRegDword(REGVAL_COLD_BOOT_KEY_TRIGGER, 0) != 0) {
             FACELOGIN_INFO(L"Advise: login entry + key-trigger enabled — waiting for key press");
             StartInputDetectionThread();
-            NotifyFieldString(Text("credential.pressAnyKey", L"按下任意按键以开始人脸识别"));
+            PublishCurrentStatus();
         } else {
             bool firstInstanceAttempt = false;
             EnterCriticalSection(&m_cs);
@@ -834,7 +852,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
                 FACELOGIN_INFO(L"AutoResume: continuation pending SetSelected");
             } else {
                 StartInputDetectionThread();
-                NotifyFieldString(Text("credential.pressAnyKey", L"按下任意按键以开始人脸识别"));
+                PublishCurrentStatus();
             }
         }
     } else {
@@ -850,7 +868,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
             EnterCriticalSection(&m_cs);
             m_state = State::Error;
             LeaveCriticalSection(&m_cs);
-            NotifyFieldString(status);
+            PublishCurrentStatus();
             return S_OK;
         }
     }
@@ -865,6 +883,7 @@ STDMETHODIMP FaceLoginCredential::UnAdvise() {
     EnterCriticalSection(&m_cs);
     m_statusOverlayAllowed = false;
     LeaveCriticalSection(&m_cs);
+    UpdateStatusField(L"", false);
     m_statusOverlay.Destroy(L"unadvise");
 
     bool armAutomaticResume = false;
@@ -929,7 +948,7 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
     }
     LeaveCriticalSection(&m_cs);
 
-    EnsureStatusOverlay(L"tile_selected");
+    PublishCurrentStatus();
 
     if (resumeAutomaticAttempt) {
         FACELOGIN_INFO(L"AutoResume: selected replacement credential — resuming automatic authentication");
@@ -969,7 +988,7 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
         StartInputDetectionThread();
         // Repush the Waiting text (clears any residual "识别中..." / stale text)
         SetStatusText(L"");
-        NotifyCurrentStatus();
+        PublishCurrentStatus();
     }
 
     if (GetState() == State::Ready) {
@@ -996,6 +1015,7 @@ STDMETHODIMP FaceLoginCredential::SetDeselected() {
     const State state = m_state;
     LeaveCriticalSection(&m_cs);
 
+    UpdateStatusField(L"", false);
     m_statusOverlay.Destroy(L"tile_deselected");
 
     if (m_pProvider) {
@@ -1038,12 +1058,16 @@ STDMETHODIMP FaceLoginCredential::GetFieldState(
     *pcpfis = CPFIS_NONE;
 
     switch (dwFieldID) {
-    case 0: // "Face Login" label
-        *pcpfs = CPFS_DISPLAY_IN_BOTH;
+    case 0: // Title is retained for field-layout compatibility but not shown.
+        *pcpfs = CPFS_HIDDEN;
         break;
 
-    case 1: // Status text — always visible so error states are seen
-        *pcpfs = CPFS_DISPLAY_IN_BOTH;
+    case 1: // Status text — hidden unless the central overlay is unavailable
+        EnterCriticalSection(&m_cs);
+        *pcpfs = m_statusFieldFallbackVisible
+            ? CPFS_DISPLAY_IN_SELECTED_TILE
+            : CPFS_HIDDEN;
+        LeaveCriticalSection(&m_cs);
         break;
 
     case 2: // Submit button — hidden in both scenarios
@@ -1146,6 +1170,7 @@ STDMETHODIMP FaceLoginCredential::CommandLinkClicked(DWORD dwFieldID) {
         EnterCriticalSection(&m_cs);
         m_statusOverlayAllowed = false;
         LeaveCriticalSection(&m_cs);
+        UpdateStatusField(L"", false);
         m_statusOverlay.Destroy(L"switch_to_password");
         SwitchToPasswordProvider();
         return S_OK;
@@ -1228,7 +1253,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
             m_state = State::Failed;
         }
         LeaveCriticalSection(&m_cs);
-        NotifyCurrentStatus();
+        PublishCurrentStatus();
         CancelActiveAttempt(false);
         bool canWaitForRetry = false;
         EnterCriticalSection(&m_cs);
@@ -1265,7 +1290,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
             // (pulled by LogonUI while Ready) is replaced before the LSA
             // rejection error page hides the shell — LogonUI does not re-pull
             // the string once the error page is up.
-            NotifyCurrentStatus();
+            PublishCurrentStatus();
             FACELOGIN_INFO(L"PackCred SUCCESS: cbSerialization=%lu, ulAuthPackage=%lu",
                           pcpcs->cbSerialization, pcpcs->ulAuthenticationPackage);
         } else {
@@ -1318,7 +1343,7 @@ STDMETHODIMP FaceLoginCredential::ReportResult(
         SecureZeroMemory(m_password.data(), m_password.size() * sizeof(wchar_t));
         m_password.clear();
         LeaveCriticalSection(&m_cs);
-        NotifyCurrentStatus();
+        PublishCurrentStatus();
         CancelActiveAttempt(false);
 
         bool canWaitForRetry = false;
@@ -1394,7 +1419,7 @@ bool FaceLoginCredential::StartAuthAsync(
     // Recognition starts asynchronously.  Push the state directly into the
     // active tile instead of re-enumerating every provider and risking a
     // focus change while the user is on the logon screen.
-    NotifyCurrentStatus();
+    PublishCurrentStatus();
 
     auto* ctx = new (std::nothrow) AuthConnectContext{this, client, attemptId};
     if (!ctx) {
@@ -1407,7 +1432,7 @@ bool FaceLoginCredential::StartAuthAsync(
         m_statusText = unavailable;
         m_pipeClient.reset();
         LeaveCriticalSection(&m_cs);
-        NotifyCurrentStatus();
+        PublishCurrentStatus();
         return false;
     }
 
@@ -1429,7 +1454,7 @@ bool FaceLoginCredential::StartAuthAsync(
         LeaveCriticalSection(&m_cs);
         FACELOGIN_ERROR(L"AuthAttempt: failed to start connection thread error=%lu",
                         GetLastError());
-        NotifyCurrentStatus();
+        PublishCurrentStatus();
         return false;
     }
 
@@ -1783,7 +1808,7 @@ void FaceLoginCredential::OnPipeStatus(AuthAttemptId attemptId,
     if (!IsAttemptActive(attemptId)) return;
     FACELOGIN_INFO(L"Status text updated: %s (attempt=%llu)",
                    localized.c_str(), attemptId);
-    NotifyCurrentStatus();
+    PublishCurrentStatus();
 }
 
 std::wstring FaceLoginCredential::LocalizeKey(const std::wstring& key) const {
@@ -1841,7 +1866,7 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
             // re-enumeration: it asks LogonUI to consume our default tile for
             // automatic submission.  All other state changes update the
             // existing tile in place through ICredentialProviderCredentialEvents2.
-            NotifyCurrentStatus();
+            PublishCurrentStatus();
             TriggerReEnumeration();
             return;
         } else if (result.status == facelogin::ipc::AuthResult::Status::Timeout) {
@@ -1893,7 +1918,7 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
                 m_autoSubmitEligible = false;
                 m_state = State::Blocked;
                 LeaveCriticalSection(&m_cs);
-                NotifyCurrentStatus();
+                PublishCurrentStatus();
                 return;
             }
             // Surface the service's specific error (e.g. the anti-spoof
@@ -1922,7 +1947,7 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
         LeaveCriticalSection(&m_cs);
         notifyChanged = true;
     }
-    if (notifyChanged) NotifyCurrentStatus();
+    if (notifyChanged) PublishCurrentStatus();
     if (notifyChanged) {
         bool canWaitForRetry = false;
         EnterCriticalSection(&m_cs);

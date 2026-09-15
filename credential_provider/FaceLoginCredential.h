@@ -126,10 +126,12 @@ private:
     void SetStatusText(const std::wstring& text);
     std::wstring VisibleStatusText() const;
     facelogin::StatusOverlayPresentation CurrentStatusPresentation() const;
-    void NotifyFieldString(const std::wstring& text);
-    void NotifyCurrentStatus();
+    void PublishCurrentStatus();
+    void UpdateStatusField(const std::wstring& text, bool visible);
     void NotifyCredentialsChanged();
-    void EnsureStatusOverlay(const wchar_t* reason);
+    bool EnsureStatusOverlay(
+        const facelogin::StatusOverlayPresentation& presentation,
+        const wchar_t* reason);
     void ClearCredentials();
     void CancelActiveAttempt(bool resetToWaiting);
     AuthTrigger InputAuthTrigger() const;
@@ -173,6 +175,7 @@ private:
     bool m_pendingAutomaticResume = false;
     bool m_statusOverlayAllowed = false;
     bool m_statusOverlayUnavailable = false;
+    bool m_statusFieldFallbackVisible = false;
     facelogin::StatusOverlayTone m_statusOverlayTone =
         facelogin::StatusOverlayTone::Neutral;
 

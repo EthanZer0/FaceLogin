@@ -34,13 +34,15 @@ FaceLoginProvider::FaceLoginProvider() {
 
     // Define fields for our credential tile (no tile image — text only)
 
-    // Field 0: Large text ("人脸登录")
+    // Field 0: Large text title retained for descriptor compatibility. The
+    // credential keeps it hidden because all FaceLogin text uses the overlay.
     m_rgFieldDescriptors[0].dwFieldID = 0;
     m_rgFieldDescriptors[0].cpft = CPFT_LARGE_TEXT;
     m_rgFieldDescriptors[0].pszLabel = m_fieldLabels[0].data();
     m_rgFieldDescriptors[0].guidFieldType = GUID_NULL;
 
-    // Field 1: Small text (status message)
+    // Field 1: Small text fallback. It stays hidden while the central status
+    // overlay is available and is shown only if overlay creation fails.
     m_rgFieldDescriptors[1].dwFieldID = 1;
     m_rgFieldDescriptors[1].cpft = CPFT_SMALL_TEXT;
     m_rgFieldDescriptors[1].pszLabel = m_fieldLabels[1].data();

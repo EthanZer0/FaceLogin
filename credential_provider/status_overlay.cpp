@@ -98,8 +98,7 @@ bool StatusOverlay::Create(
     EnterCriticalSection(&m_cs);
     if (m_hwnd && IsWindow(m_hwnd)) {
         LeaveCriticalSection(&m_cs);
-        Update(presentation);
-        return true;
+        return Update(presentation);
     }
     if (m_creating) {
         LeaveCriticalSection(&m_cs);
@@ -171,26 +170,27 @@ bool StatusOverlay::Create(
     return true;
 }
 
-void StatusOverlay::Update(const StatusOverlayPresentation& presentation) {
+bool StatusOverlay::Update(const StatusOverlayPresentation& presentation) {
     EnterCriticalSection(&m_cs);
     if (!m_hwnd || !IsWindow(m_hwnd)) {
         LeaveCriticalSection(&m_cs);
-        return;
+        return false;
     }
     if (!presentation.visible || presentation.text.empty()) {
         ShowWindow(m_hwnd, SW_HIDE);
         m_presentation = presentation;
         LeaveCriticalSection(&m_cs);
-        return;
+        return true;
     }
     if (m_presentation.visible &&
         m_presentation.tone == presentation.tone &&
         m_presentation.text == presentation.text) {
         LeaveCriticalSection(&m_cs);
-        return;
+        return true;
     }
-    RenderLocked(presentation);
+    const bool rendered = RenderLocked(presentation);
     LeaveCriticalSection(&m_cs);
+    return rendered;
 }
 
 void StatusOverlay::Hide() {
@@ -301,6 +301,7 @@ bool StatusOverlay::RenderLocked(
             GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
     }
     const int monitorWidth = monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left;
+    const int monitorHeight = monitorInfo.rcMonitor.bottom - monitorInfo.rcMonitor.top;
     const int availableWidth =
         (std::max)(ScaleDip(160, dpi), monitorWidth - ScaleDip(48, dpi));
     const int maxWidth = (std::min)(ScaleDip(720, dpi), availableWidth);
@@ -312,7 +313,7 @@ bool StatusOverlay::RenderLocked(
                    measuredWidth + ScaleDip(74, dpi)));
     const int height = ScaleDip(52, dpi);
     const int x = monitorInfo.rcMonitor.left + (monitorWidth - width) / 2;
-    const int y = monitorInfo.rcMonitor.top + ScaleDip(32, dpi);
+    const int y = monitorInfo.rcMonitor.top + (monitorHeight - height) / 2;
 
     BITMAPINFO bitmapInfo = {};
     bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
