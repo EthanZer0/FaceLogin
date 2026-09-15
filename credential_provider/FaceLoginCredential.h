@@ -9,6 +9,7 @@
 #include "../common/secure_buffer.h"
 #include "../common/locale_util.h"
 #include "pipe_client.h"
+#include "status_overlay.h"
 
 // Forward declarations
 class FaceLoginProvider;
@@ -124,9 +125,11 @@ private:
     bool IsAttemptActive(AuthAttemptId attemptId) const;
     void SetStatusText(const std::wstring& text);
     std::wstring VisibleStatusText() const;
+    facelogin::StatusOverlayPresentation CurrentStatusPresentation() const;
     void NotifyFieldString(const std::wstring& text);
     void NotifyCurrentStatus();
     void NotifyCredentialsChanged();
+    void EnsureStatusOverlay(const wchar_t* reason);
     void ClearCredentials();
     void CancelActiveAttempt(bool resetToWaiting);
     AuthTrigger InputAuthTrigger() const;
@@ -154,6 +157,7 @@ private:
     ICredentialProviderCredentialEvents2* m_pCredentialEvents2 = nullptr;
     ICredentialProviderEvents* m_pProviderEvents = nullptr;
     UINT_PTR m_upAdviseContext = 0;
+    facelogin::StatusOverlay m_statusOverlay;
 
     State m_state = State::Waiting;
     // Set when the service reported AUTH_NO_MATCH (face seen, no enrolled
@@ -167,6 +171,10 @@ private:
     bool m_autoSubmitEligible = false;
     bool m_autoStartConsumed = false;
     bool m_pendingAutomaticResume = false;
+    bool m_statusOverlayAllowed = false;
+    bool m_statusOverlayUnavailable = false;
+    facelogin::StatusOverlayTone m_statusOverlayTone =
+        facelogin::StatusOverlayTone::Neutral;
 
     // Received credentials (zeroed after serialization)
     facelogin::SecureBuffer m_authData;

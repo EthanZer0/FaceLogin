@@ -20,6 +20,26 @@
 #pragma comment(lib, "credui.lib")
 #pragma comment(lib, "ntdll.lib")
 
+namespace {
+
+facelogin::StatusOverlayTone OverlayToneForStatusKey(
+    const std::wstring& key) {
+    if (key == facelogin::ipc::L10N_POSE_ACCEPTABLE ||
+        key == facelogin::ipc::L10N_POSE_INVALID ||
+        key == facelogin::ipc::L10N_POSE_YAW_LEFT ||
+        key == facelogin::ipc::L10N_POSE_YAW_RIGHT ||
+        key == facelogin::ipc::L10N_POSE_PITCH_DOWN ||
+        key == facelogin::ipc::L10N_POSE_PITCH_UP ||
+        key == facelogin::ipc::L10N_POSE_ROLL_RIGHT ||
+        key == facelogin::ipc::L10N_POSE_ROLL_LEFT ||
+        key == facelogin::ipc::L10N_BLINK_PROMPT) {
+        return facelogin::StatusOverlayTone::Guidance;
+    }
+    return facelogin::StatusOverlayTone::Progress;
+}
+
+} // namespace
+
 // ============================================================================
 // Input-detection thread (unlock scenario)
 // ============================================================================
@@ -288,6 +308,10 @@ FaceLoginCredential::FaceLoginCredential() {
 }
 
 FaceLoginCredential::~FaceLoginCredential() {
+    EnterCriticalSection(&m_cs);
+    m_statusOverlayAllowed = false;
+    LeaveCriticalSection(&m_cs);
+    m_statusOverlay.Destroy(L"credential_destructor");
     CancelActiveAttempt(false);
     StopInputDetectionThread();
 
@@ -399,43 +423,82 @@ void FaceLoginCredential::SetStatusText(const std::wstring& text) {
 }
 
 std::wstring FaceLoginCredential::VisibleStatusText() const {
+    return CurrentStatusPresentation().text;
+}
+
+facelogin::StatusOverlayPresentation
+FaceLoginCredential::CurrentStatusPresentation() const {
+    facelogin::StatusOverlayPresentation presentation;
     State state;
     std::wstring statusText;
     bool noMatchFailed = false;
+    bool overlayAllowed = false;
+    bool deselected = false;
+    facelogin::StatusOverlayTone liveTone =
+        facelogin::StatusOverlayTone::Neutral;
     EnterCriticalSection(const_cast<CRITICAL_SECTION*>(&m_cs));
     state = m_state;
     statusText = m_statusText;
     noMatchFailed = m_noMatchFailed;
+    overlayAllowed = m_statusOverlayAllowed;
+    deselected = m_deselected;
+    liveTone = m_statusOverlayTone;
     LeaveCriticalSection(const_cast<CRITICAL_SECTION*>(&m_cs));
 
     switch (state) {
     case State::Waiting:
-        return Text("credential.pressAnyKey", L"按下任意按键以开始人脸识别");
+        presentation.text =
+            Text("credential.pressAnyKey", L"按下任意按键以开始人脸识别");
+        presentation.tone = facelogin::StatusOverlayTone::Neutral;
+        break;
     case State::Authenticating:
-        return statusText.empty()
+        presentation.text = statusText.empty()
             ? Text("credential.recognizing", L"识别中...")
             : statusText;
+        presentation.tone = liveTone;
+        break;
     case State::Ready:
-        return Text("credential.success", L"人脸识别成功，正在解锁...");
+        presentation.text =
+            Text("credential.success", L"人脸识别成功，正在解锁...");
+        presentation.tone = facelogin::StatusOverlayTone::Success;
+        break;
     case State::Submitted:
-        return Text("credential.submitted", L"正在验证登录，等待 Windows 确认...");
+        presentation.text =
+            Text("credential.submitted", L"正在验证登录，等待 Windows 确认...");
+        presentation.tone = facelogin::StatusOverlayTone::Neutral;
+        break;
     case State::Failed:
-        if (!statusText.empty()) return statusText;
-        if (noMatchFailed) {
-            return Text("credential.noMatch", L"人脸匹配失败，请重试或使用密码登录");
+        if (!statusText.empty()) {
+            presentation.text = statusText;
+        } else if (noMatchFailed) {
+            presentation.text =
+                Text("credential.noMatch", L"人脸匹配失败，请重试或使用密码登录");
+        } else {
+            presentation.text =
+                Text("credential.noFace", L"未识别到人脸，请重试或使用密码登录");
         }
-        return Text("credential.noFace", L"未识别到人脸，请重试或使用密码登录");
+        presentation.tone = facelogin::StatusOverlayTone::Error;
+        break;
     case State::Blocked:
-        return statusText.empty()
+        presentation.text = statusText.empty()
             ? Text("credential.passwordless", L"该账号无密码，人脸识别无法用于解锁，请使用 PIN/Hello 登录")
             : statusText;
+        presentation.tone = facelogin::StatusOverlayTone::Error;
+        break;
     case State::Error:
-        return statusText.empty()
+        presentation.text = statusText.empty()
             ? Text("credential.serviceUnavailable", L"人脸登录服务不可用")
             : statusText;
+        presentation.tone = facelogin::StatusOverlayTone::Error;
+        break;
     default:
-        return L"";
+        break;
     }
+
+    presentation.visible = overlayAllowed && !deselected &&
+                           state != State::Submitted &&
+                           !presentation.text.empty();
+    return presentation;
 }
 
 void FaceLoginCredential::NotifyFieldString(const std::wstring& text) {
@@ -453,6 +516,13 @@ void FaceLoginCredential::NotifyFieldString(const std::wstring& text) {
         events2->SetFieldString(this, 1, text.c_str());
         if (SUCCEEDED(beginHr)) events2->EndFieldUpdates();
         events2->Release();
+    }
+
+    const auto presentation = CurrentStatusPresentation();
+    if (presentation.visible) {
+        EnsureStatusOverlay(L"status_publish");
+    } else {
+        m_statusOverlay.Hide();
     }
 }
 
@@ -472,6 +542,39 @@ void FaceLoginCredential::NotifyCredentialsChanged() {
     if (events) {
         events->CredentialsChanged(context);
         events->Release();
+    }
+}
+
+void FaceLoginCredential::EnsureStatusOverlay(const wchar_t* reason) {
+    if (m_pProvider && m_pProvider->IsCredUI()) return;
+
+    const auto presentation = CurrentStatusPresentation();
+    if (!presentation.visible) {
+        m_statusOverlay.Hide();
+        return;
+    }
+    if (m_statusOverlay.IsCreated()) {
+        m_statusOverlay.Update(presentation);
+        return;
+    }
+
+    ICredentialProviderCredentialEvents2* events2 = nullptr;
+    EnterCriticalSection(&m_cs);
+    if (m_statusOverlayUnavailable) {
+        LeaveCriticalSection(&m_cs);
+        return;
+    }
+    events2 = m_pCredentialEvents2;
+    if (events2) events2->AddRef();
+    LeaveCriticalSection(&m_cs);
+    if (!events2) return;
+
+    const bool created = m_statusOverlay.Create(events2, presentation, reason);
+    events2->Release();
+    if (!created) {
+        EnterCriticalSection(&m_cs);
+        m_statusOverlayUnavailable = true;
+        LeaveCriticalSection(&m_cs);
     }
 }
 
@@ -590,6 +693,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     EnterCriticalSection(&m_cs);
     auto* previousEvents2 = m_pCredentialEvents2;
     m_pCredentialEvents2 = advisedEvents2;
+    m_statusOverlayUnavailable = false;
     LeaveCriticalSection(&m_cs);
     if (previousEvents2) previousEvents2->Release();
 
@@ -758,6 +862,11 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
 STDMETHODIMP FaceLoginCredential::UnAdvise() {
     FACELOGIN_INFO(L"=== UnAdvise ENTER ===");
 
+    EnterCriticalSection(&m_cs);
+    m_statusOverlayAllowed = false;
+    LeaveCriticalSection(&m_cs);
+    m_statusOverlay.Destroy(L"unadvise");
+
     bool armAutomaticResume = false;
     ULONGLONG resumeGeneration = 0;
 
@@ -812,11 +921,15 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
     bool resumeAutomaticAttempt = false;
     EnterCriticalSection(&m_cs);
     m_deselected = false;
+    m_statusOverlayAllowed = !credUI;
+    m_statusOverlayUnavailable = false;
     if (m_state == State::Waiting && m_pendingAutomaticResume) {
         m_pendingAutomaticResume = false;
         resumeAutomaticAttempt = true;
     }
     LeaveCriticalSection(&m_cs);
+
+    EnsureStatusOverlay(L"tile_selected");
 
     if (resumeAutomaticAttempt) {
         FACELOGIN_INFO(L"AutoResume: selected replacement credential — resuming automatic authentication");
@@ -879,8 +992,11 @@ STDMETHODIMP FaceLoginCredential::SetDeselected() {
     EnterCriticalSection(&m_cs);
     m_deselected = true;
     m_pendingAutomaticResume = false;
+    m_statusOverlayAllowed = false;
     const State state = m_state;
     LeaveCriticalSection(&m_cs);
+
+    m_statusOverlay.Destroy(L"tile_deselected");
 
     if (m_pProvider) {
         m_pProvider->CancelAutomaticResume(m_pProvider->GetLoginEntryGeneration());
@@ -1027,6 +1143,10 @@ STDMETHODIMP FaceLoginCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWOR
 STDMETHODIMP FaceLoginCredential::CommandLinkClicked(DWORD dwFieldID) {
     if (dwFieldID == 3) {
         FACELOGIN_INFO(L"User clicked 'Switch to password login'");
+        EnterCriticalSection(&m_cs);
+        m_statusOverlayAllowed = false;
+        LeaveCriticalSection(&m_cs);
+        m_statusOverlay.Destroy(L"switch_to_password");
         SwitchToPasswordProvider();
         return S_OK;
     }
@@ -1254,6 +1374,10 @@ bool FaceLoginCredential::StartAuthAsync(
     m_authTrigger = trigger;
     m_autoSubmitEligible = false;
     m_state = State::Authenticating;
+    if (trigger == AuthTrigger::LoginEntryAutomatic) {
+        m_statusOverlayAllowed = true;
+    }
+    m_statusOverlayTone = facelogin::StatusOverlayTone::Progress;
     m_noMatchFailed = false;
     m_authDeadlineTick = GetTickCount64() + 20000ULL;
     SecureZeroMemory(m_password.data(), m_password.size() * sizeof(wchar_t));
@@ -1648,7 +1772,14 @@ void FaceLoginCredential::OnPipeStatus(AuthAttemptId attemptId,
         FACELOGIN_WARN(L"Status text ignored: no localization for key '%s'", message.c_str());
         return;
     }
-    SetStatusText(localized);
+    EnterCriticalSection(&m_cs);
+    if (m_state != State::Authenticating || m_activeAttemptId != attemptId) {
+        LeaveCriticalSection(&m_cs);
+        return;
+    }
+    m_statusText = localized;
+    m_statusOverlayTone = OverlayToneForStatusKey(message);
+    LeaveCriticalSection(&m_cs);
     if (!IsAttemptActive(attemptId)) return;
     FACELOGIN_INFO(L"Status text updated: %s (attempt=%llu)",
                    localized.c_str(), attemptId);
