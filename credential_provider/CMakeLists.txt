@@ -2,6 +2,7 @@ add_library(FaceLoginCredentialProvider SHARED
     dllmain.cpp
     FaceLoginProvider.cpp
     FaceLoginCredential.cpp
+    status_overlay.cpp
     pipe_client.cpp
     resource.rc
     credential_provider.def
