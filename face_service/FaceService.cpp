@@ -328,7 +328,17 @@ DWORD WINAPI FaceService::HandlerEx(DWORD control, DWORD eventType,
                     FACELOGIN_INFO(L"Console session locked: session=%lu (generation retained)",
                                    evt->dwSessionId);
                 } else if (eventType == WTS_SESSION_UNLOCK) {
-                    FACELOGIN_INFO(L"Console session unlocked: session=%lu",
+                    // WTS_SESSION_DESKTOP_READY is not consistently delivered
+                    // after a successful interactive logon.  UNLOCK is the
+                    // reliable evidence that this session has reached its
+                    // desktop, so finish any active cold-start/logoff entry
+                    // here as well. CompleteLoginEntryGeneration() is
+                    // idempotent and therefore a no-op for ordinary Win+L
+                    // unlocks, whose generation was already completed.
+                    pService->QueueServiceEvent(
+                        ServiceEventType::DesktopReady, evt->dwSessionId);
+                    FACELOGIN_INFO(L"Console session unlocked: session=%lu "
+                                   L"(completing active login entry)",
                                    evt->dwSessionId);
                 }
             }

@@ -199,14 +199,30 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     m_loginEntrySessionId = WTSGetActiveConsoleSessionId();
     const bool generationPending = facelogin::IsLoginEntryPending(
         m_loginEntryGeneration, m_loginEntrySessionId);
-    m_isLoginEntry = cpus == CPUS_LOGON && generationPending;
+    const ULONGLONG autoAttemptGeneration =
+        facelogin::GetAutoAttemptGeneration();
+    const bool generationUnclaimed = generationPending &&
+        autoAttemptGeneration != m_loginEntryGeneration;
+    const bool sameActiveEntry = m_pCredential &&
+        previousCpus == cpus &&
+        previousGeneration == m_loginEntryGeneration &&
+        previousSessionId == m_loginEntrySessionId;
+
+    // A generation is eligible for automatic sign-in exactly once. If an old
+    // active marker survives into a later LogonUI instance, it must not turn a
+    // normal Win+L unlock into an automatic default-tile flow. Preserve an
+    // already-running instance's classification across LogonUI's own
+    // re-enumeration so its in-flight cold-start attempt remains intact.
+    m_isLoginEntry = cpus == CPUS_LOGON && generationPending &&
+        (generationUnclaimed || (sameActiveEntry && previousLoginEntry));
 
     FACELOGIN_INFO(L"LoginEntry: cpus=%d sessionId=%lu generation=%llu "
-                   L"autoGeneration=%llu pending=%d decision=%s",
+                   L"autoGeneration=%llu pending=%d unclaimed=%d decision=%s",
                    cpus, m_loginEntrySessionId,
                    m_loginEntryGeneration,
-                   facelogin::GetAutoAttemptGeneration(),
+                   autoAttemptGeneration,
                    static_cast<int>(generationPending),
+                   static_cast<int>(generationUnclaimed),
                    m_isLoginEntry ? L"automatic-entry" : L"key-triggered-unlock");
 
     // Check if the Disabled registry flag is set
@@ -289,6 +305,18 @@ STDMETHODIMP FaceLoginProvider::Advise(
         m_pEvents->AddRef();
     }
 
+    FACELOGIN_INFO(
+        L"ProviderBinding: action=advise cpus=%d loginEntry=%d "
+        L"generation=%llu sessionId=%lu providerEventsAttached=%d "
+        L"adviseContext=%p credential=%p",
+        static_cast<int>(m_cpus),
+        static_cast<int>(m_isLoginEntry),
+        m_loginEntryGeneration,
+        m_loginEntrySessionId,
+        static_cast<int>(m_pEvents != nullptr),
+        reinterpret_cast<void*>(upAdviseContext),
+        m_pCredential);
+
     if (m_pCredential) {
         m_pCredential->AdviseProvider(m_pEvents, upAdviseContext);
     }
@@ -298,6 +326,18 @@ STDMETHODIMP FaceLoginProvider::Advise(
 
 STDMETHODIMP FaceLoginProvider::UnAdvise() {
     FACELOGIN_INFO(L"UnAdvise called");
+
+    FACELOGIN_INFO(
+        L"ProviderBinding: action=unadvise cpus=%d loginEntry=%d "
+        L"generation=%llu sessionId=%lu providerEventsAttached=%d "
+        L"adviseContext=%p credential=%p",
+        static_cast<int>(m_cpus),
+        static_cast<int>(m_isLoginEntry),
+        m_loginEntryGeneration,
+        m_loginEntrySessionId,
+        static_cast<int>(m_pEvents != nullptr),
+        reinterpret_cast<void*>(m_upAdviseContext),
+        m_pCredential);
 
     if (m_pEvents) {
         m_pEvents->Release();
@@ -349,14 +389,19 @@ STDMETHODIMP FaceLoginProvider::GetCredentialCount(
     *pdwCount = 1;
     *pdwDefault = 0;
 
-    // Do not put LogonUI into its auto-submit spinner while recognition is
-    // still running. Automatic submission is armed only after credentials are
-    // ready; the credential then requests re-enumeration.
-    const bool autoSubmitReady = m_pCredential && m_pCredential->IsAutoSubmitReady();
-    *pbAutoLogonWithDefault = autoSubmitReady ? TRUE : FALSE;
-    FACELOGIN_INFO(L"AutoSubmit: GetCredentialCount autoLogon=%d loginEntry=%d ready=%d",
-                   *pbAutoLogonWithDefault, static_cast<int>(m_isLoginEntry),
-                   static_cast<int>(autoSubmitReady));
+    // A service-created login-entry generation is the cold-start / post-logoff
+    // automatic path.  Keep LogonUI in its default auto-logon flow from the
+    // first enumeration so Advise() and GetSerialization() form one stable
+    // session, as they did in the proven 1.9.x flow.  Ordinary lock/unlock
+    // remains explicitly selected and key-triggered.
+    *pbAutoLogonWithDefault = m_isLoginEntry ? TRUE : FALSE;
+    FACELOGIN_INFO(L"LoginEntry: GetCredentialCount default=%lu autoLogon=%d "
+                   L"loginEntry=%d generation=%llu sessionId=%lu",
+                   *pdwDefault,
+                   *pbAutoLogonWithDefault,
+                   static_cast<int>(m_isLoginEntry),
+                   m_loginEntryGeneration,
+                   m_loginEntrySessionId);
 
     return S_OK;
 }

@@ -55,7 +55,6 @@ public:
     // Provider-level advise/unadvise (called by FaceLoginProvider::Advise/UnAdvise)
     void AdviseProvider(ICredentialProviderEvents* pEvents, UINT_PTR upAdviseContext);
     void UnadviseProvider();
-    bool IsAutoSubmitReady() const;
 
     // IUnknown
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override;
@@ -99,6 +98,11 @@ private:
         UnlockKeyPress
     };
 
+    enum class CredentialsChangedSource {
+        AuthSuccess,
+        SwitchToPassword
+    };
+
     // State enum
     enum class State {
         Waiting,
@@ -127,7 +131,7 @@ private:
     std::wstring LocalizeKey(const std::wstring& key) const;
 
     // Trigger re-enumeration of credentials (via CredentialsChanged)
-    void TriggerReEnumeration();
+    void TriggerReEnumeration(CredentialsChangedSource source);
 
     State GetState() const;
     bool TransitionState(State expected, State next);
@@ -137,7 +141,7 @@ private:
     facelogin::StatusOverlayPresentation CurrentStatusPresentation() const;
     void PublishCurrentStatus();
     void UpdateStatusField(const std::wstring& text, bool visible);
-    void NotifyCredentialsChanged();
+    void NotifyCredentialsChanged(CredentialsChangedSource source);
     bool EnsureStatusOverlay(
         const facelogin::StatusOverlayPresentation& presentation,
         const wchar_t* reason);
@@ -177,7 +181,6 @@ private:
     AuthAttemptId m_nextAttemptId = 0;
     AuthAttemptId m_activeAttemptId = 0;
     AuthTrigger m_authTrigger = AuthTrigger::UnlockKeyPress;
-    bool m_autoSubmitEligible = false;
     bool m_autoStartConsumed = false;
     bool m_statusOverlayAllowed = false;
     bool m_statusOverlayUnavailable = false;

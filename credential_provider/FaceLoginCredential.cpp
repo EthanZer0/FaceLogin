@@ -368,15 +368,6 @@ void FaceLoginCredential::UnadviseProvider() {
     if (previous) previous->Release();
 }
 
-bool FaceLoginCredential::IsAutoSubmitReady() const {
-    EnterCriticalSection(const_cast<CRITICAL_SECTION*>(&m_cs));
-    const bool ready = m_state == State::Ready &&
-                       m_authTrigger == AuthTrigger::LoginEntryAutomatic &&
-                       m_autoSubmitEligible;
-    LeaveCriticalSection(const_cast<CRITICAL_SECTION*>(&m_cs));
-    return ready;
-}
-
 FaceLoginCredential::AuthTrigger FaceLoginCredential::InputAuthTrigger() const {
     return m_context.loginEntry
         ? AuthTrigger::LoginEntryKeyPress
@@ -534,18 +525,53 @@ void FaceLoginCredential::PublishCurrentStatus() {
                    overlayReady ? 0 : 1);
 }
 
-void FaceLoginCredential::NotifyCredentialsChanged() {
+void FaceLoginCredential::NotifyCredentialsChanged(
+    CredentialsChangedSource source) {
     ICredentialProviderEvents* events = nullptr;
     UINT_PTR context = 0;
+    State state = State::Waiting;
+    AuthAttemptId attemptId = 0;
+    bool eventsAttached = false;
+    bool authThreadRunning = false;
+    bool pipeAttached = false;
     EnterCriticalSection(&m_cs);
     events = m_pProviderEvents;
     context = m_upAdviseContext;
-    if (events) events->AddRef();
+    state = m_state;
+    attemptId = m_activeAttemptId;
+    eventsAttached = events != nullptr;
+    authThreadRunning = m_authThreadRunning;
+    pipeAttached = m_pipeClient != nullptr;
+    if (eventsAttached) events->AddRef();
     LeaveCriticalSection(&m_cs);
 
+    const wchar_t* sourceName =
+        source == CredentialsChangedSource::AuthSuccess
+            ? L"auth-success"
+            : L"switch-password";
+    FACELOGIN_INFO(
+        L"CredentialsChanged: source=%s state=%d attempt=%llu "
+        L"loginEntry=%d generation=%llu sessionId=%lu eventsAttached=%d "
+        L"authThreadRunning=%d pipeAttached=%d context=%p",
+        sourceName,
+        static_cast<int>(state),
+        attemptId,
+        static_cast<int>(m_context.loginEntry),
+        m_context.loginEntryGeneration,
+        m_context.loginEntrySessionId,
+        static_cast<int>(eventsAttached),
+        static_cast<int>(authThreadRunning),
+        static_cast<int>(pipeAttached),
+        reinterpret_cast<void*>(context));
+
     if (events) {
-        events->CredentialsChanged(context);
+        const HRESULT hr = events->CredentialsChanged(context);
+        FACELOGIN_INFO(L"CredentialsChanged: source=%s hr=0x%08X",
+                       sourceName, hr);
         events->Release();
+    } else {
+        FACELOGIN_WARN(L"CredentialsChanged: source=%s skipped — no provider events",
+                       sourceName);
     }
 }
 
@@ -618,7 +644,6 @@ void FaceLoginCredential::CancelActiveAttempt(bool resetToWaiting) {
         if (authenticating) {
             cancelledAttempt = true;
             ++m_activeAttemptId;
-            m_autoSubmitEligible = false;
         } else if (preserveCredentials) {
             detachedCompletedPipe = true;
         }
@@ -707,9 +732,28 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
 
     const State state = GetState();
     bool deselected = false;
+    AuthAttemptId activeAttemptId = 0;
+    bool authThreadRunning = false;
+    bool pipeAttached = false;
     EnterCriticalSection(&m_cs);
     deselected = m_deselected;
+    activeAttemptId = m_activeAttemptId;
+    authThreadRunning = m_authThreadRunning;
+    pipeAttached = m_pipeClient != nullptr;
     LeaveCriticalSection(&m_cs);
+
+    FACELOGIN_INFO(
+        L"CredentialBinding: action=advise state=%d attempt=%llu "
+        L"loginEntry=%d generation=%llu sessionId=%lu events2Attached=1 "
+        L"authThreadRunning=%d pipeAttached=%d deselected=%d",
+        static_cast<int>(state),
+        activeAttemptId,
+        static_cast<int>(m_context.loginEntry),
+        m_context.loginEntryGeneration,
+        m_context.loginEntrySessionId,
+        static_cast<int>(authThreadRunning),
+        static_cast<int>(pipeAttached),
+        static_cast<int>(deselected));
 
     // Guard: if we already have credentials ready from a previous
     // auth round, don't restart the flow.  This prevents an infinite
@@ -845,9 +889,36 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
 STDMETHODIMP FaceLoginCredential::UnAdvise() {
     FACELOGIN_INFO(L"=== UnAdvise ENTER ===");
 
+    State state = State::Waiting;
+    AuthAttemptId activeAttemptId = 0;
+    bool authThreadRunning = false;
+    bool pipeAttached = false;
+    bool events2Attached = false;
     EnterCriticalSection(&m_cs);
+    state = m_state;
+    activeAttemptId = m_activeAttemptId;
+    authThreadRunning = m_authThreadRunning;
+    pipeAttached = m_pipeClient != nullptr;
+    events2Attached = m_pCredentialEvents2 != nullptr;
     m_statusOverlayAllowed = false;
     LeaveCriticalSection(&m_cs);
+
+    FACELOGIN_INFO(
+        L"CredentialBinding: action=unadvise state=%d attempt=%llu "
+        L"loginEntry=%d generation=%llu sessionId=%lu events2Attached=%d "
+        L"authThreadRunning=%d pipeAttached=%d preserveSession=%d",
+        static_cast<int>(state),
+        activeAttemptId,
+        static_cast<int>(m_context.loginEntry),
+        m_context.loginEntryGeneration,
+        m_context.loginEntrySessionId,
+        static_cast<int>(events2Attached),
+        static_cast<int>(authThreadRunning),
+        static_cast<int>(pipeAttached),
+        static_cast<int>(state == State::Authenticating ||
+                         state == State::Ready ||
+                         state == State::Submitted));
+
     UpdateStatusField(L"", false);
     m_statusOverlay.Destroy(L"unadvise");
 
@@ -888,7 +959,6 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
 
     const bool loginEntry = m_context.loginEntry;
     const bool credUI = m_context.IsCredUI();
-
     EnterCriticalSection(&m_cs);
     m_deselected = false;
     m_statusOverlayAllowed = !credUI;
@@ -899,7 +969,8 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
 
     // Activation model (user-specified):
     //   - ONLY the claimed login entry triggers auth automatically, from
-    //     Advise(). autoLogon remains FALSE until its credentials are Ready.
+    //     Advise(). The provider keeps autoLogon enabled from the initial
+    //     enumeration so this cold-start path does not depend on SetSelected.
     //     The "开机启动需按键触发" setting governs that first trigger.
     //   - Every other later activation — re-selecting after switching away, or
     //     retrying after a failure/timeout — must wait for a key press. This
@@ -930,9 +1001,9 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
     }
 
     if (GetState() == State::Ready) {
-        // User-triggered recognition still needs SetSelected's auto-logon
-        // response; provider-level auto-logon is reserved for an automatic
-        // login-entry attempt that has reached Ready.
+        // A selected non-login tile needs this response after its background
+        // attempt reaches Ready. Login-entry auto-logon is supplied by the
+        // provider from its first enumeration.
         *pbAutoLogon = TRUE;
     } else {
         // Unlock / CredUI + still Waiting: no auto-logon; we wait for the bg thread.
@@ -1233,7 +1304,6 @@ STDMETHODIMP FaceLoginCredential::ReportResult(
         const std::wstring status = L"登录被拒绝（密码或策略原因），请使用 PIN/密码登录";
         EnterCriticalSection(&m_cs);
         m_state = State::Failed;
-        m_autoSubmitEligible = false;
         m_statusText = status;
         facelogin::SecureErase(m_password);
         LeaveCriticalSection(&m_cs);
@@ -1292,7 +1362,6 @@ bool FaceLoginCredential::StartAuthAsync(
     attemptId = ++m_nextAttemptId;
     m_activeAttemptId = attemptId;
     m_authTrigger = trigger;
-    m_autoSubmitEligible = false;
     m_state = State::Authenticating;
     if (trigger == AuthTrigger::LoginEntryAutomatic) {
         m_statusOverlayAllowed = true;
@@ -1673,7 +1742,7 @@ HRESULT FaceLoginCredential::GetAuthenticationPackage(ULONG* pulAuthPackage) {
 HRESULT FaceLoginCredential::SwitchToPasswordProvider() {
     // Signal LogonUI to re-enumerate credentials
     // The user can then select the password provider
-    NotifyCredentialsChanged();
+    NotifyCredentialsChanged(CredentialsChangedSource::SwitchToPassword);
 
     // Also return NO_CREDENTIAL_FINISHED to deselect our tile
     // This causes LogonUI to show other providers
@@ -1736,7 +1805,6 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
         m_state = state;
         m_statusText = status;
         m_authDeadlineTick = 0;
-        m_autoSubmitEligible = false;
         LeaveCriticalSection(&m_cs);
         return true;
     };
@@ -1747,6 +1815,7 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
             FACELOGIN_INFO(L"OnPipeResponse: outcome=success attempt=%llu sidPresent=%d upnPresent=%d",
                            attemptId, result.sid.empty() ? 0 : 1,
                            result.upn.empty() ? 0 : 1);
+            AuthTrigger trigger = AuthTrigger::UnlockKeyPress;
             EnterCriticalSection(&m_cs);
             if (m_state != State::Authenticating || m_activeAttemptId != attemptId) {
                 LeaveCriticalSection(&m_cs);
@@ -1758,18 +1827,17 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
             m_username = result.username;
             m_password = std::move(result.password);
             m_authDeadlineTick = 0;
-            m_autoSubmitEligible =
-                m_authTrigger == AuthTrigger::LoginEntryAutomatic;
+            trigger = m_authTrigger;
             m_state = State::Ready;
             LeaveCriticalSection(&m_cs);
-            FACELOGIN_INFO(L"AutoSubmit: attempt=%llu state=Ready eligible=%d",
-                           attemptId, static_cast<int>(IsAutoSubmitReady()));
-            // Ready credentials are the only state that needs a provider
-            // re-enumeration: it asks LogonUI to consume our default tile for
-            // automatic submission.  All other state changes update the
-            // existing tile in place through ICredentialProviderCredentialEvents2.
+            FACELOGIN_INFO(L"AuthAttempt: terminal=success attempt=%llu trigger=%d",
+                           attemptId, static_cast<int>(trigger));
+            // Ready credentials are the only state that needs provider
+            // re-enumeration so LogonUI can request serialization. All other
+            // state changes update the existing tile in place through
+            // ICredentialProviderCredentialEvents2.
             PublishCurrentStatus();
-            TriggerReEnumeration();
+            TriggerReEnumeration(CredentialsChangedSource::AuthSuccess);
             return;
         }
 
@@ -1829,7 +1897,11 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
 // Private: Trigger Re-enumeration
 // ============================================================================
 
-void FaceLoginCredential::TriggerReEnumeration() {
-    FACELOGIN_DEBUG(L"Triggering CredentialsChanged");
-    NotifyCredentialsChanged();
+void FaceLoginCredential::TriggerReEnumeration(
+    CredentialsChangedSource source) {
+    FACELOGIN_DEBUG(L"Triggering CredentialsChanged: source=%s",
+                    source == CredentialsChangedSource::AuthSuccess
+                        ? L"auth-success"
+                        : L"switch-password");
+    NotifyCredentialsChanged(source);
 }
