@@ -18,7 +18,7 @@
 #include "../face_service/webcam_capture.h"
 #include "../face_service/credential_store.h"
 #include "../common/config_util.h"
-#include "../common/photometric_pipeline.h"
+#include "../common/head_pose_types.h"
 
 namespace facelogin {
 
@@ -176,12 +176,9 @@ private:
     // demand instead of streaming 30fps). Returns false if no frame arrived
     // within budgetMs (frame thread dead / camera stalled).
     bool RequestFreshFrame(dlib::matrix<dlib::rgb_pixel>& outFrame,
-                           DWORD budgetMs = 1500,
-                           bool* outPhotometricQuality = nullptr);
+                           DWORD budgetMs = 1500);
 
-    // Owner-thread face preparation shared by preview and pull-mode sampling:
-    // detect on the raw frame, retry once on a temporary software-normalized
-    // frame in darkness, then apply the session's per-frame transform.
+    // Owner-thread face preparation shared by preview and pull-mode sampling.
     bool PrepareFaceFrame(dlib::matrix<dlib::rgb_pixel>& frame,
                           dlib::rectangle& rect,
                           dlib::full_object_detection& landmarks,
@@ -205,8 +202,6 @@ private:
 
     // Camera & face processing
     std::unique_ptr<WebcamCapture>  m_webcam;
-    // Unified photometric session shared with the service pipeline.
-    PhotometricSession m_photometric;
     std::unique_ptr<OnnxLandmarkDetector> m_detector;   // 106-point landmarks (2d106det)
     std::unique_ptr<OnnxDetector>   m_onnxDetector;   // SCRFD detection
     std::unique_ptr<OnnxHeadPose>   m_headPose;       // MobileNetV2 6D pose (observer)
@@ -248,7 +243,6 @@ private:
     std::string m_latestFrameB64;
     std::string m_latestFacesJson;
     dlib::matrix<dlib::rgb_pixel> m_latestFrame;   // for capture to read
-    bool m_latestPhotometricQuality = true;
     // Pull-model sampling handshake (guarded by m_frameCacheMutex):
     //   m_sampleSeq      — incremented by the capture/liveness thread per
     //                      fresh-frame request

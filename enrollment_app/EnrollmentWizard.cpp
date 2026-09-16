@@ -363,16 +363,6 @@ bool EnrollmentWizard::StartPreview() {
     m_previewRunning = true;
     m_frameRunning = true;
     m_frameReinitCount = 0;
-    // The same per-frame photometric session is used by preview, liveness
-    // and enrollment samples. Hardware failure is session-local and falls
-    // back to software normalization without a registry blacklist.
-    m_photometric.Attach(m_webcam->GetVideoProcAmp(), m_webcam->GetCameraControl());
-    PhotometricConfig photometricCfg;
-    photometricCfg.mode = m_config.photometric_mode;
-    photometricCfg.targetLuma = m_config.photometric_target_luma;
-    photometricCfg.toleranceBand = m_config.photometric_band;
-    m_photometric.Configure(photometricCfg);
-    m_photometric.Begin();
 
     // Single background thread: load models (if needed) → GrabFrame → JPEG
     // encode → detect → update caches. The UI thread stays completely free;
@@ -418,24 +408,16 @@ bool EnrollmentWizard::StartPreview() {
                 }
                 dlib::matrix<dlib::rgb_pixel> frame;
                 bool ok = m_webcam->GrabFrame(frame);
-                bool photometricQuality = true;
                 if (ok) {
                     RotateFrame(frame, m_config.camera_rotation);
-                    dlib::full_object_detection sampleLandmarks;
-                    dlib::rectangle sampleRect;
-                    const bool prepared = PrepareFaceFrame(frame, sampleRect, sampleLandmarks);
-                    photometricQuality = prepared &&
-                        !m_photometric.LastTransform().unrecoverable;
                 }
                 {
                     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
                     if (ok) {
                         m_latestFrame = std::move(frame);
-                        m_latestPhotometricQuality = photometricQuality;
                     } else {
                         // Answer "no frame" — the requester falls back to retry.
                         m_latestFrame = dlib::matrix<dlib::rgb_pixel>();
-                        m_latestPhotometricQuality = false;
                     }
                     m_sampleDelivered = m_sampleSeq;
                 }
@@ -461,19 +443,10 @@ bool EnrollmentWizard::StartPreview() {
                         break;
                     }
                     FACELOGIN_WARN(L"Preview camera stalled — re-initializing (%d/3)", m_frameReinitCount);
-                    m_photometric.End();   // drop the stale camera's control session
                     m_webcam->Shutdown();
                     if (m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
                         FACELOGIN_INFO(L"Preview camera re-initialized");
                         m_frameReinitCount = 0;   // a successful re-init resets the budget
-                        m_photometric.Attach(m_webcam->GetVideoProcAmp(),
-                                             m_webcam->GetCameraControl());
-                        PhotometricConfig reinitCfg;
-                        reinitCfg.mode = m_config.photometric_mode;
-                        reinitCfg.targetLuma = m_config.photometric_target_luma;
-                        reinitCfg.toleranceBand = m_config.photometric_band;
-                        m_photometric.Configure(reinitCfg);
-                        m_photometric.Begin();
                     } else {
                         FACELOGIN_ERROR(L"Preview camera re-init failed — giving up until next start");
                         break;   // exit frame loop; next StartPreview retries
@@ -486,8 +459,7 @@ bool EnrollmentWizard::StartPreview() {
             RotateFrame(frame, m_config.camera_rotation);
             auto tGrab = std::chrono::steady_clock::now();
 
-            // Preview and recognition now share the same ordering: detect and
-            // normalize first, then encode the normalized frame for the UI.
+            // Preview detection runs before the frame is encoded for the UI.
             std::string faceJson = "[]";
             auto tDet = std::chrono::steady_clock::now();
             auto tLand = tDet;
@@ -531,17 +503,6 @@ bool EnrollmentWizard::StartPreview() {
                     faceJson = FacesToJson(faces, &poseDisplay);
                 }
             }
-            if (faceJson == "[]" && (!m_onnxDetector || !m_detector)) {
-                // If the model stack is unavailable, still keep the preview
-                // in the same software-normalized brightness domain.
-                m_photometric.NormalizeForDetection(frame);
-            } else if (faceJson == "[]") {
-                // Do not recompute a whole-frame gain when detection misses a
-                // frame.  That switches the preview between face statistics
-                // and background statistics and is a visible brightness
-                // jump. Reuse the last stable transform instead.
-                PhotometricSession::ApplyTransform(frame, m_photometric.LastTransform());
-            }
             std::string b64 = EncodeJPEGBase64(frame);
             auto tJpeg = std::chrono::steady_clock::now();
             long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tGrab).count();
@@ -560,7 +521,6 @@ bool EnrollmentWizard::StartPreview() {
                 m_latestFrameB64  = std::move(b64);
                 m_latestFacesJson = std::move(faceJson);
                 m_latestFrame     = frame;
-                m_latestPhotometricQuality = !m_photometric.LastTransform().unrecoverable;
                 // The 2.7MB frame copy happens under the lock; if it's slow it
                 // blocks the capture thread and the UI thread's
                 // GetLatestFrameAndFaces. Split wait (someone else held it)
@@ -601,35 +561,11 @@ bool EnrollmentWizard::PrepareFaceFrame(
         return !rect.is_empty() && m_detector->DetectLandmarks(candidate, rect, landmarks);
     };
 
-    const dlib::matrix<dlib::rgb_pixel> rawFrame = frame;
-    if (!detect(rawFrame)) {
-        // Detection gets one retry on a temporary software-normalized frame;
-        // this is still the same session transform used by the actual sample.
-        dlib::matrix<dlib::rgb_pixel> detectionFrame = rawFrame;
-        m_photometric.NormalizeForDetection(detectionFrame);
-        if (!detect(detectionFrame)) {
-            // Keep the caller's frame raw. The preview path will reuse the
-            // previous stable transform instead of displaying a new
-            // whole-frame gain only because detection failed.
-            frame = rawFrame;
-            return false;
-        }
-    }
+    if (!detect(frame)) return false;
     if (outPose && m_headPose && m_headPose->IsInitialized()) {
-        *outPose = m_headPose->Estimate(rawFrame, rect);
+        *outPose = m_headPose->Estimate(frame, rect);
     }
-    UnifiedFaceFrame unified;
-    UnifiedFacePipeline pipeline(m_photometric);
-    const bool accepted = pipeline.ProcessFrame(rawFrame, rect, landmarks, unified);
-    if (outPose) unified.pose = *outPose;
-    if (accepted && unified.normalizedFrame.size() != 0) {
-        frame = std::move(unified.normalizedFrame);
-        rect = unified.faceRect;
-        landmarks = std::move(unified.landmarks);
-    } else {
-        frame = rawFrame;
-    }
-    return accepted && unified.qualityAccepted;
+    return true;
 }
 
 // Load the 2d106det + ONNX models if not already loaded. Called from
@@ -742,13 +678,6 @@ void EnrollmentWizard::StopPreview() {
     // from a wedged driver call sees the mismatch and exits instead of
     // touching the (possibly re-initialized) camera next to the fresh thread.
     ++m_frameGeneration;
-
-    // End hardware control before camera teardown. The adapter keeps its own
-    // COM references, so the original Manual/Auto state can be restored while
-    // the media source is still live. End() is serialized with any in-flight
-    // photometric frame operation; after it returns, a late frame can only do
-    // software work and cannot touch camera controls.
-    m_photometric.End();
 
     // Now shut down the camera so a synchronous ReadSample that is blocked
     // (camera taken over by the credential provider at lock) returns an error.
@@ -1019,8 +948,7 @@ void EnrollmentWizard::SaveAntiSpoofFailFrame(const dlib::matrix<dlib::rgb_pixel
 }
 
 bool EnrollmentWizard::RequestFreshFrame(dlib::matrix<dlib::rgb_pixel>& outFrame,
-                                         DWORD budgetMs,
-                                         bool* outPhotometricQuality) {
+                                         DWORD budgetMs) {
     std::unique_lock<std::mutex> lock(m_frameCacheMutex);
     ++m_sampleSeq;
     m_sampleCv.notify_all();
@@ -1036,7 +964,6 @@ bool EnrollmentWizard::RequestFreshFrame(dlib::matrix<dlib::rgb_pixel>& outFrame
     }
     if (m_latestFrame.size() == 0) return false;   // answered "no frame"
     outFrame = m_latestFrame;
-    if (outPhotometricQuality) *outPhotometricQuality = m_latestPhotometricQuality;
     return true;
 }
 
@@ -1231,8 +1158,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             // frame on demand (pull mode) instead of streaming 30fps, so no
             // redundant full-frame conversion/copy runs during capture.
             dlib::matrix<dlib::rgb_pixel> frame;
-            bool photometricQuality = true;
-            bool haveFrame = RequestFreshFrame(frame, 1500, &photometricQuality);
+            bool haveFrame = RequestFreshFrame(frame, 1500);
             if (!haveFrame) {
                 if ((frameWaitCount++ % 30) == 0) {
                     // Sparse (≈1/s): distinguishes "frame thread dead (no frame
@@ -1244,13 +1170,6 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(33));
                 continue;
             }
-            if (!photometricQuality) {
-                FACELOGIN_INFO(L"Enrollment sample %d rejected: unrecoverable photometric quality", i + 1);
-                if (++failCount > 80) { m_capturing = false; break; }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                continue;
-            }
-
             // Detect with SCRFD (the only detector), extract 106-point landmarks.
             auto tSample = std::chrono::steady_clock::now();
             dlib::full_object_detection landmarks;
@@ -1278,8 +1197,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
 
             // Compute the embedding with InsightFace ONNX (the only recognizer).
             // Store the FULL 512-D embedding (no truncation).
-            auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(
-                frame, landmarks, m_photometric.Enabled());
+            auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
             auto tEmb = std::chrono::steady_clock::now();
             if (onnxEmb.empty()) {
                 // Diagnostics: embedding returned empty (sparse log).
@@ -1983,15 +1901,6 @@ bool EnrollmentWizard::SetConfig(const std::string& json) {
     m_config = newConfig;
     m_livenessMethod = newConfig.liveness_method;
     m_antiSpoofThreshold = newConfig.anti_spoof_threshold;
-    if (m_previewRunning) {
-        m_photometric.End();
-        PhotometricConfig photometricCfg;
-        photometricCfg.mode = newConfig.photometric_mode;
-        photometricCfg.targetLuma = newConfig.photometric_target_luma;
-        photometricCfg.toleranceBand = newConfig.photometric_band;
-        m_photometric.Configure(photometricCfg);
-        m_photometric.Begin();
-    }
     // Runtime fallback: if anti-spoof is chosen but model is missing, degrade now
     if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
         FACELOGIN_WARN(L"SetConfig: runtime fallback to blink (anti-spoof model unavailable)");

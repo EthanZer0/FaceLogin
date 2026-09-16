@@ -495,11 +495,6 @@ bool WebcamCaptureDS::Initialize(int preferredWidth, int preferredHeight,
         return false;
     }
 
-    // Camera control interfaces for the common photometric adapter. Best
-    // effort — null means this camera will use software-only normalization.
-    m_pCapture->QueryInterface(IID_IAMVideoProcAmp, reinterpret_cast<void**>(&m_vpa));
-    m_pCapture->QueryInterface(IID_IAMCameraControl, reinterpret_cast<void**>(&m_cc));
-
     if (!BuildGraph(m_pCapture, m_width, m_height)) {
         FACELOGIN_ERROR(L"DS: failed to build capture graph");
         if (m_pCapture) { m_pCapture->Release(); m_pCapture = nullptr; }
@@ -603,11 +598,6 @@ void WebcamCaptureDS::Shutdown() {
         m_pCapture->Release();
         m_pCapture = nullptr;
     }
-    // Camera-control interfaces are independent refs. The common photometric
-    // adapter owns its own AddRef'd copies, so its session can be ended before
-    // this capture-owned reference is released.
-    if (m_vpa) { m_vpa->Release(); m_vpa = nullptr; }
-    if (m_cc)  { m_cc->Release();  m_cc = nullptr; }
     if (m_pGraph) {
         m_pGraph->Release();
         m_pGraph = nullptr;

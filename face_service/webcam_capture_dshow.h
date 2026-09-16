@@ -101,12 +101,6 @@ public:
     void Resume();   // restart graph for next auth session
     void Shutdown();
 
-    // Camera control interfaces for the common photometric adapter.
-    // QI'd off the capture filter during Initialize; null when the device
-    // does not expose them. Borrowed pointers — valid until Shutdown().
-    IAMVideoProcAmp* GetVideoProcAmp() const { return m_vpa; }
-    IAMCameraControl* GetCameraControl() const { return m_cc; }
-
     static bool InitializeCOM();
     static void ShutdownCOM();
 
@@ -141,8 +135,6 @@ private:
     IBaseFilter*     m_pCapture      = nullptr;
     ISampleGrabber*  m_pGrabber      = nullptr;
     IBaseFilter*     m_pNullRenderer = nullptr;
-    IAMVideoProcAmp* m_vpa           = nullptr;   // camera controls, QI'd off the filter
-    IAMCameraControl* m_cc           = nullptr;
 
     GrabberCB m_callback;
 

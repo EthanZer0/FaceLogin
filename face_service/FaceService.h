@@ -17,7 +17,6 @@
 #include "onnx_models.h"
 #include "webcam_capture.h"
 #include "webcam_capture_dshow.h"
-#include "../common/photometric_pipeline.h"
 #include "pipe_server.h"
 #include "credential_store.h"
 #include "../common/config_util.h"
@@ -44,7 +43,7 @@ enum class ModelLoadState { NotLoaded, Loading, Ready, Failed, Stopping };
 //   3. Run() is the main loop: accept pipe connections, process auth requests
 //
 // The face recognition pipeline:
-//   Webcam -> SCRFD/106-point landmarks -> unified photometric frame
+//   Webcam -> SCRFD/106-point landmarks
 //   -> 512-D ONNX embedding -> DB match -> liveness -> credentials
 
 class FaceService {
@@ -91,9 +90,6 @@ private:
     // MF preferred, DS fallback; standalone: MF) and release it afterwards.
     bool EnsureCameraForAuth();
     void ReleaseCamera();
-    // Attach the unified photometric session to the active camera (called
-    // after every camera (re)init).
-    void AttachPhotometricSession();
     bool GrabAuthFrame(dlib::matrix<dlib::rgb_pixel>& frame);
     bool PrepareAuthFaceFrame(dlib::matrix<dlib::rgb_pixel>& frame,
                               dlib::rectangle& faceRect,
@@ -145,10 +141,6 @@ private:
     std::unique_ptr<WebcamCapture>   m_webcamMF;   // Media Foundation (standalone / service MF-first)
     std::unique_ptr<WebcamCaptureDS> m_webcamDS;   // DirectShow (service fallback)
     CameraPipeline m_cameraPipeline = CameraPipeline::None;  // active backend
-    // Shared photometric session. Its COM adapter owns its interface refs, so
-    // it can be ended after frame processing has stopped without dangling
-    // borrowed pointers.
-    PhotometricSession m_photometric;
     std::unique_ptr<CredentialStore> m_store;
 
     // Configuration

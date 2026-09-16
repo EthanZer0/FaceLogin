@@ -145,8 +145,6 @@
   "console.settings.livenessNone": "无 (None)",
   "console.settings.glasses": "眼镜模式（戴眼镜导致眨眼检测不稳定时开启）",
   "console.settings.glassesHelp": "眼镜模式使用自适应眨眼检测，对镜框/反光更鲁棒，但可能不如默认模式稳定。非必要建议保持关闭。",
-  "console.settings.exposureControl": "统一光照归一化（推荐开启）",
-  "console.settings.exposureControlHelp": "录入、预览、活体和解锁使用同一套逐帧光照处理。开启后优先验证摄像头硬件粗调，失败时当前会话自动降级为软件归一化；不需要重新录入人脸。",
   "console.settings.memory": "内存优化（识别后释放模型，降低后台内存占用）",
   "console.settings.memoryHelp": "识别完成后释放人脸模型并清空进程工作集，服务后台内存占用从约 60MB 降至 1MB 以内（实测约 0.6MB）。下次解锁时模型自动重新加载（约 0.2-0.5 秒），对识别速度影响很小。适合内存敏感的设备，或希望服务常驻内存极低的用户。",
   "console.settings.unknownFaces": "记录未匹配人脸（陌生人出现在锁屏前时保存照片与记录）",

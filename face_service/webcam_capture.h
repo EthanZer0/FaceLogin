@@ -14,7 +14,6 @@
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <mfobjects.h>
-#include <dshow.h>      // IAMVideoProcAmp / IAMCameraControl (camera controls)
 #include <mutex>
 
 #include "camera_types.h"
@@ -47,13 +46,6 @@ public:
     bool IsFrameReady();
     void Shutdown();
 
-    // Camera control interfaces consumed by the common photometric adapter.
-    // QI'd off the media source during Initialize; null when the device does
-    // not expose them. Borrowed pointers — valid until Shutdown(). The common
-    // adapter AddRefs them before the camera lifecycle can release these refs.
-    IAMVideoProcAmp* GetVideoProcAmp() const { return m_vpa; }
-    IAMCameraControl* GetCameraControl() const { return m_cc; }
-
     static bool InitializeMF();
     static void ShutdownMF();
 
@@ -78,8 +70,6 @@ private:
     mutable std::mutex m_lifecycleMutex;
     IMFMediaSource* m_pSource = nullptr;
     IMFSourceReader* m_pReader = nullptr;
-    IAMVideoProcAmp* m_vpa = nullptr;    // camera controls, QI'd off the source
-    IAMCameraControl* m_cc = nullptr;
     int m_width = 1280;
     int m_height = 720;
     bool m_initialized = false;

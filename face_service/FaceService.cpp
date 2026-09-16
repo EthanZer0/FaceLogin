@@ -425,11 +425,6 @@ FACELOGIN_INFO(L"Camera pipeline: MF preferred, DirectShow fallback — initiali
                        m_config.camera_device.empty() ? L"" : L" (configured device)");
     }
 
-    FACELOGIN_INFO(L"Photometric pipeline: mode=%hs target=%.0f band=%.0f; "
-                   L"old templates remain in the original 512-D input domain",
-                   PhotometricModeToString(m_config.photometric_mode).c_str(),
-                   m_config.photometric_target_luma, m_config.photometric_band);
-
     m_pipeServer = std::make_unique<PipeServer>();
 
     // dlib recognizer/detector were removed — the system is now pure ONNX.
@@ -726,20 +721,6 @@ void FaceService::Run() {
             // Now that the models are ready (loader finished), the pointer
             // mutations below are safe on the main thread.
 
-            // Apply photometric configuration at a safe session boundary. If
-            // an auth session is already holding the camera, restart only the
-            // small hardware controller state; recognition keeps the same
-            // frame/model domain.
-            PhotometricConfig photometricCfg;
-            photometricCfg.mode = m_config.photometric_mode;
-            photometricCfg.targetLuma = m_config.photometric_target_luma;
-            photometricCfg.toleranceBand = m_config.photometric_band;
-            m_photometric.Configure(photometricCfg);
-            if (m_cameraPipeline != CameraPipeline::None) {
-                m_photometric.End();
-                m_photometric.Begin();
-            }
-
             // Retry loading anti-spoof model if configured and not yet loaded
             if (m_livenessMethod == LivenessMethod::AntiSpoof && (!m_antiSpoof || !m_antiSpoof->IsInitialized())) {
                 m_antiSpoof = std::make_unique<OnnxAntiSpoof>();
@@ -837,8 +818,8 @@ void FaceService::ProcessPendingServiceEvents() {
 
 void FaceService::Stop() {
     m_stopRequested.store(true);
-    // The SCM callback only requests cancellation. Camera, photometric and
-    // model objects are owned and released by the Run() thread after the
+    // The SCM callback only requests cancellation. Camera and model objects
+    // are owned and released by the Run() thread after the
     // active request has unwound.
     m_modelState.store(ModelLoadState::Stopping);
     m_modelCv.notify_all();
@@ -881,7 +862,6 @@ bool FaceService::EnsureCameraForAuth() {
         if (m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
             m_cameraPipeline = CameraPipeline::MF;
             FACELOGIN_INFO(L"MF camera initialized on demand for auth (preferred pipeline)");
-            AttachPhotometricSession();
             return true;
         }
         FACELOGIN_WARN(L"MF camera init failed in service mode — falling back to DirectShow");
@@ -892,7 +872,6 @@ bool FaceService::EnsureCameraForAuth() {
         if (m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
             m_cameraPipeline = CameraPipeline::DS;
             FACELOGIN_INFO(L"DS camera initialized on demand for auth (fallback pipeline)");
-            AttachPhotometricSession();
             return true;
         }
         FACELOGIN_ERROR(L"Both MF and DS camera init failed in service mode");
@@ -914,29 +893,10 @@ bool FaceService::EnsureCameraForAuth() {
         FACELOGIN_INFO(L"MF camera initialized on demand for auth (standalone)");
     }
     m_cameraPipeline = CameraPipeline::MF;
-    AttachPhotometricSession();
     return true;
 }
 
-void FaceService::AttachPhotometricSession() {
-    m_photometric.End();
-    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
-        m_photometric.Attach(m_webcamMF->GetVideoProcAmp(), m_webcamMF->GetCameraControl());
-    } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
-        m_photometric.Attach(m_webcamDS->GetVideoProcAmp(), m_webcamDS->GetCameraControl());
-    } else {
-        m_photometric.Attach(nullptr, nullptr);
-    }
-    PhotometricConfig cfg;
-    cfg.mode = m_config.photometric_mode;
-    cfg.targetLuma = m_config.photometric_target_luma;
-    cfg.toleranceBand = m_config.photometric_band;
-    m_photometric.Configure(cfg);
-    m_photometric.Begin();
-}
-
 void FaceService::ReleaseCamera() {
-    m_photometric.End();
     if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
         m_webcamMF->Shutdown();
         m_webcamMF.reset();
@@ -971,8 +931,8 @@ bool FaceService::HandleAuthRequest() {
             ipc::L10N_CAMERA_UNAVAILABLE));
     }
 
-    // The service main thread owns camera and photometric teardown for every
-    // outcome, including disconnect, timeout and model failure.
+    // The service main thread owns camera teardown for every outcome,
+    // including disconnect, timeout and model failure.
     ReleaseCamera();
     if (m_config.unload_models_after_auth) {
         UnloadHeavyModels();
@@ -1010,33 +970,12 @@ bool FaceService::PrepareAuthFaceFrame(
         return m_detector->DetectLandmarks(candidate, faceRect, landmarks);
     };
 
-    const dlib::matrix<dlib::rgb_pixel> rawFrame = frame;
-    if (!detect(rawFrame)) {
-        dlib::matrix<dlib::rgb_pixel> detectionFrame = rawFrame;
-        m_photometric.NormalizeForDetection(detectionFrame);
-        if (!detect(detectionFrame)) {
-            frame = rawFrame;
-            return false;
-        }
-    }
+    if (!detect(frame)) return false;
 
     if (pose && m_headPose && m_headPose->IsInitialized()) {
-        *pose = m_headPose->Estimate(rawFrame, faceRect);
+        *pose = m_headPose->Estimate(frame, faceRect);
     }
-
-    UnifiedFaceFrame unified;
-    UnifiedFacePipeline pipeline(m_photometric);
-    const bool accepted = pipeline.ProcessFrame(
-        rawFrame, faceRect, landmarks, unified);
-    if (pose) unified.pose = *pose;
-    if (accepted && unified.normalizedFrame.size() != 0) {
-        frame = std::move(unified.normalizedFrame);
-        faceRect = unified.faceRect;
-        landmarks = std::move(unified.landmarks);
-    } else {
-        frame = rawFrame;
-    }
-    return accepted && unified.qualityAccepted;
+    return true;
 }
 
 const wchar_t* FaceService::PoseStatusKey(
@@ -1127,12 +1066,7 @@ bool FaceService::ProcessAuthRequest() {
     // touches liveness method), so no race with CONFIG_RELOAD.
     ValidateLivenessMethod();
 
-    // Keep only a minimal camera-readiness guard. Exposure convergence is not
-    // a prerequisite for recognition: normal light proceeds immediately and
-    // abnormal light is handled by the per-frame photometric pipeline.
-    //
-    // The first two frames only allow the capture backend to become readable;
-    // their brightness is deliberately not used to delay recognition.
+    // The first two frames only allow the capture backend to become readable.
     {
         constexpr int kWarmupMaxFrames = 2;
         dlib::matrix<dlib::rgb_pixel> warmFrame;
@@ -1223,7 +1157,6 @@ bool FaceService::ProcessAuthRequest() {
             // spinning on a dead SourceReader until timeout.
             if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF &&
                 !m_webcamMF->IsInitialized()) {
-                m_photometric.End();   // drop the stale camera's control session
                 FACELOGIN_INFO(L"MF camera stalled — re-initializing");
                 m_webcamMF->Shutdown();
                 m_webcamMF.reset();
@@ -1236,10 +1169,8 @@ bool FaceService::ProcessAuthRequest() {
                     // the unlock — fall back to the DirectShow pipeline.
                     if (m_isServiceMode) EnsureCameraForAuth();
                 }
-                AttachPhotometricSession();   // re-attach to the fresh camera (or DS fallback)
             } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS &&
                        !m_webcamDS->IsInitialized()) {
-                m_photometric.End();
                 FACELOGIN_INFO(L"DS camera stalled — re-initializing");
                 m_webcamDS->Shutdown();
                 m_webcamDS.reset();
@@ -1249,14 +1180,12 @@ bool FaceService::ProcessAuthRequest() {
                     m_webcamDS.reset();
                     m_cameraPipeline = CameraPipeline::None;
                 }
-                AttachPhotometricSession();
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
 
-        // Unified face preparation: raw detection, dark-frame retry, robust
-        // photometric statistics, and per-frame normalization.
+        // Detect and align directly from the camera frame.
         std::optional<CredentialStore::MatchResult> match;
         dlib::full_object_detection landmarks;
         dlib::rectangle faceRect;
@@ -1282,11 +1211,8 @@ bool FaceService::ProcessAuthRequest() {
         acceptedPoseSeen = true;
         sendStatusKey(PoseStatusKey(pose, poseEvaluation));
 
-        // Recognition always consumes the normalized frame. There is one
-        // embedding path for old templates; no alternate photometric variant
-        // gets a separate, looser threshold.
         auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(
-            frame, landmarks, m_photometric.Enabled());
+            frame, landmarks);
         if (!onnxEmb.empty()) {
             match = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
         }
@@ -1294,11 +1220,10 @@ bool FaceService::ProcessAuthRequest() {
         if (match) {
             consecutiveMatches++;
             consecutiveNoMatch = 0;   // a match resets the no-match counter
-            FACELOGIN_INFO(L"Face matched: distance=%.4f, photometric=%d, "
+            FACELOGIN_INFO(L"Face matched: distance=%.4f, "
                            L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
                            L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f) [%d/%d]",
                            match->distance,
-                          static_cast<int>(m_photometric.State()),
                           static_cast<int>(pose.quality), static_cast<int>(pose.range),
                           pose.yaw, pose.pitch,
                           pose.roll, pose.inferenceMs, pose.faceWidth,
@@ -1596,7 +1521,7 @@ bool FaceService::ProcessAuthRequest() {
 
                         std::optional<CredentialStore::MatchResult> verifyMatch;
                         auto verifyEmbedding = m_onnxRecognizer->ComputeEmbedding(
-                            verifyFrame, verifyLandmarks, m_photometric.Enabled());
+                            verifyFrame, verifyLandmarks);
                         if (!verifyEmbedding.empty()) {
                             verifyMatch = m_store->FindBestMatch(
                                 verifyEmbedding.data(), verifyEmbedding.size(), m_matchThreshold);

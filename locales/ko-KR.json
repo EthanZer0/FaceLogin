@@ -145,8 +145,6 @@
   "console.settings.livenessNone": "사용 안 함",
   "console.settings.glasses": "안경 모드(안경 때문에 눈 깜박임 확인이 불안정할 때 사용)",
   "console.settings.glassesHelp": "안경테와 반사에 적응하는 눈 깜박임 확인을 사용합니다. 기본 방식보다 불안정할 수 있으므로 필요한 경우에만 켜세요.",
-  "console.settings.exposureControl": "통합 광도 정규화(권장)",
-  "console.settings.exposureControlHelp": "등록, 미리보기, 실재 확인과 잠금 해제가 동일한 프레임별 광도 파이프라인을 사용합니다. 하드웨어 조절을 검증한 뒤 실패하면 현재 세션만 소프트웨어 방식으로 전환하며 재등록이 필요하지 않습니다.",
   "console.settings.memory": "메모리 절약(인식 후 모델을 해제하여 백그라운드 메모리 감소)",
   "console.settings.memoryHelp": "인식 후 얼굴 모델을 해제하고 프로세스 작업 세트를 비워 서비스의 백그라운드 메모리를 약 60MB에서 1MB 미만(실측 약 0.6MB)으로 줄입니다. 다음 잠금 해제 시 모델이 자동으로 다시 로드되며(약 0.2~0.5초), 인식 속도에 미치는 영향은 매우 작습니다. 메모리에 민감한 장치 또는 서비스의 상주 메모리를 최소화하려는 사용자에게 적합합니다.",
   "console.settings.unknownFaces": "일치하지 않은 얼굴 기록(잠금 화면 앞의 미등록 얼굴 사진과 기록 저장)",

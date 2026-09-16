@@ -63,7 +63,6 @@ func EnsureConfigDefaults(configPath string, uiLanguage string) error {
 			"match_threshold":          0.75,
 			"anti_spoof_threshold":     0.30,
 			"blink_glasses_mode":       false,
-			"face_exposure_control":    false,
 			"unload_models_after_auth": false,
 			"camera_rotation":          0,
 			"capture_unknown_faces":    false,

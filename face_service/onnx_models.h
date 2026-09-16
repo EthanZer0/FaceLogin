@@ -10,7 +10,7 @@
 #include <optional>
 #include <mutex>
 #include "liveness_types.h"
-#include "../common/photometric_pipeline.h"
+#include "../common/head_pose_types.h"
 
 namespace facelogin {
 
@@ -55,14 +55,6 @@ public:
         const dlib::full_object_detection& landmarks,
         AlignMode mode);
 
-    // Same alignment/model path, with an optional bounded low-frequency
-    // illumination correction applied only to the aligned recognition chip.
-    // Anti-spoof callers continue to receive the full normalized frame.
-    std::vector<float> ComputeEmbedding(
-        const dlib::matrix<dlib::rgb_pixel>& image,
-        const dlib::full_object_detection& landmarks,
-        bool applyLocalPhotometricCorrection);
-
     // Euclidean distance between two embeddings.
     static float Distance(const std::vector<float>& a, const std::vector<float>& b);
     static float Distance(const std::vector<float>& a, const float* b);
@@ -73,8 +65,7 @@ private:
     std::vector<float> ComputeEmbeddingAligned(
         const dlib::matrix<dlib::rgb_pixel>& image,
         const dlib::full_object_detection& landmarks,
-        AlignMode mode,
-        bool applyLocalPhotometricCorrection);
+        AlignMode mode);
 
     std::unique_ptr<Ort::Env> m_env;
     std::unique_ptr<Ort::Session> m_session;

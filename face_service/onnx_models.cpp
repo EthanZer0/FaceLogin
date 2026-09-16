@@ -126,29 +126,20 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
 std::vector<float> OnnxRecognizer::ComputeEmbedding(
     const dlib::matrix<dlib::rgb_pixel>& image,
     const dlib::full_object_detection& landmarks) {
-    return ComputeEmbeddingAligned(image, landmarks, AlignMode::OuterEye, false);
+    return ComputeEmbeddingAligned(image, landmarks, AlignMode::OuterEye);
 }
 
 std::vector<float> OnnxRecognizer::ComputeEmbedding(
     const dlib::matrix<dlib::rgb_pixel>& image,
     const dlib::full_object_detection& landmarks,
     AlignMode mode) {
-    return ComputeEmbeddingAligned(image, landmarks, mode, false);
-}
-
-std::vector<float> OnnxRecognizer::ComputeEmbedding(
-    const dlib::matrix<dlib::rgb_pixel>& image,
-    const dlib::full_object_detection& landmarks,
-    bool applyLocalPhotometricCorrection) {
-    return ComputeEmbeddingAligned(image, landmarks, AlignMode::OuterEye,
-                                   applyLocalPhotometricCorrection);
+    return ComputeEmbeddingAligned(image, landmarks, mode);
 }
 
 std::vector<float> OnnxRecognizer::ComputeEmbeddingAligned(
     const dlib::matrix<dlib::rgb_pixel>& image,
     const dlib::full_object_detection& landmarks,
-    AlignMode mode,
-    bool applyLocalPhotometricCorrection) {
+    AlignMode mode) {
     // Align face using a 5-point similarity transform (arcface template) and
     // the 106-point landmark indices, then ONNX infer. The 106-point model's
     // "subject-first-person" eye layout:
@@ -186,7 +177,6 @@ std::vector<float> OnnxRecognizer::ComputeEmbeddingAligned(
     dlib::point_transform_affine tform = dlib::find_similarity_transform(src, dst);
     dlib::matrix<dlib::rgb_pixel> faceChip(112, 112);
     dlib::transform_image(image, faceChip, dlib::interpolate_bilinear(), dlib::inv(tform));
-    ApplyLocalIlluminationCorrection(faceChip, applyLocalPhotometricCorrection);
     return ComputeEmbedding(faceChip);
 }
 
