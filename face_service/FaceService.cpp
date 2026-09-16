@@ -1163,10 +1163,16 @@ bool FaceService::ProcessAuthRequest() {
     // the last key so a stable pose does not cause a STATUS write on every
     // camera frame.
     auto sendStatusKey = [this, lastStatusKey = std::wstring(ipc::L10N_RECOGNIZING)](
-                              const wchar_t* key) mutable {
-        if (!key || lastStatusKey == key) return;
-        lastStatusKey = key;
-        m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + key);
+                              const wchar_t* key, bool force = false) mutable {
+        if (!key || (!force && lastStatusKey == key)) return;
+        if (m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + key)) {
+            lastStatusKey = key;
+        } else {
+            FACELOGIN_WARN(L"Status update could not be delivered: key=%s", key);
+        }
+    };
+    const auto publishPoseStatus = [&sendStatusKey](const wchar_t* key) {
+        sendStatusKey(key);
     };
 
     dlib::matrix<dlib::rgb_pixel> frame;  // reused by the match loop below
@@ -1392,6 +1398,7 @@ bool FaceService::ProcessAuthRequest() {
                 bool livenessPassed = false;
                 bool livenessAcceptedPoseSeen = false;
                 bool livenessPoseRejected = false;
+                bool livenessPosePromptActive = false;
 
                 if (method == LivenessMethod::None) {
                     livenessPassed = true;
@@ -1417,13 +1424,14 @@ bool FaceService::ProcessAuthRequest() {
                         dlib::rectangle asRect;
                         HeadPoseStats asPose;
                         const AuthFrameResult frameResult = AcquireLegalPoseFrame(
-                            asFrame, asRect, asLandmarks, asPose, sendStatusKey);
+                            asFrame, asRect, asLandmarks, asPose, publishPoseStatus);
                         if (frameResult == AuthFrameResult::NoFrame) {
                             if (m_stopRequested.load()) break;
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
                         if (frameResult != AuthFrameResult::Accepted) {
+                            livenessPosePromptActive = true;
                             if (frameResult == AuthFrameResult::Rejected) {
                                 livenessPoseRejected = true;
                             }
@@ -1432,7 +1440,12 @@ bool FaceService::ProcessAuthRequest() {
                         }
 
                         livenessAcceptedPoseSeen = true;
-                        sendStatusKey(ipc::L10N_LIVENESS_CHECKING);
+                        const bool restoreLivenessStatus = livenessPosePromptActive;
+                        livenessPosePromptActive = false;
+                        sendStatusKey(ipc::L10N_LIVENESS_CHECKING, restoreLivenessStatus);
+                        if (restoreLivenessStatus) {
+                            FACELOGIN_INFO(L"Pose recovered — restoring anti-spoof status");
+                        }
 
                         float score = m_antiSpoof->Predict(asFrame, asLandmarks);
                         totalChecked++;
@@ -1479,7 +1492,7 @@ bool FaceService::ProcessAuthRequest() {
                         HeadPoseStats livenessPose;
                         const AuthFrameResult frameResult = AcquireLegalPoseFrame(
                             livenessFrame, lRect, livenessLandmarks,
-                            livenessPose, sendStatusKey);
+                            livenessPose, publishPoseStatus);
                         if (frameResult == AuthFrameResult::NoFrame) {
                             if (m_stopRequested.load()) break;
                             liveness.ResetBlinkProgress();
@@ -1487,6 +1500,7 @@ bool FaceService::ProcessAuthRequest() {
                             continue;
                         }
                         if (frameResult != AuthFrameResult::Accepted) {
+                            livenessPosePromptActive = true;
                             if (frameResult == AuthFrameResult::Rejected) {
                                 livenessPoseRejected = true;
                             }
@@ -1496,7 +1510,12 @@ bool FaceService::ProcessAuthRequest() {
                         }
 
                         livenessAcceptedPoseSeen = true;
-                        sendStatusKey(ipc::L10N_BLINK_PROMPT);
+                        const bool restoreLivenessStatus = livenessPosePromptActive;
+                        livenessPosePromptActive = false;
+                        sendStatusKey(ipc::L10N_BLINK_PROMPT, restoreLivenessStatus);
+                        if (restoreLivenessStatus) {
+                            FACELOGIN_INFO(L"Pose recovered — restoring blink prompt");
+                        }
                         if (liveness.ProcessFrame(livenessLandmarks)) {
                             blinked = true;
                             FACELOGIN_INFO(L"Blink detected");
@@ -1534,6 +1553,7 @@ bool FaceService::ProcessAuthRequest() {
                     bool verifyOk = false;
                     bool verifyAcceptedPoseSeen = false;
                     bool verifyPoseRejected = false;
+                    bool verifyPosePromptActive = false;
                     while (!m_stopRequested.load() && !verifyOk) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during final verify — aborting");
@@ -1548,13 +1568,14 @@ bool FaceService::ProcessAuthRequest() {
                         HeadPoseStats verifyPose;
                         const AuthFrameResult frameResult = AcquireLegalPoseFrame(
                             verifyFrame, verifyRect, verifyLandmarks,
-                            verifyPose, sendStatusKey);
+                            verifyPose, publishPoseStatus);
                         if (frameResult == AuthFrameResult::NoFrame) {
                             if (m_stopRequested.load()) break;
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
                         if (frameResult != AuthFrameResult::Accepted) {
+                            verifyPosePromptActive = true;
                             if (frameResult == AuthFrameResult::Rejected) {
                                 verifyPoseRejected = true;
                             }
@@ -1566,7 +1587,12 @@ bool FaceService::ProcessAuthRequest() {
                         // Liveness has already passed in this phase. Keep the
                         // UI on final verification instead of regressing to the
                         // initial recognition status when the pose is legal.
-                        sendStatusKey(ipc::L10N_FINAL_VERIFYING);
+                        const bool restoreFinalStatus = verifyPosePromptActive;
+                        verifyPosePromptActive = false;
+                        sendStatusKey(ipc::L10N_FINAL_VERIFYING, restoreFinalStatus);
+                        if (restoreFinalStatus) {
+                            FACELOGIN_INFO(L"Pose recovered — restoring final verification status");
+                        }
 
                         std::optional<CredentialStore::MatchResult> verifyMatch;
                         auto verifyEmbedding = m_onnxRecognizer->ComputeEmbedding(
