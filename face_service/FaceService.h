@@ -68,7 +68,7 @@ private:
     enum class ServiceEventType {
         KernelBootRefresh,
         SessionLogoff,
-        DesktopReady
+        LoginEntryCompleted
     };
 
     struct ServiceEvent {
@@ -118,10 +118,6 @@ private:
     void TrimWorkingSet();              // empty process working set after unload
     void ValidateLivenessMethod();     // anti-spoof → blink fallback (main thread only)
     void AbortModelLoadWait();         // release anyone blocked in EnsureModelsLoaded
-
-    // Configuration
-    std::wstring GetModelsDir();
-    float GetMatchThreshold();
 
     // Unknown-face capture (config-gated, opt-in): when a face is detected but
     // matches no enrolled user, save a full-res JPEG of that frame plus a

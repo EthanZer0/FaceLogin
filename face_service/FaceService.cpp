@@ -320,7 +320,7 @@ DWORD WINAPI FaceService::HandlerEx(DWORD control, DWORD eventType,
                         ServiceEventType::KernelBootRefresh, evt->dwSessionId);
                 } else if (eventType == WTS_SESSION_DESKTOP_READY) {
                     pService->QueueServiceEvent(
-                        ServiceEventType::DesktopReady, evt->dwSessionId);
+                        ServiceEventType::LoginEntryCompleted, evt->dwSessionId);
                 } else if (eventType == WTS_SESSION_LOCK) {
                     // Locking can be emitted while LogonUI is preparing a
                     // fresh cold-start entry. It is not proof that an entry
@@ -336,7 +336,7 @@ DWORD WINAPI FaceService::HandlerEx(DWORD control, DWORD eventType,
                     // idempotent and therefore a no-op for ordinary Win+L
                     // unlocks, whose generation was already completed.
                     pService->QueueServiceEvent(
-                        ServiceEventType::DesktopReady, evt->dwSessionId);
+                        ServiceEventType::LoginEntryCompleted, evt->dwSessionId);
                     FACELOGIN_INFO(L"Console session unlocked: session=%lu "
                                    L"(completing active login entry)",
                                    evt->dwSessionId);
@@ -368,7 +368,7 @@ bool FaceService::Initialize() {
         }
     }
     CreateDirectoryW(m_dataDir.c_str(), nullptr);
-    m_modelsDir = GetModelsDir();
+    m_modelsDir = m_dataDir + L"\\models";
 
     // Load configuration from config.json (falls back to registry). Must happen
     // before camera init — the configured camera_device is used below.
@@ -827,9 +827,9 @@ void FaceService::ProcessPendingServiceEvents() {
                            event.sessionId, generation);
             break;
         }
-        case ServiceEventType::DesktopReady:
+        case ServiceEventType::LoginEntryCompleted:
             CompleteLoginEntryGeneration(event.sessionId);
-            FACELOGIN_INFO(L"Console desktop ready: session=%lu", event.sessionId);
+            FACELOGIN_INFO(L"Login entry completed: session=%lu", event.sessionId);
             break;
         }
     }
@@ -1672,35 +1672,6 @@ bool FaceService::ProcessAuthRequest() {
     }
 
     return authSent;
-}
-
-std::wstring FaceService::GetModelsDir() {
-    {
-        std::wstring regData = ReadRegString(REGVAL_DATA_PATH, L"");
-        if (!regData.empty()) {
-            return regData + L"\\models";
-        }
-    }
-    wchar_t programData[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, programData))) {
-        return std::wstring(programData) + L"\\FaceLogin\\models";
-    }
-    return L"C:\\ProgramData\\FaceLogin\\models";
-}
-
-float FaceService::GetMatchThreshold() {
-    HKEY hKey;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\FaceLogin", 0,
-                      KEY_READ, &hKey) == ERROR_SUCCESS) {
-        DWORD val = 0, size = sizeof(val);
-        if (RegQueryValueExW(hKey, L"MatchThreshold", nullptr, nullptr,
-                             reinterpret_cast<LPBYTE>(&val), &size) == ERROR_SUCCESS) {
-            RegCloseKey(hKey);
-            return val / 100.0f;
-        }
-        RegCloseKey(hKey);
-    }
-    return 0.30f;
 }
 
 bool FaceService::Install(const std::wstring& exePath) {
