@@ -109,7 +109,7 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
     const auto activationId = ctx->activationId;
     delete ctx;
 
-    FACELOGIN_INFO(L"[InputThread] Started — polling keyboard and mouse-button states every %lums",
+    FACELOGIN_DEBUG(L"Input thread started; poll=%lums",
                    kInputPollIntervalMs);
 
     const ULONGLONG baselineGraceUntil = GetTickCount64() + kInputBaselineGraceMs;
@@ -120,7 +120,7 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
     for (int virtualKey = 1; virtualKey <= 0xFF; ++virtualKey) {
         previousDown[virtualKey] = IsVirtualKeyDown(virtualKey);
     }
-    FACELOGIN_INFO(L"[InputThread] Baseline captured; selection-input grace=%llums",
+    FACELOGIN_DEBUG(L"Input baseline captured; grace=%llums",
                    kInputBaselineGraceMs);
 
     // Keep waiting until the binding is stopped or a fresh input edge starts
@@ -129,7 +129,7 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
         // Check stop signal (non-blocking)
         DWORD waitResult = WaitForSingleObject(stopEvent, 0);
         if (waitResult == WAIT_OBJECT_0) {
-            FACELOGIN_INFO(L"[InputThread] Stop event signaled — exiting");
+            FACELOGIN_DEBUG(L"Input thread stop requested");
             break;
         }
 
@@ -142,7 +142,7 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
             previousDown[virtualKey] = currentDown;
             if (risingEdge && nowTick >= baselineGraceUntil) {
                 const bool mouseButton = IsMouseButtonVirtualKey(virtualKey);
-                FACELOGIN_INFO(L"[InputThread] New %s input detected (VK=0x%02X)",
+                FACELOGIN_INFO(L"Input trigger: %s vk=0x%02X",
                                mouseButton ? L"mouse-button" : L"keyboard",
                                virtualKey);
                 inputDetected = true;
@@ -158,7 +158,7 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
             // AUTH_REQUEST while LogonUI is already leaving this credential.
             if (WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0 ||
                 !pCred->IsInputActivationValid(activationId)) {
-                FACELOGIN_INFO(L"[InputThread] Input discarded — activation invalidated");
+                FACELOGIN_DEBUG(L"Input discarded: activation invalidated");
                 break;
             }
 
@@ -176,11 +176,11 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
                                            FaceLoginCredential::State::Waiting)) {
                     if (WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0 ||
                         !pCred->IsInputActivationValid(activationId)) {
-                        FACELOGIN_INFO(L"[InputThread] Retry input discarded — activation invalidated");
+                        FACELOGIN_DEBUG(L"Retry input discarded: activation invalidated");
                         break;
                     }
                     pCred->SetStatusText(L"");
-                    FACELOGIN_INFO(L"[InputThread] Retry input accepted — restarting authentication");
+                        FACELOGIN_INFO(L"Input retry accepted: restarting authentication");
                     authStarted = pCred->StartAuthAsync(pCred->InputAuthTrigger(), activationId);
                 }
             }
@@ -190,7 +190,7 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
             // the connection context) must not make the selected tile inert.
             // Keep this detector alive so the next deliberate key/button edge
             // can retry; the failure reason remains visible in the tile.
-            FACELOGIN_WARN(L"[InputThread] Authentication did not start — remaining armed for retry");
+            FACELOGIN_WARN(L"Input trigger did not start authentication; retry remains armed");
         }
 
         // Wait with a timeout so StopInputDetectionThread() wakes the worker
@@ -198,7 +198,7 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
         WaitForSingleObject(stopEvent, kInputPollIntervalMs);
     }
 
-    FACELOGIN_INFO(L"[InputThread] Exiting");
+    FACELOGIN_DEBUG(L"Input thread exited");
     EnterCriticalSection(&pCred->m_cs);
     pCred->m_inputThreadRunning = false;
     pCred->m_inputDetectionEnabled = false;
@@ -704,7 +704,7 @@ STDMETHODIMP_(ULONG) FaceLoginCredential::Release() {
 // ============================================================================
 
 STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pcpce) {
-    FACELOGIN_INFO(L"=== Advise ENTER (state=%d, pcpce=%p) ===",
+    FACELOGIN_DEBUG(L"Advise enter: state=%d events=%p",
                    static_cast<int>(GetState()), pcpce);
 
     ICredentialProviderCredentialEvents2* advisedEvents2 = nullptr;
@@ -759,7 +759,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // record — blank-credential unlock). The check is on the Ready
     // state only.
     if (state == State::Ready) {
-        FACELOGIN_INFO(L"Advise: credentials already ready, skipping auth restart");
+        FACELOGIN_DEBUG(L"Advise: ready, no restart");
         PublishCurrentStatus();
         return S_OK;
     }
@@ -767,14 +767,14 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // Submitted: the credential is with LogonUI/LSA now — never restart auth
     // while the outcome is pending (would re-recognize and re-submit).
     if (state == State::Submitted) {
-        FACELOGIN_INFO(L"Advise: credential submitted, skipping auth restart");
+        FACELOGIN_DEBUG(L"Advise: submitted, no restart");
         return S_OK;
     }
 
     // A connection worker may still be waiting for the service, so state is
     // the authoritative guard; pipe connectivity is deliberately irrelevant.
     if (state == State::Authenticating) {
-        FACELOGIN_INFO(L"Advise: already authenticating, skipping auth restart");
+        FACELOGIN_DEBUG(L"Advise: authenticating, no restart");
         PublishCurrentStatus();
         return S_OK;
     }
@@ -795,7 +795,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         // and drop the real reason. Never auto-restart auth; restart the
         // input-detection thread so the NEXT key press retries (or the user
         // clicks the tile — SetSelected handles that).
-        FACELOGIN_INFO(L"Advise: %s state — restarting input detection (key press retries)",
+        FACELOGIN_DEBUG(L"Advise: %s, input retry armed",
                        state == State::Failed ? L"failed" : L"error");
         PublishCurrentStatus();
         if (!deselected) StartInputDetectionThread();
@@ -803,7 +803,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     }
 
     if (deselected) {
-        FACELOGIN_INFO(L"Advise: face tile is deselected — activation remains suspended");
+        FACELOGIN_DEBUG(L"Advise: tile deselected");
         return S_OK;
     }
 
@@ -824,7 +824,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     // exact — no guessing about which UI flow loaded us.
     const bool loginEntry = m_context.loginEntry;
     const bool credUI = m_context.IsCredUI();
-    FACELOGIN_INFO(L"Advise: loginEntry=%d, credUI=%d", loginEntry, credUI);
+    FACELOGIN_DEBUG(L"Advise context: loginEntry=%d credUI=%d", loginEntry, credUI);
 
     EnterCriticalSection(&m_cs);
     m_state = State::Waiting;
@@ -832,7 +832,7 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
 
     if (loginEntry) {
         if (ReadRegDword(REGVAL_COLD_BOOT_KEY_TRIGGER, 0) != 0) {
-            FACELOGIN_INFO(L"Advise: login entry + key-trigger enabled — waiting for key press");
+            FACELOGIN_INFO(L"Auth activation: login entry waiting for key press");
             StartInputDetectionThread();
             PublishCurrentStatus();
         } else {
@@ -878,12 +878,12 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
         }
     }
 
-    FACELOGIN_INFO(L"=== Advise EXIT (state=%d) ===", static_cast<int>(GetState()));
+    FACELOGIN_DEBUG(L"Advise exit: state=%d", static_cast<int>(GetState()));
     return S_OK;
 }
 
 STDMETHODIMP FaceLoginCredential::UnAdvise() {
-    FACELOGIN_INFO(L"=== UnAdvise ENTER ===");
+    FACELOGIN_DEBUG(L"UnAdvise enter");
 
     State state = State::Waiting;
     AuthAttemptId activeAttemptId = 0;
@@ -949,7 +949,7 @@ STDMETHODIMP FaceLoginCredential::UnAdvise() {
 // ============================================================================
 
 STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
-    FACELOGIN_INFO(L"=== SetSelected ENTER (state=%d, *pbAutoLogon=%d) ===",
+    FACELOGIN_DEBUG(L"SetSelected enter: state=%d autoLogon=%d",
                   static_cast<int>(GetState()),
                   pbAutoLogon ? static_cast<int>(*pbAutoLogon) : -1);
 
@@ -981,7 +981,7 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
         // blink liveness, service unavailable) + tile re-selected: start waiting
         // for a key press to retry. Never auto-restart — the failure text stays
         // visible and the next key press is the explicit retry.
-        FACELOGIN_INFO(L"SetSelected: %s state — restarting input detection (key press retries)",
+        FACELOGIN_DEBUG(L"SetSelected: %s, input retry armed",
                        state == State::Failed ? L"failed" : L"error");
         StartInputDetectionThread();
     } else if (state == State::Waiting && !inputThreadRunning) {
@@ -989,7 +989,7 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
         // boot that did NOT auto-start (key-trigger on), or the user switched
         // back to the face tile after SetDeselected stopped everything.
         // Either way: start the input-detection thread and require a key press.
-        FACELOGIN_INFO(L"SetSelected: tile selected — starting input detection (key press starts auth)");
+        FACELOGIN_INFO(L"Auth activation: tile selected, waiting for key press");
         StartInputDetectionThread();
         // Repush the Waiting text (clears any residual "识别中..." / stale text)
         SetStatusText(L"");
@@ -1006,7 +1006,7 @@ STDMETHODIMP FaceLoginCredential::SetSelected(BOOL* pbAutoLogon) {
         *pbAutoLogon = FALSE;
     }
 
-    FACELOGIN_INFO(L"=== SetSelected EXIT (*pbAutoLogon=%d, loginEntry=%d, credUI=%d, state=%d) ===",
+    FACELOGIN_DEBUG(L"SetSelected exit: autoLogon=%d loginEntry=%d credUI=%d state=%d",
                   *pbAutoLogon, static_cast<int>(loginEntry), static_cast<int>(credUI),
                   static_cast<int>(GetState()));
     return S_OK;
@@ -1022,7 +1022,7 @@ STDMETHODIMP FaceLoginCredential::SetDeselected() {
     UpdateStatusField(L"", false);
     m_statusOverlay.Destroy(L"tile_deselected");
 
-    FACELOGIN_INFO(L"=== SetDeselected called (state=%d) ===", static_cast<int>(state));
+    FACELOGIN_DEBUG(L"SetDeselected: state=%d", static_cast<int>(state));
 
     // The user moved to ANOTHER tile (e.g. the password tile) — stop
     // everything face-related so recognition can neither fire off a password
@@ -1190,7 +1190,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
     CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon) {
 
     const State initialState = GetState();
-    FACELOGIN_INFO(L"=== GetSerialization ENTER (state=%d) ===", static_cast<int>(initialState));
+    FACELOGIN_DEBUG(L"GetSerialization enter: state=%d", static_cast<int>(initialState));
 
     *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
     *ppwszOptionalStatusText = nullptr;
@@ -1204,7 +1204,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
     // credential lets LogonUI settle on its own error/success UI instead of
     // starting another auth round.
     if (initialState == State::Submitted) {
-        FACELOGIN_INFO(L"GetSerialization: credential already submitted — ending without re-submit");
+        FACELOGIN_DEBUG(L"GetSerialization: already submitted");
         *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
         return S_OK;
     }
@@ -1213,7 +1213,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
     // detection thread is still waiting for user input. Return "not
     // finished" — no credentials yet.
     if (initialState == State::Waiting) {
-        FACELOGIN_INFO(L"GetSerialization: still Waiting for user input");
+        FACELOGIN_DEBUG(L"GetSerialization: waiting for input");
         return S_OK;
     }
 
@@ -1263,7 +1263,7 @@ STDMETHODIMP FaceLoginCredential::GetSerialization(
 
     // Not ready yet. Background callbacks own normal completion and timeout;
     // this remains only as a defensive state-consumer path.
-    FACELOGIN_INFO(L"=== GetSerialization EXIT: not ready (state=%d, response=%d) ===",
+    FACELOGIN_DEBUG(L"GetSerialization: not ready state=%d response=%d",
                   static_cast<int>(GetState()), static_cast<int>(*pcpgsr));
     return S_OK;
 }
@@ -1277,7 +1277,7 @@ STDMETHODIMP FaceLoginCredential::ReportResult(
     PWSTR* ppwszOptionalStatusText,
     CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon) {
 
-    FACELOGIN_INFO(L"=== ReportResult ENTER (status=0x%08X, substatus=0x%08X, state=%d) ===",
+    FACELOGIN_DEBUG(L"ReportResult: status=0x%08X substatus=0x%08X state=%d",
                   ntsStatus, ntsSubstatus, static_cast<int>(GetState()));
 
     *ppwszOptionalStatusText = nullptr;
@@ -1550,7 +1550,7 @@ void FaceLoginCredential::StopInputDetectionThread() {
         return;
     }
 
-    FACELOGIN_INFO(L"Stopping input detection thread...");
+    FACELOGIN_DEBUG(L"Stopping input detection thread");
 
     // Signal stop
     if (stop) {
@@ -1602,7 +1602,7 @@ void FaceLoginCredential::StopInputDetectionThread() {
     }
     m_inputThreadRunning = false;
     LeaveCriticalSection(&m_cs);
-    FACELOGIN_INFO(L"Input detection thread stopped");
+    FACELOGIN_DEBUG(L"Input detection thread stopped");
 }
 
 // ============================================================================
@@ -1769,7 +1769,7 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
                                          facelogin::PipeTerminalTransport transport,
                                          const std::wstring& message) {
     if (!IsAttemptActive(attemptId)) {
-        FACELOGIN_INFO(L"OnPipeResponse: auth no longer active (state=%d) — ignoring late result",
+        FACELOGIN_DEBUG(L"Auth result ignored: attempt inactive state=%d",
                        static_cast<int>(GetState()));
         return;
     }
@@ -1792,10 +1792,9 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
     if (transport == facelogin::PipeTerminalTransport::Message) {
         auto result = facelogin::ipc::ParseAuthMessage(message);
         if (result.status == facelogin::ipc::AuthResult::Status::Success) {
-            FACELOGIN_INFO(L"OnPipeResponse: outcome=success attempt=%llu sidPresent=%d upnPresent=%d",
+            FACELOGIN_INFO(L"Auth result: success attempt=%llu sid=%d upn=%d",
                            attemptId, result.sid.empty() ? 0 : 1,
                            result.upn.empty() ? 0 : 1);
-            AuthTrigger trigger = AuthTrigger::UnlockKeyPress;
             EnterCriticalSection(&m_cs);
             if (m_state != State::Authenticating || m_activeAttemptId != attemptId) {
                 LeaveCriticalSection(&m_cs);
@@ -1807,11 +1806,8 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
             m_username = result.username;
             m_password = std::move(result.password);
             m_authDeadlineTick = 0;
-            trigger = m_authTrigger;
             m_state = State::Ready;
             LeaveCriticalSection(&m_cs);
-            FACELOGIN_INFO(L"AuthAttempt: terminal=success attempt=%llu trigger=%d",
-                           attemptId, static_cast<int>(trigger));
             // Ready credentials are the only state that needs provider
             // re-enumeration so LogonUI can request serialization. All other
             // state changes update the existing tile in place through

@@ -28,7 +28,10 @@ public:
     void SetMinLevel(LogLevel level);
     void SetEnableDebugOutput(bool enable) { m_debugOutput = enable; }
 
-    void Log(LogLevel level, const wchar_t* format, ...);
+    // The source name is retained only for warnings and errors.  Routine
+    // information is intentionally compact so long LogonUI callbacks and
+    // frame-processing messages remain readable.
+    void Log(LogLevel level, const wchar_t* source, const wchar_t* format, ...);
     void Debug(const wchar_t* format, ...);
     void Info(const wchar_t* format, ...);
     void Warning(const wchar_t* format, ...);
@@ -70,9 +73,10 @@ private:
     bool m_ringCsInitialized = false;
 };
 
-// Convenience macros for file/line info
+// Keep routine log lines compact.  The function name is added centrally only
+// to warnings/errors, where it is useful for diagnosis.
 #define FACELOGIN_LOG(level, fmt, ...) \
-    facelogin::Logger::Instance().Log(level, L"[%s:%d] " fmt, __FUNCTIONW__, __LINE__, ##__VA_ARGS__)
+    facelogin::Logger::Instance().Log(level, __FUNCTIONW__, fmt, ##__VA_ARGS__)
 
 #define FACELOGIN_DEBUG(fmt, ...) FACELOGIN_LOG(facelogin::LogLevel::Debug, fmt, ##__VA_ARGS__)
 #define FACELOGIN_INFO(fmt, ...)  FACELOGIN_LOG(facelogin::LogLevel::Info, fmt, ##__VA_ARGS__)

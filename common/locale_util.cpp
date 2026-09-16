@@ -155,7 +155,7 @@ std::string WideToUtf8(const std::wstring& value) {
 std::string ResolveLocale(const std::string& preference) {
     if (!preference.empty() && preference != "auto") {
         const std::string tag = NormalizeTag(preference);
-        FACELOGIN_INFO(L"[l10n] ResolveLocale: explicit '%hs' -> '%hs'",
+        FACELOGIN_DEBUG(L"Locale: explicit '%hs' -> '%hs'",
                        preference.c_str(), tag.c_str());
         return tag;
     }
@@ -167,7 +167,7 @@ std::string ResolveLocale(const std::string& preference) {
     const std::string uiLang = ReadInteractiveSessionUiLanguage();
     if (!uiLang.empty()) {
         const std::string tag = NormalizeTag(uiLang);
-        FACELOGIN_INFO(L"[l10n] ResolveLocale: auto -> session user '%hs' -> '%hs'",
+        FACELOGIN_DEBUG(L"Locale: auto -> session user '%hs' -> '%hs'",
                        uiLang.c_str(), tag.c_str());
         return tag;
     }
@@ -182,12 +182,12 @@ std::string ResolveLocale(const std::string& preference) {
                                 locale.data(), size, nullptr, nullptr);
             locale.pop_back();
             const std::string tag = NormalizeTag(locale);
-            FACELOGIN_INFO(L"[l10n] ResolveLocale: auto -> process default '%hs' -> '%hs'",
+            FACELOGIN_DEBUG(L"Locale: auto -> process default '%hs' -> '%hs'",
                            locale.c_str(), tag.c_str());
             return tag;
         }
     }
-    FACELOGIN_INFO(L"[l10n] ResolveLocale: auto -> zh-CN (last resort)");
+    FACELOGIN_DEBUG(L"Locale: auto -> zh-CN (last resort)");
     return "zh-CN";
 }
 
@@ -198,7 +198,7 @@ bool LocaleCatalog::Load(const std::wstring& installDir, const std::string& pref
     if (m_json.empty() && m_locale != "zh-CN") {
         m_locale = "zh-CN";
         m_json = ReadUtf8File(installDir + L"\\locales\\zh-CN.json");
-        FACELOGIN_INFO(L"[l10n] LocaleCatalog::Load: '%hs' missing — fell back to zh-CN",
+        FACELOGIN_WARN(L"Locale catalog '%hs' missing; falling back to zh-CN",
                        Utf8ToWide(preference).c_str());
     }
     // The zh-CN pack is always loaded as the translation fallback layer
@@ -209,7 +209,7 @@ bool LocaleCatalog::Load(const std::wstring& installDir, const std::string& pref
     } else {
         m_jsonZh = ReadUtf8File(installDir + L"\\locales\\zh-CN.json");
     }
-    FACELOGIN_INFO(L"[l10n] LocaleCatalog::Load: locale='%hs' bytes=%zu ok=%d zhFallback=%zu",
+    FACELOGIN_DEBUG(L"Locale catalog loaded: locale='%hs' bytes=%zu ok=%d zhFallback=%zu",
                    m_locale.c_str(), m_json.size(), !m_json.empty(),
                    m_jsonZh.size());
     return !m_json.empty();

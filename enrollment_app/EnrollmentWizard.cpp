@@ -1056,7 +1056,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                             lumSamples++;
                         }
                     }
-                    FACELOGIN_INFO(L"Anti-spoof input: bbox=%ldx%ld@(%ld,%ld) frame=%ldx%ld lum=%.1f",
+                    FACELOGIN_DEBUG(L"Anti-spoof input: bbox=%ldx%ld@(%ld,%ld) frame=%ldx%ld lum=%.1f",
                                    r.width(), r.height(), r.left(), r.top(),
                                    frame.nc(), frame.nr(),
                                    lumSamples ? static_cast<double>(lumSum) / lumSamples : 0.0);
@@ -1072,7 +1072,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                     // Diagnostics: keep the exact failing frame for inspection.
                     SaveAntiSpoofFailFrame(frame, score);
                 }
-                FACELOGIN_INFO(L"Enrollment anti-spoof frame %d: score=%.3f thr=%.2f (pass=%d)",
+                FACELOGIN_DEBUG(L"Enrollment anti-spoof sample %d: score=%.3f threshold=%.2f passed=%d",
                               totalChecked, score, effThr, passCount);
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
             }
@@ -1164,7 +1164,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                     // Sparse (≈1/s): distinguishes "frame thread dead (no frame
                     // delivered)" from "frames exist but detection/embedding
                     // keeps failing".
-                    FACELOGIN_INFO(L"Enrollment sample %d: waiting for frame (count=%ld)",
+                    FACELOGIN_DEBUG(L"Enrollment sample %d: waiting for frame (count=%ld)",
                                    i + 1, frameWaitCount);
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(33));
@@ -1185,7 +1185,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             if (landmarks.num_parts() == 0) {
                 // Diagnostics: no face landmarks this iteration (sparse log).
                 if ((failCount % 50) == 0) {
-                    FACELOGIN_INFO(L"Enrollment sample %d: no landmarks (failCount=%d)", i + 1, failCount);
+                    FACELOGIN_DEBUG(L"Enrollment sample %d: no landmarks (failCount=%d)", i + 1, failCount);
                 }
                 // 80 × 100ms ≈ 8s of consecutive detection failures — the
                 // Phase-2 total timeout already bounds the whole loop, so this
@@ -1202,7 +1202,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             if (onnxEmb.empty()) {
                 // Diagnostics: embedding returned empty (sparse log).
                 if ((failCount % 50) == 0) {
-                    FACELOGIN_INFO(L"Enrollment sample %d: embedding empty (failCount=%d)", i + 1, failCount);
+                    FACELOGIN_DEBUG(L"Enrollment sample %d: embedding empty (failCount=%d)", i + 1, failCount);
                 }
                 if (++failCount > 80) { m_capturing = false; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1970,7 +1970,7 @@ void EnrollmentWizard::LogDiagnostic(const std::string& message) {
     // Frontend→log bridge: write the JS-provided message into enrollment.log.
     // Used to record frontend-side timing/stall events (卡90% 排查) that the
     // C++ logger otherwise can't see.
-    FACELOGIN_INFO(L"[JS-DIAG] %hs", message.c_str());
+    FACELOGIN_DEBUG(L"JS diagnostic: %hs", message.c_str());
 }
 
 // Minimal JSONL field extractor for the unknown-face events file (fields are

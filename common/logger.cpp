@@ -129,7 +129,7 @@ void Logger::SetMinLevel(LogLevel level) {
     m_minLevel = level;
 }
 
-void Logger::Log(LogLevel level, const wchar_t* format, ...) {
+void Logger::Log(LogLevel level, const wchar_t* source, const wchar_t* format, ...) {
     if (level < m_minLevel) return;
 
     va_list args;
@@ -151,11 +151,19 @@ void Logger::Log(LogLevel level, const wchar_t* format, ...) {
         case LogLevel::Error:   levelStr = L"ERROR"; break;
     }
 
-    _snwprintf_s(finalMsg, _TRUNCATE,
-                  L"[%04d-%02d-%02d %02d:%02d:%02d.%03d] [%s] [%lu] %s\r\n",
-                  st.wYear, st.wMonth, st.wDay,
-                  st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-                  levelStr, GetCurrentThreadId(), buffer);
+    if (level >= LogLevel::Warning && source && *source) {
+        _snwprintf_s(finalMsg, _TRUNCATE,
+                      L"[%04d-%02d-%02d %02d:%02d:%02d.%03d] [%s] [%lu] [%s] %s\r\n",
+                      st.wYear, st.wMonth, st.wDay,
+                      st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                      levelStr, GetCurrentThreadId(), source, buffer);
+    } else {
+        _snwprintf_s(finalMsg, _TRUNCATE,
+                      L"[%04d-%02d-%02d %02d:%02d:%02d.%03d] [%s] [%lu] %s\r\n",
+                      st.wYear, st.wMonth, st.wDay,
+                      st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                      levelStr, GetCurrentThreadId(), buffer);
+    }
 
     const std::wstring safeMessage = SanitizeLogLine(finalMsg);
 
@@ -182,7 +190,7 @@ void Logger::Debug(const wchar_t* format, ...) {
     wchar_t buffer[2048];
     _vsnwprintf_s(buffer, _TRUNCATE, format, args);
     va_end(args);
-    Log(LogLevel::Debug, L"%s", buffer);
+    Log(LogLevel::Debug, L"Logger::Debug", L"%s", buffer);
 }
 
 void Logger::Info(const wchar_t* format, ...) {
@@ -191,7 +199,7 @@ void Logger::Info(const wchar_t* format, ...) {
     wchar_t buffer[2048];
     _vsnwprintf_s(buffer, _TRUNCATE, format, args);
     va_end(args);
-    Log(LogLevel::Info, L"%s", buffer);
+    Log(LogLevel::Info, L"Logger::Info", L"%s", buffer);
 }
 
 void Logger::Warning(const wchar_t* format, ...) {
@@ -200,7 +208,7 @@ void Logger::Warning(const wchar_t* format, ...) {
     wchar_t buffer[2048];
     _vsnwprintf_s(buffer, _TRUNCATE, format, args);
     va_end(args);
-    Log(LogLevel::Warning, L"%s", buffer);
+    Log(LogLevel::Warning, L"Logger::Warning", L"%s", buffer);
 }
 
 void Logger::Error(const wchar_t* format, ...) {
@@ -209,7 +217,7 @@ void Logger::Error(const wchar_t* format, ...) {
     wchar_t buffer[2048];
     _vsnwprintf_s(buffer, _TRUNCATE, format, args);
     va_end(args);
-    Log(LogLevel::Error, L"%s", buffer);
+    Log(LogLevel::Error, L"Logger::Error", L"%s", buffer);
 }
 
 void Logger::WriteToFile(const std::wstring& line) {

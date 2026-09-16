@@ -52,8 +52,9 @@ bool OnnxRecognizer::Initialize(const std::wstring& modelPath) {
         m_input.assign(1 * 3 * 112 * 112, 0.0f);
         m_embedding.clear();
 
-        FACELOGIN_INFO(L"OnnxRecognizer initialized");
-        FACELOGIN_INFO(L"  Input: %hs, Output: %hs", m_inputName.c_str(), m_outputName.c_str());
+        FACELOGIN_INFO(L"Model ready: recognizer");
+        FACELOGIN_DEBUG(L"Recognizer tensors: input=%hs output=%hs",
+                        m_inputName.c_str(), m_outputName.c_str());
 
         m_initialized = true;
         return true;
@@ -247,7 +248,7 @@ bool OnnxDetector::Initialize(const std::wstring& modelPath) {
         m_centerX.clear(); m_centerY.clear();
         m_results.clear();
 
-        FACELOGIN_INFO(L"OnnxDetector initialized");
+        FACELOGIN_INFO(L"Model ready: face detector");
         m_initialized = true;
         return true;
     } catch (const std::exception& e) {
@@ -538,8 +539,8 @@ bool OnnxHeadPose::Initialize(const std::wstring& modelPath) {
         m_faceChip.set_size(kInputSize, kInputSize);
         m_input.assign(3 * kInputSize * kInputSize, 0.0f);
         m_initialized = true;
-        FACELOGIN_INFO(L"MobileNetV2 head-pose model initialized");
-        FACELOGIN_INFO(L"  Input: %hs [1,3,224,224], Output: %hs [1,3,3]",
+        FACELOGIN_INFO(L"Model ready: head pose");
+        FACELOGIN_DEBUG(L"Head-pose tensors: input=%hs [1,3,224,224] output=%hs [1,3,3]",
                        m_inputName.c_str(), m_outputName.c_str());
         return true;
     } catch (const std::exception& e) {
@@ -718,14 +719,14 @@ bool OnnxAntiSpoof::Initialize(const std::wstring& modelPath) {
         // [1,2] = facenox MiniFAS logits (real, spoof).
         m_facenoxMode = (outShape.size() == 2 && outShape[1] == 2);
         if (m_facenoxMode) {
-            FACELOGIN_INFO(L"OnnxAntiSpoof: facenox MiniFAS mode (input=%d, logit output)", m_inputSize);
+            FACELOGIN_DEBUG(L"Anti-spoof model type: MiniFAS input=%d", m_inputSize);
         }
 
         // Allocate reusable buffers for the hot inference path.
         m_resized.set_size(m_inputSize, m_inputSize);
         m_input.assign(1 * 3 * m_inputSize * m_inputSize, 0.0f);
 
-        FACELOGIN_INFO(L"OnnxAntiSpoof initialized (input=%d, outputs=%zu)",
+        FACELOGIN_INFO(L"Model ready: anti-spoof input=%d outputs=%zu",
                       m_inputSize, numOutputs);
         m_initialized = true;
         return true;
@@ -789,7 +790,7 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
             float real = logits[0];
             float spoof = logits[1];
             float score = real - spoof;
-            FACELOGIN_INFO(L"Anti-spoof (MiniFAS): real=%.4f spoof=%.4f score=%.4f",
+            FACELOGIN_DEBUG(L"Anti-spoof inference: real=%.4f spoof=%.4f score=%.4f",
                            real, spoof, score);
             return score;
         }

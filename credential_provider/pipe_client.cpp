@@ -1,6 +1,7 @@
 #include "pipe_client.h"
 #include "../common/logger.h"
 #include "../common/ipc_protocol.h"
+#include <cwchar>
 #include <chrono>
 #include <thread>
 #include <cwchar>
@@ -128,7 +129,7 @@ bool PipeClient::Connect(DWORD timeoutMs, HANDLE cancelEvent) {
             m_hPipe = pipe;
             m_connected = true;
             LeaveCriticalSection(&m_cs);
-            FACELOGIN_INFO(L"Pipe client connected to service");
+            FACELOGIN_DEBUG(L"Pipe connected");
             return true;
         }
 
@@ -174,7 +175,7 @@ bool PipeClient::ProbeServiceAvailable() {
     const DWORD err = GetLastError();
     if (err == ERROR_PIPE_BUSY) return true;
     if (err == ERROR_FILE_NOT_FOUND) {
-        FACELOGIN_INFO(L"ProbeServiceAvailable: service pipe not found — service down");
+        FACELOGIN_DEBUG(L"Service pipe unavailable");
         return false;
     }
     FACELOGIN_WARN(L"ProbeServiceAvailable: CreateFile err=%lu (treating as available)", err);
@@ -282,7 +283,11 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
         else if (msg == ipc::MSG_AUTH_TIMEOUT) messageKind = L"auth_timeout";
         else if (msg == ipc::MSG_AUTH_POSE_TIMEOUT) messageKind = L"auth_pose_timeout";
         else if (msg == ipc::MSG_AUTH_NO_MATCH) messageKind = L"auth_no_match";
-        FACELOGIN_INFO(L"PipeRead: kind=%s chars=%zu", messageKind, len);
+        if (wcscmp(messageKind, L"status") == 0) {
+            FACELOGIN_DEBUG(L"Pipe message: status");
+        } else {
+            FACELOGIN_INFO(L"Pipe message: terminal=%s", messageKind);
+        }
 
         if (msg.starts_with(ipc::MSG_STATUS_PREFIX)) {
             OnStatusCallback callback;

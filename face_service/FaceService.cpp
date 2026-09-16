@@ -470,7 +470,7 @@ bool FaceService::LoadHeavyModels() {
         std::lock_guard<std::mutex> lock(m_modelMutex);
         m_onnxDetector = std::move(detector);
     }
-    FACELOGIN_INFO(L"SCRFD detector loaded");
+        FACELOGIN_DEBUG(L"Model ready: detector");
 
     // Head pose is an optional observer. It is loaded with the heavy model
     // group so the service and Console use the same model asset and lifetime,
@@ -481,7 +481,7 @@ bool FaceService::LoadHeavyModels() {
         if (headPose->Initialize(path)) {
             std::lock_guard<std::mutex> lock(m_modelMutex);
             m_headPose = std::move(headPose);
-            FACELOGIN_INFO(L"MobileNetV2 head-pose model loaded (observer only)");
+            FACELOGIN_DEBUG(L"Model ready: head pose");
         } else {
             FACELOGIN_WARN(L"MobileNetV2 head-pose model unavailable; pose logging disabled");
         }
@@ -498,7 +498,7 @@ bool FaceService::LoadHeavyModels() {
         std::lock_guard<std::mutex> lock(m_modelMutex);
         m_detector = std::move(detector);
     }
-    FACELOGIN_INFO(L"2d106det landmark detector loaded");
+    FACELOGIN_DEBUG(L"Model ready: landmarks");
 
     // 2. InsightFace recognizer (w600k_mbf.onnx).
     {
@@ -511,7 +511,7 @@ bool FaceService::LoadHeavyModels() {
         std::lock_guard<std::mutex> lock(m_modelMutex);
         m_onnxRecognizer = std::move(recognizer);
     }
-    FACELOGIN_INFO(L"ONNX recognizer loaded (InsightFace buffalo_s)");
+    FACELOGIN_DEBUG(L"Model ready: recognizer");
 
     // 3. Anti-spoof model (facenox MiniFAS, 1.6.0 — replaces DeepPixBiS/OULU).
     {
@@ -520,7 +520,7 @@ bool FaceService::LoadHeavyModels() {
         if (antiSpoof->Initialize(path)) {
             std::lock_guard<std::mutex> lock(m_modelMutex);
             m_antiSpoof = std::move(antiSpoof);
-            FACELOGIN_INFO(L"Anti-spoof model loaded (facenox MiniFAS)");
+            FACELOGIN_DEBUG(L"Model ready: anti-spoof MiniFAS");
         } else {
             // Fall back to the legacy OULU model if present.
             std::wstring ouluPath = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
@@ -528,7 +528,7 @@ bool FaceService::LoadHeavyModels() {
             if (oulu->Initialize(ouluPath)) {
                 std::lock_guard<std::mutex> lock(m_modelMutex);
                 m_antiSpoof = std::move(oulu);
-                FACELOGIN_INFO(L"Anti-spoof fallback: DeepPixBiS/OULU loaded");
+                FACELOGIN_DEBUG(L"Model ready: anti-spoof fallback");
             } else {
                 FACELOGIN_WARN(L"Anti-spoof model not available");
             }
@@ -541,7 +541,8 @@ bool FaceService::LoadHeavyModels() {
     // would race. It happens on the main thread in ValidateLivenessMethod(),
     // called after the models are known ready.
 
-    FACELOGIN_INFO(L"Heavy models loaded");
+    FACELOGIN_INFO(L"Models ready: detector, landmarks, recognizer%s",
+                   m_antiSpoof ? L", anti-spoof" : L"");
     return true;
 }
 
@@ -687,11 +688,13 @@ void FaceService::Run() {
             continue;
         }
 
-        const wchar_t* requestKind = L"unknown";
-        if (request == ipc::MSG_AUTH_REQUEST) requestKind = L"auth";
-        else if (request == ipc::MSG_RELOAD_DB) requestKind = L"reload_db";
-        else if (request == ipc::MSG_CONFIG_RELOAD) requestKind = L"config_reload";
-        FACELOGIN_INFO(L"PipeRequest: kind=%s chars=%zu", requestKind, request.size());
+        if (request == ipc::MSG_AUTH_REQUEST) {
+            FACELOGIN_INFO(L"IPC: authentication request");
+        } else if (request == ipc::MSG_RELOAD_DB) {
+            FACELOGIN_INFO(L"IPC: database reload request");
+        } else if (request == ipc::MSG_CONFIG_RELOAD) {
+            FACELOGIN_INFO(L"IPC: configuration reload request");
+        }
 
         if (request == ipc::MSG_RELOAD_DB) {
             m_store->ReloadDatabase();   // force re-read (LoadDatabase is cached)
@@ -1233,9 +1236,9 @@ bool FaceService::ProcessAuthRequest() {
         if (match) {
             consecutiveMatches++;
             consecutiveNoMatch = 0;   // a match resets the no-match counter
-            FACELOGIN_INFO(L"Face matched: distance=%.4f, "
-                           L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
-                           L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f) [%d/%d]",
+            FACELOGIN_DEBUG(L"Auth frame matched: distance=%.4f "
+                            L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
+                            L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f [%d/%d]",
                            match->distance,
                           static_cast<int>(pose.quality), static_cast<int>(pose.range),
                           pose.yaw, pose.pitch,
@@ -1257,16 +1260,8 @@ bool FaceService::ProcessAuthRequest() {
                     // Diagnostics: report the nearest distance in the single
                     // normalized input domain used by the recognizer.
                     float d0 = m_store->FindNearestDistance(onnxEmb.data(), onnxEmb.size());
-                    FACELOGIN_WARN(L"No match for %d frames — nearest normalized distance=%.3f, "
-                                   L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
-                                   L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f",
-                                   consecutiveNoMatch, d0, static_cast<int>(pose.quality),
-                                   static_cast<int>(pose.range), pose.yaw, pose.pitch,
-                                   pose.roll, pose.inferenceMs,
-                                   pose.faceWidth, pose.faceHeight, pose.faceAspect,
-                                   pose.cropWidth, pose.cropHeight, pose.cropAspect);
-                    FACELOGIN_INFO(L"No match for %d consecutive frames — reporting failure to CP",
-                                   consecutiveNoMatch);
+                    FACELOGIN_WARN(L"Auth failed: no match after %d face frames (nearest=%.3f)",
+                                   consecutiveNoMatch, d0);
                     // Opt-in unknown-face capture: save the failing frame +
                     // a JSONL event record (see SaveUnknownFace). Pass the
                     // original-image nearest distance — the variants were
@@ -1297,7 +1292,7 @@ bool FaceService::ProcessAuthRequest() {
             // still run before credentials are released.
             if (consecutiveMatches > 0) {
                 consecutiveMatches--;
-                FACELOGIN_INFO(L"Match lost — counter decayed to %d", consecutiveMatches);
+                FACELOGIN_DEBUG(L"Auth match consensus decayed to %d", consecutiveMatches);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
@@ -1402,7 +1397,8 @@ bool FaceService::ProcessAuthRequest() {
                         float effThr = AntiSpoofEffectiveThreshold(m_antiSpoofThreshold,
                                                                   m_antiSpoof->IsFacenoxMode());
                         if (score >= effThr) passCount++;
-                        FACELOGIN_INFO(L"Anti-spoof frame %d: score=%.3f thr=%.2f (pass=%d)", totalChecked, score, effThr, passCount);
+                    FACELOGIN_DEBUG(L"Anti-spoof sample %d/%d: score=%.3f threshold=%.2f passed=%d",
+                                    totalChecked, totalChecks, score, effThr, passCount);
 
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     }

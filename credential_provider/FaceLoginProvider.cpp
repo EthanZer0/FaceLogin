@@ -292,7 +292,7 @@ STDMETHODIMP FaceLoginProvider::SetSerialization(
 
 STDMETHODIMP FaceLoginProvider::Advise(
     ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext) {
-    FACELOGIN_INFO(L"Advise called");
+    FACELOGIN_DEBUG(L"Provider Advise");
 
     if (m_pEvents) {
         m_pEvents->Release();
@@ -325,7 +325,7 @@ STDMETHODIMP FaceLoginProvider::Advise(
 }
 
 STDMETHODIMP FaceLoginProvider::UnAdvise() {
-    FACELOGIN_INFO(L"UnAdvise called");
+    FACELOGIN_DEBUG(L"Provider UnAdvise");
 
     FACELOGIN_INFO(
         L"ProviderBinding: action=unadvise cpus=%d loginEntry=%d "
@@ -395,7 +395,7 @@ STDMETHODIMP FaceLoginProvider::GetCredentialCount(
     // session, as they did in the proven 1.9.x flow.  Ordinary lock/unlock
     // remains explicitly selected and key-triggered.
     *pbAutoLogonWithDefault = m_isLoginEntry ? TRUE : FALSE;
-    FACELOGIN_INFO(L"LoginEntry: GetCredentialCount default=%lu autoLogon=%d "
+    FACELOGIN_DEBUG(L"GetCredentialCount: default=%lu autoLogon=%d "
                    L"loginEntry=%d generation=%llu sessionId=%lu",
                    *pdwDefault,
                    *pbAutoLogonWithDefault,

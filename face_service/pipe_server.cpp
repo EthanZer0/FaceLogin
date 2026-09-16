@@ -159,7 +159,7 @@ bool PipeServer::WaitForClient(DWORD timeoutMs) {
         return false;
     }
 
-    FACELOGIN_INFO(L"Named pipe created, waiting for client...");
+    FACELOGIN_DEBUG(L"Pipe listener waiting");
 
     // Blocking wait for client connection. RequestStop() connects a short-
     // lived wake client so this call returns without closing a handle that is
@@ -174,7 +174,7 @@ bool PipeServer::WaitForClient(DWORD timeoutMs) {
             return false;
         }
         m_connected.store(true);
-        FACELOGIN_INFO(L"Client connected synchronously");
+        FACELOGIN_INFO(L"Pipe client connected");
         return true;
     }
 
@@ -185,14 +185,14 @@ bool PipeServer::WaitForClient(DWORD timeoutMs) {
             return false;
         }
         m_connected.store(true);
-        FACELOGIN_INFO(L"Client already connected");
+        FACELOGIN_INFO(L"Pipe client connected");
         return true;
     }
 
     // Handle was likely closed by Stop()
     if (m_stopRequested.load() || err == ERROR_NO_DATA || err == ERROR_PIPE_NOT_CONNECTED ||
         err == ERROR_INVALID_HANDLE || err == ERROR_OPERATION_ABORTED) {
-        FACELOGIN_INFO(L"Pipe closed while waiting for client");
+        FACELOGIN_DEBUG(L"Pipe listener wait ended");
     } else {
         FACELOGIN_WARN(L"Client connection failed: %lu", err);
     }
@@ -226,7 +226,7 @@ bool PipeServer::ReadMessage(std::wstring& outMessage, DWORD timeoutMs) {
         DWORD err = GetLastError();
         if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
             err == ERROR_PIPE_NOT_CONNECTED) {
-            FACELOGIN_INFO(L"Pipe broken by client while waiting for message");
+            FACELOGIN_DEBUG(L"Pipe client disconnected before request");
             m_connected.store(false);
             return false;
         }
@@ -255,7 +255,7 @@ bool PipeServer::ReadMessage(std::wstring& outMessage, DWORD timeoutMs) {
     if (!result || bytesRead == 0) {
         DWORD err = GetLastError();
         if (err == ERROR_BROKEN_PIPE) {
-            FACELOGIN_INFO(L"Pipe broken by client");
+            FACELOGIN_DEBUG(L"Pipe client disconnected during read");
         } else if (!result) {
             FACELOGIN_ERROR(L"ReadFile failed: %lu", err);
         }
@@ -284,12 +284,9 @@ bool PipeServer::WriteMessage(const std::wstring& message) {
 
     if (!result || bytesWritten == 0) {
         DWORD err = GetLastError();
-        // 109 (ERROR_BROKEN_PIPE) and 232 (ERROR_NO_DATA) are both normal
-        // "the client closed its end" signals — a benign race when the client
-        // disconnects between our disconnect check and this write. Not an
-        // error; log at INFO so the service log isn't polluted.
+        // These are normal client-disconnect signals, not service failures.
         if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA) {
-            FACELOGIN_INFO(L"Pipe closed during write (err=%lu)", err);
+            FACELOGIN_DEBUG(L"Pipe client disconnected during write (err=%lu)", err);
         } else if (!result) {
             FACELOGIN_ERROR(L"WriteFile failed: %lu", err);
         }
