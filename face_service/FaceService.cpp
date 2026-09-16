@@ -1011,6 +1011,7 @@ FaceService::AuthFrameResult FaceService::AcquireLegalPoseFrame(
     dlib::rectangle& faceRect,
     dlib::full_object_detection& landmarks,
     HeadPoseStats& pose,
+    HeadPoseStabilizer& poseStabilizer,
     const std::function<void(const wchar_t*)>& publishStatus) {
     if (!GrabAuthFrame(frame)) return AuthFrameResult::NoFrame;
     if (!PrepareAuthFaceFrame(frame, faceRect, landmarks, &pose)) {
@@ -1018,7 +1019,10 @@ FaceService::AuthFrameResult FaceService::AcquireLegalPoseFrame(
         return AuthFrameResult::Invalid;
     }
 
-    const HeadPoseEvaluation evaluation = EvaluateHeadPose(pose);
+    const HeadPoseStabilityResult stability = poseStabilizer.Update(pose);
+    pose = stability.pose;
+    const HeadPoseEvaluation evaluation = stability.evaluation;
+    if (stability.pending) return AuthFrameResult::Pending;
     if (!evaluation.accepted) {
         publishStatus(PoseStatusKey(pose, evaluation));
         return AuthFrameResult::Rejected;
@@ -1109,6 +1113,7 @@ bool FaceService::ProcessAuthRequest() {
         sendStatusKey(key);
     };
 
+    HeadPoseStabilizer matchPoseStabilizer;
     dlib::matrix<dlib::rgb_pixel> frame;  // reused by the match loop below
     auto startTime = std::chrono::steady_clock::now();
     bool authSent = false;
@@ -1198,7 +1203,15 @@ bool FaceService::ProcessAuthRequest() {
             continue;
         }
 
-        const HeadPoseEvaluation poseEvaluation = EvaluateHeadPose(pose);
+        const HeadPoseStabilityResult poseStability = matchPoseStabilizer.Update(pose);
+        pose = poseStability.pose;
+        const HeadPoseEvaluation poseEvaluation = poseStability.evaluation;
+        if (poseStability.pending) {
+            consecutiveMatches = 0;
+            consecutiveNoMatch = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            continue;
+        }
         if (!poseEvaluation.accepted) {
             sendStatusKey(PoseStatusKey(pose, poseEvaluation));
             poseRejectedSeen = true;
@@ -1324,6 +1337,7 @@ bool FaceService::ProcessAuthRequest() {
                 bool livenessAcceptedPoseSeen = false;
                 bool livenessPoseRejected = false;
                 bool livenessPosePromptActive = false;
+                HeadPoseStabilizer livenessPoseStabilizer;
 
                 if (method == LivenessMethod::None) {
                     livenessPassed = true;
@@ -1349,9 +1363,14 @@ bool FaceService::ProcessAuthRequest() {
                         dlib::rectangle asRect;
                         HeadPoseStats asPose;
                         const AuthFrameResult frameResult = AcquireLegalPoseFrame(
-                            asFrame, asRect, asLandmarks, asPose, publishPoseStatus);
+                            asFrame, asRect, asLandmarks, asPose,
+                            livenessPoseStabilizer, publishPoseStatus);
                         if (frameResult == AuthFrameResult::NoFrame) {
                             if (m_stopRequested.load()) break;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        if (frameResult == AuthFrameResult::Pending) {
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
@@ -1417,10 +1436,15 @@ bool FaceService::ProcessAuthRequest() {
                         HeadPoseStats livenessPose;
                         const AuthFrameResult frameResult = AcquireLegalPoseFrame(
                             livenessFrame, lRect, livenessLandmarks,
-                            livenessPose, publishPoseStatus);
+                            livenessPose, livenessPoseStabilizer,
+                            publishPoseStatus);
                         if (frameResult == AuthFrameResult::NoFrame) {
                             if (m_stopRequested.load()) break;
                             liveness.ResetBlinkProgress();
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        if (frameResult == AuthFrameResult::Pending) {
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
@@ -1479,6 +1503,7 @@ bool FaceService::ProcessAuthRequest() {
                     bool verifyAcceptedPoseSeen = false;
                     bool verifyPoseRejected = false;
                     bool verifyPosePromptActive = false;
+                    HeadPoseStabilizer verifyPoseStabilizer;
                     while (!m_stopRequested.load() && !verifyOk) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during final verify — aborting");
@@ -1493,9 +1518,13 @@ bool FaceService::ProcessAuthRequest() {
                         HeadPoseStats verifyPose;
                         const AuthFrameResult frameResult = AcquireLegalPoseFrame(
                             verifyFrame, verifyRect, verifyLandmarks,
-                            verifyPose, publishPoseStatus);
+                            verifyPose, verifyPoseStabilizer, publishPoseStatus);
                         if (frameResult == AuthFrameResult::NoFrame) {
                             if (m_stopRequested.load()) break;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        if (frameResult == AuthFrameResult::Pending) {
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }

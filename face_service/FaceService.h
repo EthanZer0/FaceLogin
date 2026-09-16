@@ -98,12 +98,13 @@ private:
     static const wchar_t* PoseStatusKey(
         const HeadPoseStats& pose,
         const HeadPoseEvaluation& evaluation);
-    enum class AuthFrameResult { NoFrame, Invalid, Rejected, Accepted };
+    enum class AuthFrameResult { NoFrame, Pending, Invalid, Rejected, Accepted };
     AuthFrameResult AcquireLegalPoseFrame(
         dlib::matrix<dlib::rgb_pixel>& frame,
         dlib::rectangle& faceRect,
         dlib::full_object_detection& landmarks,
         HeadPoseStats& pose,
+        HeadPoseStabilizer& poseStabilizer,
         const std::function<void(const wchar_t*)>& publishStatus);
 
     // Lazy model loading
