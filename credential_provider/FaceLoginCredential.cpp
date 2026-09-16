@@ -266,7 +266,7 @@ unsigned __stdcall AuthConnectThreadProc(void* pParam) {
     }
 
     EnterCriticalSection(&cred->m_cs);
-    cred->m_authThreadRunning = false;
+    cred->m_authConnectThreadRunning = false;
     LeaveCriticalSection(&cred->m_cs);
     cred->Release();
     return 0;
@@ -278,7 +278,6 @@ unsigned __stdcall AuthConnectThreadProc(void* pParam) {
 
 FaceLoginCredential::FaceLoginCredential() {
     InitializeCriticalSection(&m_cs);
-    m_csInitialized = true;
 
     m_hAuthStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!m_hAuthStop) {
@@ -321,10 +320,7 @@ FaceLoginCredential::~FaceLoginCredential() {
         m_hAuthStop = nullptr;
     }
 
-    if (m_csInitialized) {
-        DeleteCriticalSection(&m_cs);
-        m_csInitialized = false;
-    }
+    DeleteCriticalSection(&m_cs);
 
     FACELOGIN_DEBUG(L"FaceLoginCredential destroyed");
 }
@@ -513,16 +509,16 @@ void FaceLoginCredential::PublishCurrentStatus() {
     if (!presentation.visible) {
         m_statusOverlay.Hide();
         UpdateStatusField(presentation.text, false);
-        FACELOGIN_INFO(L"StatusPresentation: mode=hidden");
+        FACELOGIN_DEBUG(L"StatusPresentation: mode=hidden");
         return;
     }
 
     const bool overlayReady =
         EnsureStatusOverlay(presentation, L"status_publish");
     UpdateStatusField(presentation.text, !overlayReady);
-    FACELOGIN_INFO(L"StatusPresentation: mode=%s fieldVisible=%d",
-                   overlayReady ? L"overlay" : L"field_fallback",
-                   overlayReady ? 0 : 1);
+    FACELOGIN_DEBUG(L"StatusPresentation: mode=%s fieldVisible=%d",
+                    overlayReady ? L"overlay" : L"field_fallback",
+                    overlayReady ? 0 : 1);
 }
 
 void FaceLoginCredential::NotifyCredentialsChanged(
@@ -532,7 +528,7 @@ void FaceLoginCredential::NotifyCredentialsChanged(
     State state = State::Waiting;
     AuthAttemptId attemptId = 0;
     bool eventsAttached = false;
-    bool authThreadRunning = false;
+    bool authConnectThreadRunning = false;
     bool pipeAttached = false;
     EnterCriticalSection(&m_cs);
     events = m_pProviderEvents;
@@ -540,7 +536,7 @@ void FaceLoginCredential::NotifyCredentialsChanged(
     state = m_state;
     attemptId = m_activeAttemptId;
     eventsAttached = events != nullptr;
-    authThreadRunning = m_authThreadRunning;
+    authConnectThreadRunning = m_authConnectThreadRunning;
     pipeAttached = m_pipeClient != nullptr;
     if (eventsAttached) events->AddRef();
     LeaveCriticalSection(&m_cs);
@@ -552,7 +548,7 @@ void FaceLoginCredential::NotifyCredentialsChanged(
     FACELOGIN_INFO(
         L"CredentialsChanged: source=%s state=%d attempt=%llu "
         L"loginEntry=%d generation=%llu sessionId=%lu eventsAttached=%d "
-        L"authThreadRunning=%d pipeAttached=%d context=%p",
+        L"authConnectThreadRunning=%d pipeAttached=%d context=%p",
         sourceName,
         static_cast<int>(state),
         attemptId,
@@ -560,7 +556,7 @@ void FaceLoginCredential::NotifyCredentialsChanged(
         m_context.loginEntryGeneration,
         m_context.loginEntrySessionId,
         static_cast<int>(eventsAttached),
-        static_cast<int>(authThreadRunning),
+        static_cast<int>(authConnectThreadRunning),
         static_cast<int>(pipeAttached),
         reinterpret_cast<void*>(context));
 
@@ -614,13 +610,17 @@ bool FaceLoginCredential::EnsureStatusOverlay(
     return created;
 }
 
-void FaceLoginCredential::ClearCredentials() {
-    EnterCriticalSection(&m_cs);
+void FaceLoginCredential::ClearCredentialFieldsLocked() {
     facelogin::SecureErase(m_password);
     m_sid.clear();
     m_upn.clear();
     m_domain.clear();
     m_username.clear();
+}
+
+void FaceLoginCredential::ClearCredentials() {
+    EnterCriticalSection(&m_cs);
+    ClearCredentialFieldsLocked();
     LeaveCriticalSection(&m_cs);
 }
 
@@ -652,11 +652,7 @@ void FaceLoginCredential::CancelActiveAttempt(bool resetToWaiting) {
         m_authDeadlineTick = 0;
 
         if (!preserveCredentials) {
-            facelogin::SecureErase(m_password);
-            m_sid.clear();
-            m_upn.clear();
-            m_domain.clear();
-            m_username.clear();
+            ClearCredentialFieldsLocked();
             if (resetToWaiting && authenticating) {
                 m_state = State::Waiting;
                 m_statusText.clear();
@@ -733,25 +729,25 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     const State state = GetState();
     bool deselected = false;
     AuthAttemptId activeAttemptId = 0;
-    bool authThreadRunning = false;
+    bool authConnectThreadRunning = false;
     bool pipeAttached = false;
     EnterCriticalSection(&m_cs);
     deselected = m_deselected;
     activeAttemptId = m_activeAttemptId;
-    authThreadRunning = m_authThreadRunning;
+    authConnectThreadRunning = m_authConnectThreadRunning;
     pipeAttached = m_pipeClient != nullptr;
     LeaveCriticalSection(&m_cs);
 
     FACELOGIN_INFO(
         L"CredentialBinding: action=advise state=%d attempt=%llu "
         L"loginEntry=%d generation=%llu sessionId=%lu events2Attached=1 "
-        L"authThreadRunning=%d pipeAttached=%d deselected=%d",
+        L"authConnectThreadRunning=%d pipeAttached=%d deselected=%d",
         static_cast<int>(state),
         activeAttemptId,
         static_cast<int>(m_context.loginEntry),
         m_context.loginEntryGeneration,
         m_context.loginEntrySessionId,
-        static_cast<int>(authThreadRunning),
+        static_cast<int>(authConnectThreadRunning),
         static_cast<int>(pipeAttached),
         static_cast<int>(deselected));
 
@@ -891,13 +887,13 @@ STDMETHODIMP FaceLoginCredential::UnAdvise() {
 
     State state = State::Waiting;
     AuthAttemptId activeAttemptId = 0;
-    bool authThreadRunning = false;
+    bool authConnectThreadRunning = false;
     bool pipeAttached = false;
     bool events2Attached = false;
     EnterCriticalSection(&m_cs);
     state = m_state;
     activeAttemptId = m_activeAttemptId;
-    authThreadRunning = m_authThreadRunning;
+    authConnectThreadRunning = m_authConnectThreadRunning;
     pipeAttached = m_pipeClient != nullptr;
     events2Attached = m_pCredentialEvents2 != nullptr;
     m_statusOverlayAllowed = false;
@@ -906,14 +902,14 @@ STDMETHODIMP FaceLoginCredential::UnAdvise() {
     FACELOGIN_INFO(
         L"CredentialBinding: action=unadvise state=%d attempt=%llu "
         L"loginEntry=%d generation=%llu sessionId=%lu events2Attached=%d "
-        L"authThreadRunning=%d pipeAttached=%d preserveSession=%d",
+        L"authConnectThreadRunning=%d pipeAttached=%d preserveSession=%d",
         static_cast<int>(state),
         activeAttemptId,
         static_cast<int>(m_context.loginEntry),
         m_context.loginEntryGeneration,
         m_context.loginEntrySessionId,
         static_cast<int>(events2Attached),
-        static_cast<int>(authThreadRunning),
+        static_cast<int>(authConnectThreadRunning),
         static_cast<int>(pipeAttached),
         static_cast<int>(state == State::Authenticating ||
                          state == State::Ready ||
@@ -1056,8 +1052,8 @@ STDMETHODIMP FaceLoginCredential::GetFieldState(
     CREDENTIAL_PROVIDER_FIELD_STATE* pcpfs,
     CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE* pcpfis) {
 
-    FACELOGIN_INFO(L"=== GetFieldState (field=%lu, state=%d) ===",
-                  dwFieldID, static_cast<int>(GetState()));
+    FACELOGIN_DEBUG(L"GetFieldState: field=%lu state=%d",
+                    dwFieldID, static_cast<int>(GetState()));
 
     *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
     *pcpfis = CPFIS_NONE;
@@ -1091,8 +1087,8 @@ STDMETHODIMP FaceLoginCredential::GetFieldState(
 }
 
 STDMETHODIMP FaceLoginCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) {
-    FACELOGIN_INFO(L"=== GetStringValue (field=%lu, state=%d) ===",
-                  dwFieldID, static_cast<int>(GetState()));
+    FACELOGIN_DEBUG(L"GetStringValue: field=%lu state=%d",
+                    dwFieldID, static_cast<int>(GetState()));
     *ppwsz = nullptr;
 
     switch (dwFieldID) {
@@ -1343,10 +1339,10 @@ bool FaceLoginCredential::StartAuthAsync(
         expectedInputActivationId == 0 ||
         (m_inputDetectionEnabled && m_inputThreadRunning &&
          m_inputActivationId == expectedInputActivationId);
-    if (m_state != State::Waiting || m_authThreadRunning || m_deselected ||
+    if (m_state != State::Waiting || m_authConnectThreadRunning || m_deselected ||
         !inputActivationValid) {
         const State rejectedState = m_state;
-        const bool authRunning = m_authThreadRunning;
+        const bool authRunning = m_authConnectThreadRunning;
         const bool deselected = m_deselected;
         const auto currentActivationId = m_inputActivationId;
         LeaveCriticalSection(&m_cs);
@@ -1369,14 +1365,10 @@ bool FaceLoginCredential::StartAuthAsync(
     m_statusOverlayTone = facelogin::StatusOverlayTone::Progress;
     deadlineTick = GetTickCount64() + 20000ULL;
     m_authDeadlineTick = deadlineTick;
-    facelogin::SecureErase(m_password);
-    m_sid.clear();
-    m_upn.clear();
-    m_domain.clear();
-    m_username.clear();
+    ClearCredentialFieldsLocked();
     m_statusText = Text("credential.recognizing", L"识别中...");
     m_pipeClient = client;
-    m_authThreadRunning = true;
+    m_authConnectThreadRunning = true;
     LeaveCriticalSection(&m_cs);
 
     // Recognition starts asynchronously.  Push the state directly into the
@@ -1388,13 +1380,7 @@ bool FaceLoginCredential::StartAuthAsync(
     if (!ctx) {
         const std::wstring unavailable =
             Text("credential.serviceUnavailable", L"人脸登录服务不可用");
-        EnterCriticalSection(&m_cs);
-        m_authThreadRunning = false;
-        m_authDeadlineTick = 0;
-        m_state = State::Error;
-        m_statusText = unavailable;
-        m_pipeClient.reset();
-        LeaveCriticalSection(&m_cs);
+        FailAuthStart(unavailable);
         PublishCurrentStatus();
         return false;
     }
@@ -1408,13 +1394,7 @@ bool FaceLoginCredential::StartAuthAsync(
         Release();
         const std::wstring unavailable =
             Text("credential.serviceUnavailable", L"人脸登录服务不可用");
-        EnterCriticalSection(&m_cs);
-        m_authThreadRunning = false;
-        m_authDeadlineTick = 0;
-        m_state = State::Error;
-        m_statusText = unavailable;
-        m_pipeClient.reset();
-        LeaveCriticalSection(&m_cs);
+        FailAuthStart(unavailable);
         FACELOGIN_ERROR(L"AuthAttempt: failed to start connection thread error=%lu",
                         GetLastError());
         PublishCurrentStatus();
@@ -1428,6 +1408,16 @@ bool FaceLoginCredential::StartAuthAsync(
                    attemptId, static_cast<int>(trigger), threadId,
                    deadlineTick);
     return true;
+}
+
+void FaceLoginCredential::FailAuthStart(const std::wstring& status) {
+    EnterCriticalSection(&m_cs);
+    m_authConnectThreadRunning = false;
+    m_authDeadlineTick = 0;
+    m_state = State::Error;
+    m_statusText = status;
+    m_pipeClient.reset();
+    LeaveCriticalSection(&m_cs);
 }
 
 void FaceLoginCredential::JoinAuthConnectThread() {
@@ -1722,16 +1712,6 @@ HRESULT FaceLoginCredential::PackCredentials(
 
     FACELOGIN_INFO(L"Credentials packed successfully (%lu bytes, pkg=%lu)",
                    cbPackedCreds, ulAuthPackage);
-    return S_OK;
-}
-
-// ============================================================================
-// Private: Authentication Package Lookup
-// ============================================================================
-
-HRESULT FaceLoginCredential::GetAuthenticationPackage(ULONG* pulAuthPackage) {
-    // Fall back to Negotiate (0 is treated as Negotiate by LSA)
-    *pulAuthPackage = 0;
     return S_OK;
 }
 

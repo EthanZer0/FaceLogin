@@ -57,9 +57,6 @@ public:
                              OnStatusCallback onStatus = nullptr,
                              DWORD timeoutMs = 0);
 
-    // Check if connected
-    bool IsConnected() const;
-
     // Close the connection (closes the pipe handle, which unblocks the
     // background read thread, then joins the thread).
     void Disconnect();
@@ -69,6 +66,7 @@ private:
     void CleanupReadThread();
     bool IsStopping() const;
     void MarkDisconnected();
+    void NotifyReadFailure(DWORD error);
 
     // Returns true if msg is a terminal (non-status) message
     static bool IsTerminalMessage(const std::wstring& msg);
@@ -88,7 +86,6 @@ private:
     ULONGLONG m_readDeadlineTick = 0;
 
     CRITICAL_SECTION m_cs;
-    bool m_csInitialized = false;
 };
 
 } // namespace facelogin

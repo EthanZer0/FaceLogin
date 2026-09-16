@@ -308,11 +308,7 @@ func (a *App) Uninstall() map[string]interface{} {
 		a.emit(70, "installer.progress.deleteFiles", "done", "")
 	}
 
-	// Step 4: Clean registry — remove the whole HKLM\SOFTWARE\FaceLogin key
-	// (InstallPath/DataPath plus the runtime values UserLoggedIn,
-	// ServiceStartUptime, AboutSeenVersion written by the service and console).
-	// DeleteRegValue() alone would only remove two values and leave the key and
-	// the orphaned runtime values behind.
+	// Step 4: Clean registry — remove the complete FaceLogin state key.
 	a.emit(70, "installer.progress.cleanRegistry", "running", "")
 	_ = internal.DeleteRegKey()
 	a.emit(85, "installer.progress.cleanRegistry", "done", "")

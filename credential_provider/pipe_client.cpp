@@ -14,7 +14,6 @@ struct PipeReadThreadContext {
 
 PipeClient::PipeClient() {
     InitializeCriticalSection(&m_cs);
-    m_csInitialized = true;
     m_hReadStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 }
 
@@ -25,28 +24,29 @@ PipeClient::~PipeClient() {
         CloseHandle(m_hReadStop);
         m_hReadStop = nullptr;
     }
-    if (m_csInitialized) {
-        DeleteCriticalSection(&m_cs);
-        m_csInitialized = false;
-    }
+    DeleteCriticalSection(&m_cs);
 }
 
 bool PipeClient::IsStopping() const {
     return m_hReadStop && WaitForSingleObject(m_hReadStop, 0) == WAIT_OBJECT_0;
 }
 
-bool PipeClient::IsConnected() const {
-    auto* cs = const_cast<CRITICAL_SECTION*>(&m_cs);
-    EnterCriticalSection(cs);
-    const bool connected = m_connected && m_hPipe != INVALID_HANDLE_VALUE;
-    LeaveCriticalSection(cs);
-    return connected;
-}
-
 void PipeClient::MarkDisconnected() {
     EnterCriticalSection(&m_cs);
     m_connected = false;
     LeaveCriticalSection(&m_cs);
+}
+
+void PipeClient::NotifyReadFailure(DWORD error) {
+    if (IsStopping()) return;
+
+    FACELOGIN_WARN(L"Background read failed: %lu", error);
+    MarkDisconnected();
+    OnResponseCallback callback;
+    EnterCriticalSection(&m_cs);
+    callback = m_onResponse;
+    LeaveCriticalSection(&m_cs);
+    if (callback) callback(PipeTerminalTransport::Failed, L"");
 }
 
 void PipeClient::CleanupReadThread() {
@@ -255,15 +255,7 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
             }
         } else {
             const DWORD err = GetLastError();
-            if (!self->IsStopping()) {
-                FACELOGIN_WARN(L"Background read failed: %lu", err);
-                self->MarkDisconnected();
-                OnResponseCallback callback;
-                EnterCriticalSection(&self->m_cs);
-                callback = self->m_onResponse;
-                LeaveCriticalSection(&self->m_cs);
-                if (callback) callback(PipeTerminalTransport::Failed, L"");
-            }
+            self->NotifyReadFailure(err);
             break;
         }
 
@@ -274,15 +266,7 @@ DWORD WINAPI PipeClient::ReadThreadProc(LPVOID param) {
             &bytesRead, nullptr);
         if (!result || bytesRead == 0) {
             const DWORD err = GetLastError();
-            if (!self->IsStopping()) {
-                FACELOGIN_WARN(L"Background read failed: %lu", err);
-                self->MarkDisconnected();
-                OnResponseCallback callback;
-                EnterCriticalSection(&self->m_cs);
-                callback = self->m_onResponse;
-                LeaveCriticalSection(&self->m_cs);
-                if (callback) callback(PipeTerminalTransport::Failed, L"");
-            }
+            self->NotifyReadFailure(err);
             break;
         }
 

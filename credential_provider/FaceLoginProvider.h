@@ -60,13 +60,6 @@ public:
         DWORD dwIndex,
         ICredentialProviderCredential** ppcpc) override;
 
-    // Accessors for our credential
-    CREDENTIAL_PROVIDER_USAGE_SCENARIO GetUsageScenario() const { return m_cpus; }
-    bool IsLoginEntry() const { return m_isLoginEntry; }
-    ULONGLONG GetLoginEntryGeneration() const { return m_loginEntryGeneration; }
-    DWORD GetLoginEntrySessionId() const { return m_loginEntrySessionId; }
-    bool IsCredUI() const { return m_cpus == CPUS_CREDUI || m_cpus == CPUS_PLAP; }
-
 private:
     LONG m_refCount = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus = CPUS_LOGON;

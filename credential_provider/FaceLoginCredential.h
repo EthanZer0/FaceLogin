@@ -113,9 +113,6 @@ private:
         Error
     };
 
-    // Authentication package lookup
-    HRESULT GetAuthenticationPackage(ULONG* pulAuthPackage);
-
     // Switch to the password credential provider (fallback)
     HRESULT SwitchToPasswordProvider();
 
@@ -145,6 +142,7 @@ private:
     bool EnsureStatusOverlay(
         const facelogin::StatusOverlayPresentation& presentation,
         const wchar_t* reason);
+    void ClearCredentialFieldsLocked();
     void ClearCredentials();
     void CancelActiveAttempt(bool resetToWaiting);
     AuthTrigger InputAuthTrigger() const;
@@ -153,6 +151,7 @@ private:
     // thread. The connection worker owns a COM reference until it exits.
     bool StartAuthAsync(AuthTrigger trigger,
                         InputActivationId expectedInputActivationId = 0);
+    void FailAuthStart(const std::wstring& status);
     void JoinAuthConnectThread();
     bool IsInputActivationValid(InputActivationId activationId) const;
 
@@ -215,10 +214,9 @@ private:
 
     HANDLE m_hAuthThread = nullptr;
     HANDLE m_hAuthStop = nullptr;
-    bool m_authThreadRunning = false;
+    bool m_authConnectThreadRunning = false;
     bool m_deselected = false;
 
     // Synchronization
     mutable CRITICAL_SECTION m_cs;
-    bool m_csInitialized = false;
 };
