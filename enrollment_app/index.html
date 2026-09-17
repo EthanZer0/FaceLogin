@@ -455,10 +455,10 @@ button{font-family:inherit}
 .face-item .legacy-tag{font-size:10px;color:#9AA1AC;background:var(--lite);border:1px solid var(--hair);border-radius:999px;padding:1px 8px;flex-shrink:0}
 .face-node{border:1px solid var(--hair);border-radius:var(--radius);background:var(--face);overflow:hidden}
 .face-node .face-item{border:0;border-radius:0}
-.face-expand{width:100%;display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:0;border-top:1px solid var(--hair);background:var(--face);color:#687181;font-size:11px;cursor:pointer;text-align:left}
+.face-expand{position:relative;width:100%;display:flex;align-items:center;min-height:34px;padding:8px 40px 8px 14px;border:0;border-top:1px solid var(--hair);background:var(--face);color:#687181;font-size:11px;line-height:1.45;cursor:pointer;text-align:left}
 .face-expand:hover{background:var(--lite)}
-.face-expand .face-expand-arrow{font-size:13px;color:#8A919E;transition:transform .16s ease}
-.face-expand.open .face-expand-arrow{transform:rotate(180deg)}
+.face-expand .face-expand-arrow{position:absolute;right:16px;top:50%;width:7px;height:7px;border-right:1.5px solid #8A919E;border-bottom:1.5px solid #8A919E;transform:translateY(-70%) rotate(45deg);transition:transform .16s ease}
+.face-expand.open .face-expand-arrow{transform:translateY(-30%) rotate(225deg)}
 .face-learning-panel{display:none;padding:10px 12px 12px;border-top:1px solid var(--hair);background:var(--lite)}
 .face-learning-panel.active{display:block}
 .learning-summary{font-size:11px;color:#687181;line-height:1.55}
@@ -2198,7 +2198,7 @@ function loadFaces() {
           + '<button class="btn btn-secondary" onclick="onRenameFace(' + f.id + ')">' + t('console.faces.rename') + '</button>'
           + '<button class="btn btn-secondary" onclick="onDeleteFace(' + f.id + ')">' + t('console.faces.delete') + '</button>'
         + '</div>'
-        + (f.legacy ? '' : '<button type="button" class="face-expand" id="learning-toggle-' + f.id + '" onclick="toggleLearningArchive(' + f.id + ')"><span>' + t('console.learning.archive') + ' · ' + t('console.learning.samples', { count: sampleCount }) + ' · ' + state + '</span><span class="face-expand-arrow">⌄</span></button><div class="face-learning-panel" id="learning-panel-' + f.id + '"></div>')
+        + (f.legacy ? '' : '<button type="button" class="face-expand" id="learning-toggle-' + f.id + '" onclick="toggleLearningArchive(' + f.id + ')"><span>' + t('console.learning.archive') + ' · ' + t('console.learning.samples', { count: sampleCount }) + (sampleCount > 0 ? ' · ' + state : '') + '</span><span class="face-expand-arrow" aria-hidden="true"></span></button><div class="face-learning-panel" id="learning-panel-' + f.id + '"></div>')
         + '</div>';
     }
     list.innerHTML = html;
