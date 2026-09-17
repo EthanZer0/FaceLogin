@@ -35,6 +35,23 @@ static std::wstring Utf8ToWstr(const std::string& s) {
     return ws;
 }
 
+// A match result contains the credential payload needed only after a complete
+// authentication succeeds.  Consensus and anti-spoof binding must instead use
+// a stable account identity, so two different enrolled users can never lend
+// their match and liveness evidence to one another.
+static std::wstring MatchAccountKey(const CredentialStore::MatchResult& match) {
+    if (!match.sid.empty()) return L"sid:" + match.sid;
+    if (!match.upn.empty()) return L"upn:" + match.upn;
+    return L"name:" + match.username;
+}
+
+static bool SameMatchedAccount(const CredentialStore::MatchResult& match,
+                               const std::wstring& accountKey) {
+    return !accountKey.empty() &&
+           CompareStringOrdinal(MatchAccountKey(match).c_str(), -1,
+                                accountKey.c_str(), -1, TRUE) == CSTR_EQUAL;
+}
+
 FaceService::FaceService() {
     s_pInstance = this;
 }
@@ -1123,6 +1140,7 @@ bool FaceService::ProcessAuthRequest() {
     bool acceptedPoseSeen = false;
     bool poseRejectedSeen = false;
     int consecutiveMatches = 0;
+    std::wstring consensusAccountKey;
     // Consecutive frames where a face WAS detected (and its embedding was
     // computed) but no enrolled face matched. After kNoMatchFailFrames such
     // frames the auth stops immediately with a "人脸匹配失败" notice instead
@@ -1133,11 +1151,9 @@ bool FaceService::ProcessAuthRequest() {
     int consecutiveNoMatch = 0;
     static constexpr int kNoMatchFailFrames = 3;
     // Consensus: how many consecutive matched frames release credentials.
-    // 2 frames (was 3): the liveness phase AND the post-liveness final-match
-    // verify (below) still re-check the face on fresh frames before the
-    // credential is released, so dropping one consensus frame does not shrink
-    // the attack surface — it only removes one redundant full
-    // detect+landmark+embed+match pass (~100ms) from the happy path.
+    // Two consecutive frames of the SAME account establish identity before
+    // liveness starts.  Anti-spoof then binds its result to that account on
+    // the same frame, so no post-liveness re-match is needed.
     static constexpr int CONSENSUS_FRAMES = 2;
 
     while (!m_stopRequested.load()) {
@@ -1201,6 +1217,7 @@ bool FaceService::ProcessAuthRequest() {
         if (!PrepareAuthFaceFrame(frame, faceRect, landmarks, &pose)) {
             sendStatusKey(ipc::L10N_POSE_INVALID);
             consecutiveMatches = 0;
+            consensusAccountKey.clear();
             consecutiveNoMatch = 0;
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
@@ -1211,6 +1228,7 @@ bool FaceService::ProcessAuthRequest() {
         const HeadPoseEvaluation poseEvaluation = poseStability.evaluation;
         if (poseStability.pending) {
             consecutiveMatches = 0;
+            consensusAccountKey.clear();
             consecutiveNoMatch = 0;
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
@@ -1219,6 +1237,7 @@ bool FaceService::ProcessAuthRequest() {
             sendStatusKey(PoseStatusKey(pose, poseEvaluation));
             poseRejectedSeen = true;
             consecutiveMatches = 0;
+            consensusAccountKey.clear();
             consecutiveNoMatch = 0;
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
@@ -1234,7 +1253,14 @@ bool FaceService::ProcessAuthRequest() {
         }
 
         if (match) {
-            consecutiveMatches++;
+            if (consecutiveMatches == 0 || SameMatchedAccount(*match, consensusAccountKey)) {
+                ++consecutiveMatches;
+            } else {
+                // Do not combine consecutive matches from different enrolled
+                // accounts into one authentication consensus.
+                consecutiveMatches = 1;
+            }
+            consensusAccountKey = MatchAccountKey(*match);
             consecutiveNoMatch = 0;   // a match resets the no-match counter
             FACELOGIN_DEBUG(L"Auth frame matched: distance=%.4f "
                             L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
@@ -1287,11 +1313,12 @@ bool FaceService::ProcessAuthRequest() {
             // a full 3-frame restart — the user's slightly moving face stays
             // matched and auth completes in ~1-2s instead of timing out.
             //
-            // Security is preserved: this only relaxes the frame-consensus;
-            // the blink liveness check AND the post-liveness final match verify
-            // still run before credentials are released.
+            // Security is preserved: this only relaxes frame consensus. Blink
+            // still performs its temporal liveness and fresh match check;
+            // anti-spoof binds both checks to the same accepted frame.
             if (consecutiveMatches > 0) {
                 consecutiveMatches--;
+                if (consecutiveMatches == 0) consensusAccountKey.clear();
                 FACELOGIN_DEBUG(L"Auth match consensus decayed to %d", consecutiveMatches);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -1329,6 +1356,7 @@ bool FaceService::ProcessAuthRequest() {
                 }
 
                 bool livenessPassed = false;
+                bool restartMatching = false;
                 bool livenessAcceptedPoseSeen = false;
                 bool livenessPoseRejected = false;
                 bool livenessPosePromptActive = false;
@@ -1337,15 +1365,42 @@ bool FaceService::ProcessAuthRequest() {
                 if (method == LivenessMethod::None) {
                     livenessPassed = true;
                 } else if (method == LivenessMethod::AntiSpoof) {
-                    // Anti-spoof consensus check with threshold-driven frame count:
-                    // low threshold (lenient) → fewer checks, high threshold (strict) → more.
-                    int totalChecks = AntiSpoofCheckCount(m_antiSpoofThreshold);
-                    int passRequired = AntiSpoofPassRequired(totalChecks);
-                    FACELOGIN_INFO(L"Anti-spoof: threshold=%.3f → %d checks, %d required",
-                                   m_antiSpoofThreshold, totalChecks, passRequired);
+                    // Bind every anti-spoof inference to a frame that still
+                    // matches the account confirmed above. The second consensus
+                    // frame itself is the first sample, avoiding a redundant
+                    // capture and the old post-liveness final-match pass.
+                    const std::wstring candidateAccountKey = consensusAccountKey;
+                    const int maxJointAttempts = AntiSpoofCheckCount(m_antiSpoofThreshold);
+                    const float effectiveThreshold = AntiSpoofEffectiveThreshold(
+                        m_antiSpoofThreshold, m_antiSpoof->IsFacenoxMode());
+                    FACELOGIN_INFO(L"Anti-spoof: candidate confirmed; threshold=%.3f max_attempts=%d",
+                                   m_antiSpoofThreshold, maxJointAttempts);
                     auto asStart = std::chrono::steady_clock::now();
-                    int passCount = 0, totalChecked = 0;
-                    while (!m_stopRequested.load() && totalChecked < totalChecks) {
+                    int totalChecked = 0;
+
+                    const auto evaluateJointFrame = [&](const dlib::matrix<dlib::rgb_pixel>& antiSpoofFrame,
+                                                        const dlib::full_object_detection& antiSpoofLandmarks,
+                                                        const CredentialStore::MatchResult& antiSpoofMatch) {
+                        const float score = m_antiSpoof->Predict(antiSpoofFrame, antiSpoofLandmarks);
+                        ++totalChecked;
+                        const bool passed = score >= effectiveThreshold;
+                        FACELOGIN_DEBUG(L"Anti-spoof joint attempt %d/%d: score=%.3f threshold=%.2f identity=confirmed passed=%d",
+                                        totalChecked, maxJointAttempts, score, effectiveThreshold,
+                                        passed ? 1 : 0);
+                        if (passed) {
+                            FACELOGIN_INFO(L"Anti-spoof joint verification passed: attempts=%d distance=%.4f",
+                                           totalChecked, antiSpoofMatch.distance);
+                        }
+                        return passed;
+                    };
+
+                    // This frame already passed SCRFD, landmarks, pose and the
+                    // second consecutive ArcFace match for the candidate.
+                    livenessAcceptedPoseSeen = true;
+                    livenessPassed = evaluateJointFrame(frame, landmarks, *match);
+
+                    while (!m_stopRequested.load() && !livenessPassed &&
+                           totalChecked < maxJointAttempts) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during anti-spoof — aborting");
                             return false;
@@ -1386,26 +1441,36 @@ bool FaceService::ProcessAuthRequest() {
                             FACELOGIN_INFO(L"Pose recovered — restoring anti-spoof status");
                         }
 
-                        float score = m_antiSpoof->Predict(asFrame, asLandmarks);
-                        totalChecked++;
-                        // facenox MiniFAS scores are real-spoof logit diffs (>=1
-                        // = clearly real, calibrated from real footage: real +1.3..+11,
-                        // most screen replays <0). DeepPixBiS/OULU scores are pixel-map
-                        // means (>=0.28 default). The config slider is mapped onto each
-                        // model's score scale via AntiSpoofEffectiveThreshold (the
-                        // facenox mapping anchors the 0.30 default at the historical 1.0).
-                        float effThr = AntiSpoofEffectiveThreshold(m_antiSpoofThreshold,
-                                                                  m_antiSpoof->IsFacenoxMode());
-                        if (score >= effThr) passCount++;
-                    FACELOGIN_DEBUG(L"Anti-spoof sample %d/%d: score=%.3f threshold=%.2f passed=%d",
-                                    totalChecked, totalChecks, score, effThr, passCount);
+                        auto asEmbedding = m_onnxRecognizer->ComputeEmbedding(asFrame, asLandmarks);
+                        std::optional<CredentialStore::MatchResult> asMatch;
+                        if (!asEmbedding.empty()) {
+                            asMatch = m_store->FindBestMatch(
+                                asEmbedding.data(), asEmbedding.size(), m_matchThreshold);
+                        }
+                        if (!asMatch) {
+                            // A blurred or unmatchable frame is not valid
+                            // evidence for either identity or liveness.
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        if (!SameMatchedAccount(*asMatch, candidateAccountKey)) {
+                            FACELOGIN_INFO(L"Anti-spoof candidate changed — returning to matching");
+                            restartMatching = true;
+                            break;
+                        }
 
+                        livenessPassed = evaluateJointFrame(asFrame, asLandmarks, *asMatch);
+                        if (livenessPassed) {
+                            // The credential must come from the exact frame
+                            // whose identity and liveness jointly passed.
+                            match = std::move(asMatch);
+                            break;
+                        }
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     }
-                    livenessPassed = (totalChecked > 0 && passCount >= passRequired);
-                    if (!livenessPassed) {
-                        FACELOGIN_WARN(L"Anti-spoof check failed: %d/%d passed (need %d)",
-                                       passCount, totalChecked, passRequired);
+                    if (!livenessPassed && !restartMatching) {
+                        FACELOGIN_WARN(L"Anti-spoof joint verification failed: attempts=%d/%d",
+                                       totalChecked, maxJointAttempts);
                     }
                 } else if (method == LivenessMethod::Blink) {
                     LivenessDetector liveness;
@@ -1471,6 +1536,15 @@ bool FaceService::ProcessAuthRequest() {
                     livenessPassed = blinked;
                 }
 
+                if (restartMatching) {
+                    consecutiveMatches = 0;
+                    consensusAccountKey.clear();
+                    consecutiveNoMatch = 0;
+                    sendStatusKey(ipc::L10N_RECOGNIZING);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                    continue;
+                }
+
                 if (!livenessPassed) {
                     FACELOGIN_WARN(L"Liveness check failed");
                     SendAuthTerminal(ipc::BuildAuthErrorMessage(
@@ -1482,9 +1556,9 @@ bool FaceService::ProcessAuthRequest() {
                     return false;
                 }
 
-                FACELOGIN_INFO(L"Liveness passed \u2014 verifying match");
-
-                // Final match verify (for blink/antispoof \u2014 prevents face-swap).
+                // Blink evidence is temporal, so it retains a fresh identity
+                // verification. Anti-spoof already passed on an identity-bound
+                // frame and therefore does not need a second match pass.
                 //
                 // Uses the SAME SCRFD detector as the recognition stage so the
                 // two stages agree on face position. Retries over a short window:
@@ -1492,7 +1566,8 @@ bool FaceService::ProcessAuthRequest() {
                 // box/embedding is noisy, so a single frame is unreliable. We
                 // keep grabbing until a frame both detects a face AND matches
                 // (or ~2s elapses).
-                if (method != LivenessMethod::None) {
+                if (method == LivenessMethod::Blink) {
+                    FACELOGIN_INFO(L"Blink liveness passed \u2014 verifying match");
                     sendStatusKey(ipc::L10N_FINAL_VERIFYING);
                     auto verifyStart = std::chrono::steady_clock::now();
                     bool verifyOk = false;

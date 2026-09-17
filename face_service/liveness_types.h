@@ -8,13 +8,14 @@ enum class LivenessMethod {
     None        // No liveness check (insecure)
 };
 
-// Anti-spoof check is run N times, where N scales with strictness:
+// Anti-spoof sampling budget scales with strictness:
 // threshold 0.25 (least strict) → 3 checks, 0.75 (most strict) → 5 checks,
 // linearly interpolated in between. NEVER fewer than 3: facenox MiniFAS
 // scores on real footage jitter frame-to-frame (measured ≈ 0.3..6 for the
 // same user on a laptop webcam, vs the old single-frame assumption), so a
-// single check is a coin flip — the pass rule below (any one frame passing)
-// needs a small sample to ride out the jitter.
+// single check is a coin flip. Enrollment consumes this full budget; service
+// authentication uses it as the maximum number of identity-bound joint
+// attempts and exits as soon as one joint frame passes.
 inline int AntiSpoofCheckCount(float antiSpoofThreshold) {
     constexpr float kMinThr = 0.25f, kMaxThr = 0.75f;
     constexpr int kMinChecks = 3, kMaxChecks = 5;
@@ -24,10 +25,9 @@ inline int AntiSpoofCheckCount(float antiSpoofThreshold) {
     return kMinChecks + static_cast<int>(t * (kMaxChecks - kMinChecks) + 0.5f);
 }
 
-// Checks required to pass: ANY single frame passing is enough (max-score
-// semantics). Real faces jitter around the threshold and at least one frame
-// in the sample clears it; photo/screen replays score below the threshold on
-// EVERY frame, so max-score does not weaken attack rejection.
+// Enrollment pass rule: ANY single sampled frame passing is enough. Real faces
+// jitter around the threshold and at least one frame in the sample clears it;
+// photo/screen replays score below the threshold on EVERY frame.
 inline int AntiSpoofPassRequired(int checkCount) {
     (void)checkCount;
     return 1;
