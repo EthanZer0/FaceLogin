@@ -406,6 +406,10 @@ bool FaceService::Initialize() {
         FACELOGIN_ERROR(L"Failed to load credential database");
         return false;
     }
+    m_adaptiveLearning.SetDataDir(m_dataDir);
+    if (!m_adaptiveLearning.Load()) {
+        FACELOGIN_WARN(L"Adaptive learning archive could not be loaded; continuing without it");
+    }
     FACELOGIN_INFO(L"Loaded %zu registered user(s)", m_store->GetUserCount());
 
     ProcessKernelBootEvidence(L"service-start");
@@ -715,6 +719,7 @@ void FaceService::Run() {
 
         if (request == ipc::MSG_RELOAD_DB) {
             m_store->ReloadDatabase();   // force re-read (LoadDatabase is cached)
+            m_adaptiveLearning.Reload();
             m_pipeServer->Disconnect();
             FACELOGIN_INFO(L"Database reloaded");
         }
@@ -998,6 +1003,27 @@ bool FaceService::PrepareAuthFaceFrame(
     return true;
 }
 
+std::optional<CredentialStore::MatchResult> FaceService::MatchEmbedding(
+    const std::vector<float>& embedding) {
+    if (!m_store || embedding.empty()) return std::nullopt;
+
+    // The existing normal-template path stays first and unchanged. Adaptive
+    // representatives are only a recovery path for a normal nearest candidate
+    // that missed the distance threshold but still passed account ambiguity.
+    if (auto normal = m_store->FindBestMatch(embedding.data(), embedding.size(), m_matchThreshold)) {
+        return normal;
+    }
+
+    const auto candidate = m_store->FindNearestCandidate(embedding.data(), embedding.size());
+    if (!candidate || !candidate->ratioAccepted || candidate->matchedFaceId == 0) {
+        return std::nullopt;
+    }
+    const auto adaptiveDistance = m_adaptiveLearning.FindBestDistance(
+        candidate->sid, candidate->matchedFaceId, embedding.data(), embedding.size());
+    if (!adaptiveDistance || *adaptiveDistance >= m_matchThreshold) return std::nullopt;
+    return m_store->ResolveCandidate(*candidate, *adaptiveDistance);
+}
+
 const wchar_t* FaceService::PoseStatusKey(
     const HeadPoseStats& pose,
     const HeadPoseEvaluation& evaluation) {
@@ -1249,7 +1275,7 @@ bool FaceService::ProcessAuthRequest() {
         auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(
             frame, landmarks);
         if (!onnxEmb.empty()) {
-            match = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
+            match = MatchEmbedding(onnxEmb);
         }
 
         if (match) {
@@ -1444,8 +1470,7 @@ bool FaceService::ProcessAuthRequest() {
                         auto asEmbedding = m_onnxRecognizer->ComputeEmbedding(asFrame, asLandmarks);
                         std::optional<CredentialStore::MatchResult> asMatch;
                         if (!asEmbedding.empty()) {
-                            asMatch = m_store->FindBestMatch(
-                                asEmbedding.data(), asEmbedding.size(), m_matchThreshold);
+                            asMatch = MatchEmbedding(asEmbedding);
                         }
                         if (!asMatch) {
                             // A blurred or unmatchable frame is not valid
@@ -1623,8 +1648,7 @@ bool FaceService::ProcessAuthRequest() {
                         auto verifyEmbedding = m_onnxRecognizer->ComputeEmbedding(
                             verifyFrame, verifyLandmarks);
                         if (!verifyEmbedding.empty()) {
-                            verifyMatch = m_store->FindBestMatch(
-                                verifyEmbedding.data(), verifyEmbedding.size(), m_matchThreshold);
+                            verifyMatch = MatchEmbedding(verifyEmbedding);
                         }
 
                         if (verifyMatch) {

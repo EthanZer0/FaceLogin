@@ -428,6 +428,7 @@ button{font-family:inherit}
   display:block;width:100%;padding:9px 14px;text-align:left;
   font-size:12px;color:var(--err);background:none;border:none;cursor:pointer;
 }
+.face-ctx-item.face-ctx-claim{color:var(--ink)}
 .face-ctx-item:hover{background:var(--lite)}
 
 /* ================================================================
@@ -452,6 +453,21 @@ button{font-family:inherit}
 .face-item.legacy:hover{background:var(--lite)}
 .face-item.legacy .face-name{color:#6B7280;text-decoration:line-through}
 .face-item .legacy-tag{font-size:10px;color:#9AA1AC;background:var(--lite);border:1px solid var(--hair);border-radius:999px;padding:1px 8px;flex-shrink:0}
+.face-node{border:1px solid var(--hair);border-radius:var(--radius);background:var(--face);overflow:hidden}
+.face-node .face-item{border:0;border-radius:0}
+.face-expand{width:100%;display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border:0;border-top:1px solid var(--hair);background:var(--face);color:#687181;font-size:11px;cursor:pointer;text-align:left}
+.face-expand:hover{background:var(--lite)}
+.face-expand .face-expand-arrow{font-size:13px;color:#8A919E;transition:transform .16s ease}
+.face-expand.open .face-expand-arrow{transform:rotate(180deg)}
+.face-learning-panel{display:none;padding:10px 12px 12px;border-top:1px solid var(--hair);background:var(--lite)}
+.face-learning-panel.active{display:block}
+.learning-summary{font-size:11px;color:#687181;line-height:1.55}
+.learning-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
+.learning-actions .btn{width:auto;padding:5px 10px;margin:0;font-size:11px}
+.learning-samples{display:grid;grid-template-columns:repeat(auto-fill,minmax(54px,1fr));gap:6px;margin-top:10px}
+.learning-sample{aspect-ratio:1;border-radius:5px;overflow:hidden;border:1px solid var(--hair);background:#E9EDF2}
+.learning-sample img{width:100%;height:100%;object-fit:cover;display:block}
+.learning-empty{padding:12px 0 2px;font-size:11px;color:#8A919E}
 .faces-actions{display:flex;gap:8px;flex-shrink:0}
 .faces-actions .btn{margin-top:0;flex:1}
 .face-empty{text-align:center;color:var(--fog);font-size:13px;padding:40px 0;flex:1}
@@ -530,11 +546,17 @@ button{font-family:inherit}
   margin-bottom:8px;text-transform:uppercase;
 }
 .rename-card p.dim{font-size:11px;color:#8A919E;line-height:1.6;margin-bottom:18px}
+.learning-target-label{display:block;font-size:11px;color:#687181;letter-spacing:.08em;margin:0 0 6px}
 .rename-card input{
   box-sizing:border-box;width:100%;border:1px solid var(--hair);border-radius:var(--radius);
   padding:9px 12px;font-size:13px;outline:none;background:var(--face);color:var(--ink);
 }
 .rename-card input:focus{border-color:var(--live);box-shadow:0 0 0 3px rgba(14,159,110,.12)}
+.rename-card select{
+  box-sizing:border-box;width:100%;border:1px solid var(--hair);border-radius:var(--radius);
+  padding:9px 12px;font-size:13px;outline:none;background:var(--face);color:var(--ink);
+}
+.rename-card select:focus{border-color:var(--live);box-shadow:0 0 0 3px rgba(14,159,110,.12)}
 .rename-actions{display:flex;gap:8px;margin-top:14px}
 .rename-actions .btn{flex:1;margin-top:0}
 
@@ -1138,6 +1160,7 @@ button{font-family:inherit}
 <!-- Right-click context menu for face cards (delete single record) -->
 <div id="face-ctx-menu" class="face-ctx-menu">
   <input type="hidden" id="face-ctx-file" value="">
+  <button type="button" class="face-ctx-item face-ctx-claim" id="face-ctx-claim"></button>
   <button type="button" class="face-ctx-item face-ctx-del" id="face-ctx-del">删除这条记录</button>
 </div>
 
@@ -1198,6 +1221,22 @@ button{font-family:inherit}
     <div class="rename-actions">
       <button type="button" class="btn btn-secondary" id="rename-cancel" onclick="closeRenameDialog()"></button>
       <button type="button" class="btn btn-primary" id="rename-confirm" onclick="onRenameConfirm()"></button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- Adaptive-learning confirmation modal                                -->
+<!-- ================================================================== -->
+<div class="rename-overlay" id="learning-claim-overlay" onclick="if(event.target===this)closeLearningClaimDialog()">
+  <div class="rename-card" role="dialog" aria-modal="true" aria-labelledby="learning-claim-title" aria-describedby="learning-claim-description">
+    <h2 id="learning-claim-title"></h2>
+    <p class="dim" id="learning-claim-description"></p>
+    <label class="learning-target-label" id="learning-claim-label" for="learning-claim-face"></label>
+    <select id="learning-claim-face"></select>
+    <div class="rename-actions">
+      <button type="button" class="btn btn-secondary" id="learning-claim-cancel" onclick="closeLearningClaimDialog()"></button>
+      <button type="button" class="btn btn-primary" id="learning-claim-confirm" onclick="onLearningClaimConfirm()"></button>
     </div>
   </div>
 </div>
@@ -2113,10 +2152,15 @@ function onCapture() {
 // ================================================================
 
 var faceLabelsById = Object.create(null);
+var faceRecordsById = Object.create(null);
 var renameFaceId = null;
 var renamePreviousFocus = null;
 var deleteFaceId = null;
+var deleteMode = 'face';
 var deletePreviousFocus = null;
+var learningClaimFile = '';
+var learningClaimPreviousFocus = null;
+var LEARNING_BASE = 'https://facelogin-learning/';
 
 function loadFaces() {
   checkAccountRefresh();  // prompt to refresh a stale MSA→local record if present
@@ -2124,8 +2168,10 @@ function loadFaces() {
     var faces = JSON.parse(H.GetFacesJson());
     var count = H.GetFaceCount();
     faceLabelsById = Object.create(null);
+    faceRecordsById = Object.create(null);
     for (var j = 0; j < faces.length; j++) {
       faceLabelsById[String(faces[j].id)] = faces[j].label || '';
+      faceRecordsById[String(faces[j].id)] = faces[j];
     }
     var list = document.getElementById('face-list');
     document.getElementById('faces-count').textContent = t('console.faces.count', { count: count });
@@ -2138,16 +2184,94 @@ function loadFaces() {
     var html = '';
     for (var i = 0; i < faces.length; i++) {
       var f = faces[i];
-      html += '<div class="face-item' + (f.legacy ? ' legacy' : '') + '">'
-        + '<span class="face-name" title="' + escapeHtml(f.label) + '">' + escapeHtml(f.label) + '</span>'
-        + (f.legacy ? '<span class="legacy-tag">' + t('console.faces.legacy') + '</span>' : '')
-        + '<span class="face-id">#' + f.id + '</span>'
-        + '<button class="btn btn-secondary" onclick="onRenameFace(' + f.id + ')">' + t('console.faces.rename') + '</button>'
-        + '<button class="btn btn-secondary" onclick="onDeleteFace(' + f.id + ')">' + t('console.faces.delete') + '</button>'
+      var learning = f.learning || {};
+      var sampleCount = Number(learning.sampleCount || 0);
+      var prototypeCount = Number(learning.prototypeCount || 0);
+      var state = sampleCount === 0 ? t('console.learning.noSamples')
+        : prototypeCount > 0 ? (learning.enabled ? t('console.learning.active') : t('console.learning.paused'))
+        : t('console.learning.pending', { count: sampleCount });
+      html += '<div class="face-node' + (f.legacy ? ' legacy' : '') + '">'
+        + '<div class="face-item' + (f.legacy ? ' legacy' : '') + '">'
+          + '<span class="face-name" title="' + escapeHtml(f.label) + '">' + escapeHtml(f.label) + '</span>'
+          + (f.legacy ? '<span class="legacy-tag">' + t('console.faces.legacy') + '</span>' : '')
+          + '<span class="face-id">#' + f.id + '</span>'
+          + '<button class="btn btn-secondary" onclick="onRenameFace(' + f.id + ')">' + t('console.faces.rename') + '</button>'
+          + '<button class="btn btn-secondary" onclick="onDeleteFace(' + f.id + ')">' + t('console.faces.delete') + '</button>'
+        + '</div>'
+        + (f.legacy ? '' : '<button type="button" class="face-expand" id="learning-toggle-' + f.id + '" onclick="toggleLearningArchive(' + f.id + ')"><span>' + t('console.learning.archive') + ' · ' + t('console.learning.samples', { count: sampleCount }) + ' · ' + state + '</span><span class="face-expand-arrow">⌄</span></button><div class="face-learning-panel" id="learning-panel-' + f.id + '"></div>')
         + '</div>';
     }
     list.innerHTML = html;
   } catch(e) { showBanner('faces', t('console.faces.loadFailed', { error: e.message }), 'error'); }
+}
+
+function toggleLearningArchive(id) {
+  var panel = document.getElementById('learning-panel-' + id);
+  var toggle = document.getElementById('learning-toggle-' + id);
+  if (!panel || !toggle) return;
+  var opening = !panel.classList.contains('active');
+  panel.classList.toggle('active', opening);
+  toggle.classList.toggle('open', opening);
+  if (opening) loadLearningArchive(id);
+}
+
+function loadLearningArchive(id) {
+  var panel = document.getElementById('learning-panel-' + id);
+  if (!panel) return;
+  var face = faceRecordsById[String(id)];
+  if (!face) return;
+  try {
+    var archives = JSON.parse(H.GetAdaptiveArchive(id));
+    var archive = null;
+    for (var i = 0; i < archives.length; i++) {
+      if (Number(archives[i].faceId) === Number(id)) { archive = archives[i]; break; }
+    }
+    var sampleCount = archive ? Number(archive.sampleCount || 0) : 0;
+    var prototypeCount = archive ? Number(archive.prototypeCount || 0) : 0;
+    var enabled = !!(archive && archive.enabled);
+    var summary = sampleCount === 0 ? t('console.learning.noSamples')
+      : t('console.learning.samples', { count: sampleCount }) + ' · '
+        + (prototypeCount > 0 ? (enabled ? t('console.learning.active') : t('console.learning.paused'))
+          : t('console.learning.pending', { count: sampleCount }));
+    var html = '<div class="learning-summary">' + escapeHtml(summary) + '</div>';
+    html += '<div class="learning-actions">';
+    if (sampleCount >= 5) html += '<button class="btn btn-primary" onclick="onRebuildAdaptiveArchive(' + id + ')">' + t('console.learning.update') + '</button>';
+    if (prototypeCount > 0) html += '<button class="btn btn-secondary" onclick="onToggleAdaptiveArchive(' + id + ',' + (enabled ? 'false' : 'true') + ')">' + t(enabled ? 'console.learning.pause' : 'console.learning.resume') + '</button>';
+    if (sampleCount > 0) html += '<button class="btn btn-secondary" onclick="openDeleteDialog(' + id + ',\'learning\')">' + t('console.learning.clear') + '</button>';
+    html += '</div>';
+    if (sampleCount > 0) {
+      html += '<div class="learning-samples">';
+      var samples = archive.samples || [];
+      for (var j = 0; j < samples.length; j++) {
+        var file = String(samples[j].file || '');
+        if (!/^[A-Za-z0-9._-]+$/.test(file)) continue;
+        html += '<div class="learning-sample"><img src="' + LEARNING_BASE + encodeURIComponent(file) + '" loading="lazy" alt="' + escapeHtml(t('console.learning.archive')) + '"></div>';
+      }
+      html += '</div>';
+    } else {
+      html += '<div class="learning-empty">' + t('console.learning.noSamples') + '</div>';
+    }
+    panel.innerHTML = html;
+  } catch (e) {
+    panel.innerHTML = '<div class="learning-empty">' + escapeHtml(t('console.learning.rebuildFailed')) + '</div>';
+  }
+}
+
+function onRebuildAdaptiveArchive(id) {
+  try {
+    if (!H.RebuildAdaptiveArchive(id)) throw new Error('rebuild');
+    showBanner('faces', t('console.learning.rebuilt'), 'ok');
+    loadFaces();
+    setTimeout(function() { toggleLearningArchive(id); }, 0);
+  } catch (e) { showBanner('faces', t('console.learning.rebuildFailed'), 'error'); }
+}
+
+function onToggleAdaptiveArchive(id, enabled) {
+  try {
+    if (!H.SetAdaptiveArchiveEnabled(id, !!enabled)) throw new Error('toggle');
+    loadFaces();
+    setTimeout(function() { toggleLearningArchive(id); }, 0);
+  } catch (e) { showBanner('faces', t('console.learning.rebuildFailed'), 'error'); }
 }
 
 function goAddFace() {
@@ -2159,14 +2283,15 @@ function onDeleteFace(id) {
   openDeleteDialog(id);
 }
 
-function openDeleteDialog(id) {
+function openDeleteDialog(id, mode) {
   deleteFaceId = id;
+  deleteMode = mode || 'face';
   deletePreviousFocus = document.activeElement;
   var overlay = document.getElementById('face-delete-overlay');
-  document.getElementById('delete-title').textContent = t('console.faces.deleteTitle');
-  document.getElementById('delete-description').textContent = t('console.faces.deleteConfirm');
+  document.getElementById('delete-title').textContent = deleteMode === 'learning' ? t('console.learning.archive') : t('console.faces.deleteTitle');
+  document.getElementById('delete-description').textContent = deleteMode === 'learning' ? t('console.learning.clearConfirm') : t('console.faces.deleteConfirm');
   document.getElementById('delete-cancel').textContent = t('console.faces.renameCancel');
-  document.getElementById('delete-confirm').textContent = t('console.faces.delete');
+  document.getElementById('delete-confirm').textContent = deleteMode === 'learning' ? t('console.learning.clear') : t('console.faces.delete');
   overlay.classList.add('active');
   requestAnimationFrame(function() {
     document.getElementById('delete-cancel').focus();
@@ -2177,6 +2302,7 @@ function closeDeleteDialog() {
   var overlay = document.getElementById('face-delete-overlay');
   if (overlay) overlay.classList.remove('active');
   deleteFaceId = null;
+  deleteMode = 'face';
   var previousFocus = deletePreviousFocus;
   deletePreviousFocus = null;
   if (previousFocus && previousFocus.focus) previousFocus.focus();
@@ -2185,15 +2311,74 @@ function closeDeleteDialog() {
 function onDeleteConfirm() {
   if (deleteFaceId === null) return;
   var id = deleteFaceId;
+  var mode = deleteMode;
   closeDeleteDialog();
   try {
-    if (H.DeleteFace(id)) {
-      showBanner('faces', t('console.faces.deleted'), 'ok');
+    var deleted = mode === 'learning' ? H.DeleteAdaptiveArchive(id) : H.DeleteFace(id);
+    if (deleted) {
+      showBanner('faces', mode === 'learning' ? t('console.learning.cleared') : t('console.faces.deleted'), 'ok');
       loadFaces();
     } else {
-      showBanner('faces', t('console.faces.deleteFailed'), 'error');
+      showBanner('faces', mode === 'learning' ? t('console.learning.rebuildFailed') : t('console.faces.deleteFailed'), 'error');
     }
-  } catch(e) { showBanner('faces', t('console.faces.deleteFailedDetail', { error: e.message }), 'error'); }
+  } catch(e) { showBanner('faces', mode === 'learning' ? t('console.learning.rebuildFailed') : t('console.faces.deleteFailedDetail', { error: e.message }), 'error'); }
+}
+
+function openLearningClaimDialog(file) {
+  var selectable = [];
+  Object.keys(faceRecordsById).forEach(function(id) {
+    if (!faceRecordsById[id].legacy) selectable.push(faceRecordsById[id]);
+  });
+  if (selectable.length === 0) {
+    showBanner('faces', t('console.learning.claimFailed'), 'error');
+    return;
+  }
+  learningClaimFile = file;
+  learningClaimPreviousFocus = document.activeElement;
+  var select = document.getElementById('learning-claim-face');
+  var options = '';
+  for (var i = 0; i < selectable.length; i++) {
+    var face = selectable[i];
+    options += '<option value="' + face.id + '">' + escapeHtml(face.label) + ' #' + face.id + '</option>';
+  }
+  select.innerHTML = options;
+  document.getElementById('learning-claim-title').textContent = t('console.learning.claimTitle');
+  document.getElementById('learning-claim-description').textContent = t('console.learning.claimDescription');
+  document.getElementById('learning-claim-label').textContent = t('console.learning.targetFace');
+  document.getElementById('learning-claim-cancel').textContent = t('console.faces.renameCancel');
+  document.getElementById('learning-claim-confirm').textContent = t('console.learning.claimConfirm');
+  document.getElementById('learning-claim-overlay').classList.add('active');
+  requestAnimationFrame(function() { select.focus(); });
+}
+
+function closeLearningClaimDialog() {
+  var overlay = document.getElementById('learning-claim-overlay');
+  if (overlay) overlay.classList.remove('active');
+  learningClaimFile = '';
+  var previousFocus = learningClaimPreviousFocus;
+  learningClaimPreviousFocus = null;
+  if (previousFocus && previousFocus.focus) previousFocus.focus();
+}
+
+function onLearningClaimConfirm() {
+  if (!learningClaimFile) return;
+  var select = document.getElementById('learning-claim-face');
+  var faceId = parseInt(select.value, 10);
+  if (!faceId) return;
+  var file = learningClaimFile;
+  var confirm = document.getElementById('learning-claim-confirm');
+  confirm.disabled = true;
+  try {
+    if (!H.ClaimUnknownFaceForLearning(file, faceId)) throw new Error('claim');
+    closeLearningClaimDialog();
+    renderUnknownFaces();
+    showBanner('faces', t('console.learning.claimed'), 'ok', 7000);
+    loadFaces();
+  } catch (e) {
+    showBanner('faces', t('console.learning.claimFailed'), 'error');
+  } finally {
+    confirm.disabled = false;
+  }
 }
 
 function onRenameFace(id) {
@@ -2639,12 +2824,19 @@ function renderUnknownFaces() {
   }
 }
 
-// Right-click a card → small context menu with a single "删除" action.
+// Right-click a failed record to either remove it or explicitly assign it to
+// one of the current account's adaptive-learning archives.
 function onFaceCardCtx(ev, file) {
   ev.preventDefault();
   var menu = document.getElementById('face-ctx-menu');
   var fileInput = document.getElementById('face-ctx-file');
   fileInput.value = file;
+  var claim = document.getElementById('face-ctx-claim');
+  claim.textContent = t('console.learning.claim');
+  claim.onclick = function() {
+    closeFaceCtx();
+    openLearningClaimDialog(fileInput.value);
+  };
   var el = document.getElementById('face-ctx-del');
   el.onclick = function() {
     closeFaceCtx();
@@ -2659,7 +2851,7 @@ function onFaceCardCtx(ev, file) {
   };
   // Position near the cursor, keep inside the window.
   var x = Math.min(ev.clientX, window.innerWidth - 120);
-  var y = Math.min(ev.clientY, window.innerHeight - 60);
+  var y = Math.min(ev.clientY, window.innerHeight - 96);
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
   menu.classList.add('active');
@@ -2752,6 +2944,11 @@ document.addEventListener('keydown', function(e) {
     var renameOverlay = document.getElementById('rename-overlay');
     if (renameOverlay && renameOverlay.classList.contains('active')) {
       closeRenameDialog();
+      return;
+    }
+    var learningClaimOverlay = document.getElementById('learning-claim-overlay');
+    if (learningClaimOverlay && learningClaimOverlay.classList.contains('active')) {
+      closeLearningClaimDialog();
       return;
     }
     var deleteOverlay = document.getElementById('face-delete-overlay');

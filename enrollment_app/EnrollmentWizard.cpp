@@ -33,9 +33,77 @@ static std::wstring Utf8ToWstr(const std::string& s) {
     if (s.empty()) return L"";
     int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
     if (len <= 0) return L"";
-    std::wstring ws(len - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &ws[0], len);
+    std::wstring ws(len, L'\0');
+    if (MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, ws.data(), len) == 0) return L"";
+    ws.pop_back();
     return ws;
+}
+
+static bool DecodeJpegWithWic(const std::wstring& path,
+                               dlib::matrix<dlib::rgb_pixel>& image) {
+    image.set_size(0, 0);
+    IWICImagingFactory* factory = nullptr;
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+                                  CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+    if (SUCCEEDED(hr)) {
+        hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr,
+                                                GENERIC_READ, WICDecodeMetadataCacheOnLoad,
+                                                &decoder);
+    }
+    if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+    if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
+    if (SUCCEEDED(hr)) {
+        hr = converter->Initialize(frame, GUID_WICPixelFormat24bppRGB,
+                                   WICBitmapDitherTypeNone, nullptr, 0.0,
+                                   WICBitmapPaletteTypeCustom);
+    }
+    UINT width = 0;
+    UINT height = 0;
+    if (SUCCEEDED(hr)) hr = converter->GetSize(&width, &height);
+    if (SUCCEEDED(hr) && (width == 0 || height == 0 || width > 4096 || height > 4096)) {
+        hr = E_INVALIDARG;
+    }
+    std::vector<BYTE> pixels;
+    if (SUCCEEDED(hr)) {
+        pixels.resize(static_cast<size_t>(width) * height * 3);
+        hr = converter->CopyPixels(nullptr, width * 3,
+                                   static_cast<UINT>(pixels.size()), pixels.data());
+    }
+    if (SUCCEEDED(hr)) {
+        image.set_size(static_cast<long>(height), static_cast<long>(width));
+        for (UINT y = 0; y < height; ++y) {
+            for (UINT x = 0; x < width; ++x) {
+                const BYTE* pixel = pixels.data() + (static_cast<size_t>(y) * width + x) * 3;
+                image(static_cast<long>(y), static_cast<long>(x)) =
+                    dlib::rgb_pixel(pixel[0], pixel[1], pixel[2]);
+            }
+        }
+    }
+    if (converter) converter->Release();
+    if (frame) frame->Release();
+    if (decoder) decoder->Release();
+    if (factory) factory->Release();
+    return SUCCEEDED(hr);
+}
+
+static uint64_t CurrentFileTimeTicks() {
+    FILETIME fileTime = {};
+    GetSystemTimeAsFileTime(&fileTime);
+    ULARGE_INTEGER value = {};
+    value.LowPart = fileTime.dwLowDateTime;
+    value.HighPart = fileTime.dwHighDateTime;
+    return value.QuadPart;
+}
+
+static std::wstring AdaptiveSampleName(uint32_t faceId) {
+    const uint64_t ticks = CurrentFileTimeTicks();
+    wchar_t name[96] = {};
+    swprintf_s(name, L"sample-%llu-%u.jpg",
+               static_cast<unsigned long long>(ticks), faceId);
+    return name;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +238,10 @@ EnrollmentWizard::EnrollmentWizard() {
     m_webcam     = std::make_unique<WebcamCapture>();
     m_detector   = std::make_unique<OnnxLandmarkDetector>();
     m_store.SetDataDir(m_dataDir);
+    m_adaptiveLearning.SetDataDir(m_dataDir);
+    if (!m_adaptiveLearning.Load()) {
+        FACELOGIN_WARN(L"Adaptive learning archive unavailable; it will be retried on demand");
+    }
 
     m_config = LoadConfig(m_dataDir);
     m_livenessMethod = m_config.liveness_method;
@@ -1272,6 +1344,7 @@ bool EnrollmentWizard::NeedsReenrollment() {
 
 std::string EnrollmentWizard::GetFacesJson() {
     m_store.LoadDatabase();
+    m_adaptiveLearning.Load();
     size_t idx = m_store.FindUserIndex(m_sid, m_upn, m_username);
     if (idx >= m_store.GetUsers().size()) return "[]";
 
@@ -1283,7 +1356,16 @@ std::string EnrollmentWizard::GetFacesJson() {
         const auto& f = faces[i];
         js << "{\"id\":" << f.id
            << ",\"label\":\"" << WstrToUtf8Escaped(f.label) << "\""
-           << ",\"legacy\":" << (f.legacy ? "true" : "false") << "}";
+           << ",\"legacy\":" << (f.legacy ? "true" : "false");
+        const auto* archive = m_adaptiveLearning.FindArchive(m_sid, f.id);
+        js << ",\"learning\":{\"sampleCount\":"
+           << (archive ? archive->samples.size() : 0)
+           << ",\"builtSampleCount\":"
+           << (archive ? archive->builtSampleCount : 0)
+           << ",\"prototypeCount\":"
+           << (archive ? archive->prototypes.size() : 0)
+           << ",\"enabled\":" << (archive && archive->enabled ? "true" : "false")
+           << "}}";
     }
     js << "]";
     return js.str();
@@ -1306,6 +1388,7 @@ bool EnrollmentWizard::DeleteFace(int faceId) {
     m_store.LoadDatabase();
     if (!m_store.DeleteFace(m_sid, static_cast<uint32_t>(faceId))) return false;
     if (!m_store.SaveDatabase()) return false;
+    m_adaptiveLearning.DeleteArchive(m_sid, static_cast<uint32_t>(faceId));
     NotifyServiceReload();
     return true;
 }
@@ -1314,6 +1397,7 @@ bool EnrollmentWizard::ClearAllFaces() {
     m_store.LoadDatabase();
     if (!m_store.ClearAllFaces(m_sid)) return false;
     if (!m_store.SaveDatabase()) return false;
+    m_adaptiveLearning.DeleteAllForSid(m_sid);
     NotifyServiceReload();
     return true;
 }
@@ -1323,6 +1407,116 @@ bool EnrollmentWizard::RenameFace(int faceId, const std::wstring& label) {
     m_store.LoadDatabase();
     if (!m_store.RenameFace(m_sid, static_cast<uint32_t>(faceId), label)) return false;
     if (!m_store.SaveDatabase()) return false;
+    NotifyServiceReload();
+    return true;
+}
+
+std::string EnrollmentWizard::GetAdaptiveArchiveJson(int faceId) {
+    if (faceId <= 0) return "[]";
+    m_store.LoadDatabase();
+    const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    if (userIndex >= m_store.GetUsers().size()) {
+        return "[]";
+    }
+    const auto& faces = m_store.GetUsers()[userIndex].faces;
+    const bool found = std::any_of(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
+        return face.id == static_cast<uint32_t>(faceId);
+    });
+    if (!found) {
+        return "[]";
+    }
+    m_adaptiveLearning.Load();
+    return m_adaptiveLearning.GetArchivesJson(m_sid);
+}
+
+bool EnrollmentWizard::ClaimUnknownFaceForLearning(const std::string& file, int faceId) {
+    if (faceId <= 0 || file.empty() || file.find_first_of("/\\\\:") != std::string::npos) {
+        return false;
+    }
+    m_store.LoadDatabase();
+    const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    if (userIndex >= m_store.GetUsers().size()) return false;
+    const auto& faces = m_store.GetUsers()[userIndex].faces;
+    const auto faceIt = std::find_if(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
+        return face.id == static_cast<uint32_t>(faceId) && !face.legacy;
+    });
+    if (faceIt == faces.end()) return false;
+
+    const std::wstring sourceName = Utf8ToWstr(file);
+    const std::wstring sourcePath = m_dataDir + L"\\data\\unknown\\" + sourceName;
+    const DWORD attrs = GetFileAttributesW(sourcePath.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) return false;
+
+    // A historical failed frame is never accepted blindly. Re-run the current
+    // detector, landmarks and recognizer against the stored source frame.
+    if (!EnsureModelsLoaded()) return false;
+    dlib::matrix<dlib::rgb_pixel> image;
+    if (!DecodeJpegWithWic(sourcePath, image) || image.size() == 0) return false;
+    const auto detections = m_onnxDetector->Detect(image);
+    if (detections.size() != 1) return false;
+    const auto& detection = detections.front();
+    dlib::rectangle rect(static_cast<long>(detection.x1), static_cast<long>(detection.y1),
+                         static_cast<long>(detection.x2), static_cast<long>(detection.y2));
+    if (rect.is_empty() || rect.width() < 80 || rect.height() < 80) return false;
+    dlib::full_object_detection landmarks;
+    if (!m_detector->DetectLandmarks(image, rect, landmarks) || landmarks.num_parts() != 106) return false;
+    const auto embedding = m_onnxRecognizer->ComputeEmbedding(image, landmarks);
+    if (embedding.empty()) return false;
+
+    if (!m_adaptiveLearning.Load()) return false;
+    const std::wstring sampleName = AdaptiveSampleName(static_cast<uint32_t>(faceId));
+    const std::wstring samplePath = m_dataDir + L"\\data\\adaptive\\samples\\" + sampleName;
+    if (!CopyFileW(sourcePath.c_str(), samplePath.c_str(), TRUE)) return false;
+    if (!m_adaptiveLearning.AddSample(m_sid, static_cast<uint32_t>(faceId), sampleName,
+                                      embedding, CurrentFileTimeTicks())) {
+        DeleteFileW(samplePath.c_str());
+        return false;
+    }
+    NotifyServiceReload();
+    return true;
+}
+
+bool EnrollmentWizard::RebuildAdaptiveArchive(int faceId) {
+    if (faceId <= 0) return false;
+    m_store.LoadDatabase();
+    const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    if (userIndex >= m_store.GetUsers().size()) return false;
+    const auto& faces = m_store.GetUsers()[userIndex].faces;
+    const bool found = std::any_of(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
+        return face.id == static_cast<uint32_t>(faceId) && !face.legacy;
+    });
+    if (!found) return false;
+    if (!m_adaptiveLearning.RebuildArchive(m_sid, static_cast<uint32_t>(faceId))) return false;
+    NotifyServiceReload();
+    return true;
+}
+
+bool EnrollmentWizard::SetAdaptiveArchiveEnabled(int faceId, bool enabled) {
+    if (faceId <= 0) return false;
+    m_store.LoadDatabase();
+    const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    if (userIndex >= m_store.GetUsers().size()) return false;
+    const auto& faces = m_store.GetUsers()[userIndex].faces;
+    const bool found = std::any_of(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
+        return face.id == static_cast<uint32_t>(faceId) && !face.legacy;
+    });
+    if (!found) return false;
+    if (!m_adaptiveLearning.SetArchiveEnabled(m_sid, static_cast<uint32_t>(faceId), enabled)) return false;
+    NotifyServiceReload();
+    return true;
+}
+
+bool EnrollmentWizard::DeleteAdaptiveArchive(int faceId) {
+    if (faceId <= 0) return false;
+    m_store.LoadDatabase();
+    const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    if (userIndex >= m_store.GetUsers().size()) return false;
+    const auto& faces = m_store.GetUsers()[userIndex].faces;
+    const bool found = std::any_of(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
+        return face.id == static_cast<uint32_t>(faceId) && !face.legacy;
+    });
+    if (!found) return false;
+    if (!m_adaptiveLearning.DeleteArchive(m_sid, static_cast<uint32_t>(faceId))) return false;
     NotifyServiceReload();
     return true;
 }

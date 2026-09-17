@@ -19,6 +19,7 @@
 #include "webcam_capture_dshow.h"
 #include "pipe_server.h"
 #include "credential_store.h"
+#include "adaptive_learning_store.h"
 #include "../common/config_util.h"
 
 namespace facelogin {
@@ -106,6 +107,8 @@ private:
         HeadPoseStats& pose,
         HeadPoseStabilizer& poseStabilizer,
         const std::function<void(const wchar_t*)>& publishStatus);
+    std::optional<CredentialStore::MatchResult> MatchEmbedding(
+        const std::vector<float>& embedding);
 
     // Lazy model loading
     void StartBackgroundModelLoad();   // spawn the async loader thread
@@ -143,6 +146,7 @@ private:
     std::unique_ptr<WebcamCaptureDS> m_webcamDS;   // DirectShow (service fallback)
     CameraPipeline m_cameraPipeline = CameraPipeline::None;  // active backend
     std::unique_ptr<CredentialStore> m_store;
+    AdaptiveLearningStore m_adaptiveLearning;
 
     // Configuration
     AppConfig m_config;

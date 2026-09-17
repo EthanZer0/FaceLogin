@@ -236,6 +236,32 @@ public:
             SecureErase(password);
         }
     };
+
+    // A nearest account candidate without decrypted credentials. This lets the
+    // service inspect an adaptive archive only after the normal templates have
+    // identified one concrete base FaceRecord.
+    struct MatchCandidate {
+        size_t       accountIndex = 0;
+        std::wstring username;
+        std::wstring upn;
+        std::wstring sid;
+        float        distance = 0.0f;
+        float        secondBestDistance = 0.0f;
+        bool         ratioAccepted = false;
+        uint32_t     matchedFaceId = 0;
+        size_t       accountFaceCount = 0;
+    };
+
+    // Finds the nearest account/base-face pair without applying the distance
+    // threshold and without decrypting the stored password.
+    std::optional<MatchCandidate> FindNearestCandidate(const float probeEmbedding[],
+                                                        size_t probeDim) const;
+
+    // Resolves credentials only after a normal or adaptive distance has passed
+    // the caller's existing policy. candidate must originate from this store.
+    std::optional<MatchResult> ResolveCandidate(const MatchCandidate& candidate,
+                                                float acceptedDistance) const;
+
     // probeDim is the number of floats in probeEmbedding (128 for dlib,
     // 512 for InsightFace ONNX). Only stored embeddings of the same
     // dimensionality are compared; others are skipped as non-comparable.

@@ -17,6 +17,7 @@
 #include "../face_service/onnx_models.h"
 #include "../face_service/webcam_capture.h"
 #include "../face_service/credential_store.h"
+#include "../face_service/adaptive_learning_store.h"
 #include "../common/config_util.h"
 #include "../common/head_pose_types.h"
 
@@ -82,6 +83,14 @@ public:
     bool ClearAllFaces();
     // Rename one face of the current account.
     bool RenameFace(int faceId, const std::wstring& label);
+
+    // Per-base-face adaptive archive. Samples originate only from the opt-in
+    // unknown-face gallery and never consume the regular ten-face quota.
+    std::string GetAdaptiveArchiveJson(int faceId);
+    bool ClaimUnknownFaceForLearning(const std::string& file, int faceId);
+    bool RebuildAdaptiveArchive(int faceId);
+    bool SetAdaptiveArchiveEnabled(int faceId, bool enabled);
+    bool DeleteAdaptiveArchive(int faceId);
 
     // Account-type change detection (symmetric MSA ↔ local conversions).
     // Windows keeps the same SID when a user converts their account between a
@@ -195,6 +204,7 @@ private:
     std::unique_ptr<OnnxRecognizer> m_onnxRecognizer; // InsightFace recognition
     std::unique_ptr<OnnxAntiSpoof>  m_antiSpoof;
     CredentialStore m_store;
+    AdaptiveLearningStore m_adaptiveLearning;
 
     // Configuration
     AppConfig m_config;

@@ -593,8 +593,8 @@ size_t CredentialStore::GetFaceCount(const std::wstring& sid) const {
     return m_users[idx].faces.size();
 }
 
-std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
-    const float probeEmbedding[], size_t probeDim, float threshold) {
+std::optional<CredentialStore::MatchCandidate> CredentialStore::FindNearestCandidate(
+    const float probeEmbedding[], size_t probeDim) const {
     if (m_users.empty() || probeDim == 0 || probeEmbedding == nullptr) {
         return std::nullopt;
     }
@@ -649,69 +649,81 @@ std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
     // (e.g. dlib 128-D probe against an ONNX 512-D enrollment — a config/data
     // mismatch. DEBUG level: fires on every frame and would spam the log.)
     if (bestIdx >= m_users.size()) {
-        FACELOGIN_DEBUG(L"FindBestMatch: no stored %zu-D embedding (accounts=%zu)",
+        FACELOGIN_DEBUG(L"FindNearestCandidate: no stored %zu-D embedding (accounts=%zu)",
                         probeDim, m_users.size());
         return std::nullopt;
     }
 
-    const float effThreshold = threshold;
+    MatchCandidate candidate;
+    candidate.accountIndex = bestIdx;
+    candidate.distance = bestDist;
+    candidate.secondBestDistance = secondBestDist;
+    candidate.matchedFaceId = bestFaceId;
+    candidate.accountFaceCount = m_users[bestIdx].faces.size();
+    candidate.upn = m_users[bestIdx].upn;
+    candidate.sid = m_users[bestIdx].sid;
+    candidate.username = m_users[bestIdx].username;
+    candidate.ratioAccepted = true;
 
-    // Reject if best match is not meaningfully better than second-best.
-    // A ratio >= 0.75 means the probe is ambiguous between two accounts
-    // (or between the real user and a noisy impostor).
-    // Skip this check when only one account is comparable — there is no
-    // second-best to compare against.
     if (comparableAccounts > 1 && secondBestDist < 1e9f) {
-        float ratio = bestDist / secondBestDist;
+        const float ratio = bestDist / secondBestDist;
         if (ratio >= 0.75f) {
-            FACELOGIN_INFO(L"Match rejected: best/second-best ratio too high (%.3f/%.3f=%.3f)",
-                          bestDist, secondBestDist, ratio);
-            return std::nullopt;
+            candidate.ratioAccepted = false;
         }
     }
+    return candidate;
+}
 
-    if (bestDist < effThreshold) {
-        MatchResult best;
-        best.distance = bestDist;
-        best.matchedFaceId = bestFaceId;
-        best.accountFaceCount = m_users[bestIdx].faces.size();
-        best.upn = m_users[bestIdx].upn;
-        best.sid = m_users[bestIdx].sid;
-        best.username = m_users[bestIdx].username;
-
-        if (IsPasswordlessRecord(m_users[bestIdx].encryptedPassword)) {
-            // Passwordless account: no password to decrypt. Return the match
-            // with passwordless=true AND an explicit empty password — the
-            // caller (FaceService) submits a blank MSV1_0 credential so a
-            // true blank-password local account can still console-unlock
-            // (Windows allows blank-password console logon by default).
-            best.passwordless = true;
-            best.password.clear();
-            return best;
-        }
-
-        // Decrypt the password
-        auto plain = DpapiUtil::Unprotect(m_users[bestIdx].encryptedPassword);
-        if (!plain.empty()) {
-            // The password was stored as a wstring
-            if (plain.size() % sizeof(wchar_t) == 0) {
-                best.password.assign(
-                    reinterpret_cast<const wchar_t*>(plain.data()),
-                    plain.size() / sizeof(wchar_t));
-            }
-            // Zero the plaintext buffer
-            SecureZeroMemory(plain.data(), plain.size());
-        }
-
-        if (!best.password.empty()) {
-            return best;
-        }
-        // Password-bearing record whose decrypt failed (e.g. DPAPI key
-        // lost) — keep the old strict behavior: no match.
-        FACELOGIN_WARN(L"FindBestMatch: matched account password decrypt failed");
+std::optional<CredentialStore::MatchResult> CredentialStore::ResolveCandidate(
+    const MatchCandidate& candidate, float acceptedDistance) const {
+    if (candidate.accountIndex >= m_users.size() || candidate.matchedFaceId == 0) {
+        return std::nullopt;
+    }
+    const UserRecord& user = m_users[candidate.accountIndex];
+    if (CompareStringOrdinal(user.sid.c_str(), -1, candidate.sid.c_str(), -1, TRUE) != CSTR_EQUAL ||
+        user.faces.size() != candidate.accountFaceCount) {
+        return std::nullopt;
     }
 
+    MatchResult best;
+    best.distance = acceptedDistance;
+    best.matchedFaceId = candidate.matchedFaceId;
+    best.accountFaceCount = user.faces.size();
+    best.upn = user.upn;
+    best.sid = user.sid;
+    best.username = user.username;
+
+    if (IsPasswordlessRecord(user.encryptedPassword)) {
+        best.passwordless = true;
+        best.password.clear();
+        return best;
+    }
+
+    auto plain = DpapiUtil::Unprotect(user.encryptedPassword);
+    if (!plain.empty()) {
+        if (plain.size() % sizeof(wchar_t) == 0) {
+            best.password.assign(reinterpret_cast<const wchar_t*>(plain.data()),
+                                 plain.size() / sizeof(wchar_t));
+        }
+        SecureZeroMemory(plain.data(), plain.size());
+    }
+
+    if (!best.password.empty()) return best;
+    FACELOGIN_WARN(L"ResolveCandidate: matched account password decrypt failed");
     return std::nullopt;
+}
+
+std::optional<CredentialStore::MatchResult> CredentialStore::FindBestMatch(
+    const float probeEmbedding[], size_t probeDim, float threshold) {
+    const auto candidate = FindNearestCandidate(probeEmbedding, probeDim);
+    if (!candidate) return std::nullopt;
+    if (!candidate->ratioAccepted) {
+        FACELOGIN_INFO(L"Match rejected: best/second-best ratio too high (%.3f/%.3f)",
+                       candidate->distance, candidate->secondBestDistance);
+        return std::nullopt;
+    }
+    if (candidate->distance >= threshold) return std::nullopt;
+    return ResolveCandidate(*candidate, candidate->distance);
 }
 
 float CredentialStore::FindNearestDistance(const float probeEmbedding[],

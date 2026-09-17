@@ -84,6 +84,14 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
             wv3->SetVirtualHostNameToFolderMapping(
                 L"facelogin-captures", capDir.c_str(),
                 COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+            const std::wstring learningDir = self->m_wizard->GetDataDir() +
+                L"\\data\\adaptive\\samples";
+            CreateDirectoryW((self->m_wizard->GetDataDir() + L"\\data").c_str(), nullptr);
+            CreateDirectoryW((self->m_wizard->GetDataDir() + L"\\data\\adaptive").c_str(), nullptr);
+            CreateDirectoryW(learningDir.c_str(), nullptr);
+            wv3->SetVirtualHostNameToFolderMapping(
+                L"facelogin-learning", learningDir.c_str(),
+                COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
             wv3->Release();
         }
     }
@@ -452,6 +460,11 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"NeedsReenrollment")   *ids = 38;
     else if (n == L"IsCapturing")         *ids = 39;
     else if (n == L"ReloadUi")            *ids = 46;
+    else if (n == L"GetAdaptiveArchive")  *ids = 47;
+    else if (n == L"ClaimUnknownFaceForLearning") *ids = 48;
+    else if (n == L"RebuildAdaptiveArchive") *ids = 49;
+    else if (n == L"SetAdaptiveArchiveEnabled") *ids = 50;
+    else if (n == L"DeleteAdaptiveArchive") *ids = 51;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -471,8 +484,11 @@ static std::string OptionalArgUtf8(DISPPARAMS* p, UINT argIdx) {
     if (ws.empty()) return "";
     int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
     if (len <= 0) return "";
-    std::string out(len - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, &out[0], len, nullptr, nullptr);
+    std::string out(len, '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, out.data(), len, nullptr, nullptr) == 0) {
+        return "";
+    }
+    out.pop_back();
     return out;
 }
 
@@ -609,6 +625,36 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
             break;
         }
         case 33: if (res) *res = MakeBool(m_wizard->ClearStaleAccountUpn()); break;
+        case 47: {
+            if (p->cArgs < 1 || p->rgvarg[0].vt != VT_I4) return DISP_E_BADPARAMCOUNT;
+            if (res) *res = MakeStr(m_wizard->GetAdaptiveArchiveJson(p->rgvarg[0].lVal));
+            break;
+        }
+        case 48: {
+            // ClaimUnknownFaceForLearning(file, faceId): COM arguments are reversed.
+            if (p->cArgs < 2 || p->rgvarg[0].vt != VT_I4) return DISP_E_BADPARAMCOUNT;
+            const std::string file = OptionalArgUtf8(p, 1);
+            if (res) *res = MakeBool(m_wizard->ClaimUnknownFaceForLearning(file, p->rgvarg[0].lVal));
+            break;
+        }
+        case 49: {
+            if (p->cArgs < 1 || p->rgvarg[0].vt != VT_I4) return DISP_E_BADPARAMCOUNT;
+            if (res) *res = MakeBool(m_wizard->RebuildAdaptiveArchive(p->rgvarg[0].lVal));
+            break;
+        }
+        case 50: {
+            if (p->cArgs < 2 || p->rgvarg[1].vt != VT_I4 || p->rgvarg[0].vt != VT_BOOL) {
+                return DISP_E_BADPARAMCOUNT;
+            }
+            if (res) *res = MakeBool(m_wizard->SetAdaptiveArchiveEnabled(
+                p->rgvarg[1].lVal, p->rgvarg[0].boolVal == VARIANT_TRUE));
+            break;
+        }
+        case 51: {
+            if (p->cArgs < 1 || p->rgvarg[0].vt != VT_I4) return DISP_E_BADPARAMCOUNT;
+            if (res) *res = MakeBool(m_wizard->DeleteAdaptiveArchive(p->rgvarg[0].lVal));
+            break;
+        }
         case 34: {
             // OpenExternal(url) — open a URL in the OS default browser
             // instead of a WebView2 popup window. Used by the About card's

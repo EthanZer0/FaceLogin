@@ -8,6 +8,7 @@ add_executable(FaceLoginConsole
     ${CMAKE_SOURCE_DIR}/face_service/liveness_detector.cpp
     ${CMAKE_SOURCE_DIR}/face_service/onnx_models.cpp
     ${CMAKE_SOURCE_DIR}/face_service/credential_store.cpp
+    ${CMAKE_SOURCE_DIR}/face_service/adaptive_learning_store.cpp
 )
 
 target_link_libraries(FaceLoginConsole PRIVATE
