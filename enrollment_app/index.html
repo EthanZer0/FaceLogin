@@ -1952,19 +1952,9 @@ function onCapture() {
   document.getElementById('cap-pct').textContent = '';
   document.getElementById('cap-fill').style.width = '0%';
 
-  var tCapture = Date.now();
   H.CaptureFaceSamples();
-  try {
-    H.LogDiagnostic('capture_start method=' + liveMethod + ' t=' + tCapture
-      + ' com_ret=' + (Date.now() - tCapture) + 'ms');
-  } catch(e) {}
-  // Diagnostics (卡90% 排查): the JS call above BLOCKS the UI thread until the
-  // C++ side returns. CaptureFaceSamples only spawns a thread and returns
-  // fast, so a big com_ret here means the C++ method itself hung — not the
-  // capture loop.
 
   var livenessPoll = setInterval(function() {
-    var tickAt = Date.now();
     var checking = false;
     var passed = false;
     try { checking = H.IsLivenessChecking(); } catch(e) {}
@@ -1972,14 +1962,6 @@ function onCapture() {
 
     if (!checking) {
       clearInterval(livenessPoll);
-      // Diagnostics (卡90% 排查): the transition from liveness→sampling.
-      // liveness_dur = wall time from capture_start to here; com_ret = time
-      // the IsLivenessChecking() COM call itself blocked (a healthy read is
-      // microseconds, so a large value means the UI thread was wedged).
-      try {
-        H.LogDiagnostic('liveness_done passed=' + !!passed
-          + ' dur=' + (Date.now() - tCapture) + 'ms com_ret=' + (Date.now() - tickAt) + 'ms t=' + Date.now());
-      } catch(e) {}
       if (!passed) {
         captureActive = false;
         prog.style.display = 'none';
@@ -2000,19 +1982,10 @@ function onCapture() {
       // If the backend hasn't finished after 8s (backend stuck, frame thread
       // died, detection never succeeds), stop polling and tell the user —
       // never hang at 90% forever.
-      var pollStart = Date.now();
       var CAPTURE_TIMEOUT_MS = 8000;
-      // Diagnostics (卡90% 排查): track poll intervals. If the UI thread is
-      // starved (slow GetLatestFrameAndFaces / COM), intervals blow past the
-      // intended 200ms — log the gap so we can see the stall in enrollment.log.
-      var lastPollAt = Date.now();
+      var pollStart = Date.now();
       var samplePoll = setInterval(function() {
         var now = Date.now();
-        var gap = now - lastPollAt;
-        lastPollAt = now;
-        if (gap > 500) {
-          try { H.LogDiagnostic('poll_stall gap=' + gap + 'ms n_before t=' + now); } catch(e) {}
-        }
         var n = H.GetSampleCount();
         var pct = Math.round(n / 10 * 100);
         document.getElementById('samples-tag').textContent = n + ' / 10';
@@ -2022,13 +1995,6 @@ function onCapture() {
           // Hard timeout regardless of backend state — guaranteed exit.
           clearInterval(samplePoll);
           captureActive = false;
-          // Diagnostics (卡90% 排查): distinguish a true 8s backend timeout
-          // from a UI thread stall. If this fires, it means the backend did
-          // NOT reach 10 samples (or the poll was starved — cross-check the
-          // C++ "sampling loop ended captured=N/10" line).
-          try {
-            H.LogDiagnostic('capture_timeout n=' + H.GetSampleCount() + ' t=' + Date.now());
-          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
@@ -2042,14 +2008,6 @@ function onCapture() {
         }
         if (n >= 10) {          clearInterval(samplePoll);
           captureActive = false;
-          // Diagnostics (卡90% 排查): capture succeeded end-to-end, with total
-          // wall time from sampling start to 10/10. Healthy is ~2-3s (10 ×
-          // ~200ms poll ticks); a large dur means the UI thread was starved
-          // between ticks.
-          try {
-            H.LogDiagnostic('capture_done n=' + n + ' dur=' + (Date.now() - pollStart)
-              + 'ms t=' + Date.now());
-          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
@@ -2108,7 +2066,6 @@ function onCapture() {
             var st = H.IsPasswordlessState();
             if (typeof st !== 'number') st = parseInt(st, 10);
             if (isNaN(st)) st = 0;
-            console.log('GetPasswordlessState -> ' + st);
             var skipField = document.getElementById('field-skip-pass');
             var skipChk = document.getElementById('fld-skip-pass');
             var passField = document.getElementById('pwd-pass-field');
@@ -2126,7 +2083,7 @@ function onCapture() {
               skipField.style.display = 'none';
               skipChk.checked = false;
             }
-          } catch(e) { console.log('GetPasswordlessState threw: ' + e); }
+          } catch(e) {}
           document.getElementById('fld-pass').focus();
         } else if (H.IsCapturing && !H.IsCapturing()) {
           // Backend stopped early without reaching 10 samples — the capture
@@ -2136,12 +2093,6 @@ function onCapture() {
           // response. Reset the UI and tell the user what happened.
           clearInterval(samplePoll);
           captureActive = false;
-          // Diagnostics (卡90% 排查): backend bailed early — cross-check the
-          // C++ "Enrollment sampling loop ended: captured=N/10" line to see
-          // whether it was a liveness failure or a sample-loop bail.
-          try {
-            H.LogDiagnostic('capture_early_end n=' + H.GetSampleCount() + ' t=' + Date.now());
-          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';

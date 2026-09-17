@@ -63,9 +63,8 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
     v.pdispVal->Release();
     host->Release();
 
-    // Log WebView2 process failures (renderer crash / unresponsive): with the
-    // JS side dead no diagnostic can be written, so this is the only evidence
-    // a frozen-looking UI can leave behind.
+    // Log WebView2 process failures (renderer crash / unresponsive), because
+    // they leave the Console UI unavailable to the user.
     {
         ICoreWebView2ProcessFailedEventHandler* pf = new ProcessFailedCallback();
         self->m_webview->add_ProcessFailed(pf, &self->m_processFailedToken);
@@ -429,7 +428,6 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"GetUserSid")   *ids = 18;
     else if (n == L"GetAccountType") *ids = 19;
     else if (n == L"GetLatestFrameAndFaces") *ids = 20;
-    else if (n == L"LogDiagnostic") *ids = 42;
     else if (n == L"GetCameraList") *ids = 21;
     else if (n == L"IsPasswordlessState") *ids = 22;
     else if (n == L"GetPasswordlessState") *ids = 22; // alias (1.9.0 frontend)
@@ -575,17 +573,6 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
         case 20: if (res) *res = MakeStr(m_wizard->GetLatestFrameAndFaces()); break;
         case 21: if (res) *res = MakeStr(m_wizard->GetCameraList()); break;
         case 22: if (res) *res = MakeInt(m_wizard->GetPasswordlessState()); break;
-        case 42: {  // LogDiagnostic: JS→log bridge (卡90% 排查)
-            if (p->cArgs < 1) break;
-            std::string msg;
-            if (p->rgvarg[0].vt == VT_BSTR) {
-                int len = WideCharToMultiByte(CP_UTF8, 0, p->rgvarg[0].bstrVal, -1, nullptr, 0, nullptr, nullptr);
-                msg.resize(len > 0 ? len - 1 : 0);
-                if (len > 0) WideCharToMultiByte(CP_UTF8, 0, p->rgvarg[0].bstrVal, -1, &msg[0], len, nullptr, nullptr);
-            }
-            m_wizard->LogDiagnostic(msg);
-            break;
-        }
         case 23: {
             std::wstring label = OptionalArg(p, 0);  // first JS arg: face label
             if (res) *res = MakeBool(m_wizard->SaveEnrollmentNoPassword(label));

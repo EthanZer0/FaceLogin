@@ -139,11 +139,6 @@ public:
     bool ClearUnknownFaces();
     void ClearLog();
 
-    // Frontend diagnostic hook: the JS layer calls this to write a line into
-    // enrollment.log (the C++ log file). Used to record frontend-side timing /
-    // stall events that plain console.log would not capture (卡90% 排查).
-    void LogDiagnostic(const std::string& message);
-
     // Per-frame data for JS canvas rendering (pull model — JS calls these from rAF)
     std::string GetLatestFrameBase64(); // JPEG base64, ~200KB
     std::string GetLatestFacesJson();   // [{x,y,w,h,landmarks:[{x,y},...]},...]
@@ -191,14 +186,6 @@ private:
     bool SaveEnrollmentImpl(const std::wstring& password, bool passwordless,
                             const std::wstring& label);
     static std::wstring GetCurrentProcessUserSid();
-
-    // Diagnostics: persist the exact frame that failed anti-spoof as a BMP
-    // under <dataDir>\diag\ (max 10, first N only). Lets a collapsed MiniFAS
-    // score be attributed to the frame (driver-stalled camera after the
-    // service grabbed it → frozen/tinted/noisy frames with normal mean
-    // brightness) vs the crop/model, by looking at the actual pixels.
-    void SaveAntiSpoofFailFrame(const dlib::matrix<dlib::rgb_pixel>& frame,
-                                float score);
 
     // Camera & face processing
     std::unique_ptr<WebcamCapture>  m_webcam;
