@@ -215,7 +215,7 @@
   "console.camera.selectFailed": "카메라 선택에 실패했습니다: {error}",
   "console.settings.loadFailed": "설정을 불러오지 못했습니다: {error}",
   "console.settings.saveFailedDetail": "설정을 저장하지 못했습니다: {error}",
-  "console.faces.count": "{count} / 5개",
+  "console.faces.count": "{count} / 10개",
   "console.faces.legacy": "이전 버전 데이터",
   "console.faces.rename": "이름 변경",
   "console.faces.delete": "삭제",

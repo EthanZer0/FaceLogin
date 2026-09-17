@@ -215,7 +215,7 @@
   "console.camera.selectFailed": "选择摄像头失败: {error}",
   "console.settings.loadFailed": "读取设置失败: {error}",
   "console.settings.saveFailedDetail": "保存设置失败: {error}",
-  "console.faces.count": "{count} / 5 张",
+  "console.faces.count": "{count} / 10 张",
   "console.faces.legacy": "旧版数据",
   "console.faces.rename": "重命名",
   "console.faces.delete": "删除",

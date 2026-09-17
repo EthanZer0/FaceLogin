@@ -215,7 +215,7 @@
   "console.camera.selectFailed": "Failed to select camera: {error}",
   "console.settings.loadFailed": "Failed to read settings: {error}",
   "console.settings.saveFailedDetail": "Failed to save settings: {error}",
-  "console.faces.count": "{count} / 5 faces",
+  "console.faces.count": "{count} / 10 faces",
   "console.faces.legacy": "Legacy Data",
   "console.faces.rename": "Rename",
   "console.faces.delete": "Delete",

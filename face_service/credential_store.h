@@ -52,7 +52,7 @@ namespace facelogin {
 
 // Maximum faces one account may enroll. Prevents abuse; AddFace rejects when
 // the account already has this many faces.
-inline constexpr size_t kMaxFacesPerUser = 5;
+inline constexpr size_t kMaxFacesPerUser = 10;
 
 // Passwordless account: the encryptedPassword field holds a single sentinel
 // byte instead of a DPAPI blob. (An empty vector is also treated as
