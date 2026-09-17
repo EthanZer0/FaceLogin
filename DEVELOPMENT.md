@@ -20,7 +20,7 @@ FaceLogin 是一个 Windows 人脸识别登录系统，允许用户通过摄像�
 | 人脸识别 | InsightFace buffalo_s ONNX (512维) |
 | 活体检测 | EAR眨眼检测 + facenox MiniFAS 静默反欺诈，可配置为 `blink` / `antispoof` / `none`（默认 `none`） |
 | 相机采集 | Media Foundation 优先 + DirectShow 回退（服务与 Console 统一管线） |
-| 光照处理 | 公共逐帧光照统计与归一化；硬件粗调可验证、会话级降级，用户开关默认关闭 |
+| 摄像头采集 | Media Foundation 优先，DirectShow 回退；当前版本不包含软件曝光/光照归一化，采集链路保持连续抓帧以稳定摄像头自动曝光 |
 | 头部姿态 | MobileNetV2 6D Pose ONNX，输出 Yaw / Pitch / Roll，用于锁屏识别姿态门控 |
 | 多语言 | 独立语言包 locales/*.json（zh-CN / ko-KR / en-US）+ auto 跟随系统 |
 | 凭据提供 | Windows Credential Provider COM (ICredentialProvider) |
@@ -44,12 +44,12 @@ FaceLogin 是一个 Windows 人脸识别登录系统，允许用户通过摄像�
 
 | 领域 | 2.0.0 当前实现 |
 |---|---|
-| 光照与曝光 | 删除旧 `FaceExposureController`、固定 `sessionGain` 和全局 `ExposureHardwareBroken` 黑名单；新增公共逐帧 `PhotometricPipeline`，使用鲁棒脸部统计做软件归一化，硬件曝光/增益只作为可验证的慢速粗调，失败只在当前会话降级。默认 `face_exposure_control=false`。 |
-| 统一帧链路 | 录入预览、录入采样、锁屏识别、活体和最终校验共用原始帧、地标、光照统计、归一化帧和质量状态；正常亮度保持恒等变换。 |
+| 光照与曝光 | 完整移除旧曝光控制器、软件光照归一化、硬件曝光粗调、暗光增强分支及相关用户设置；摄像头自动曝光由 MF/DS 采集链路自行处理。 |
+| 识别帧处理 | 录入和认证都直接使用当前摄像头帧进行 SCRFD 检测、106 点地标、姿态评估、ArcFace 对齐和活体推理；不再维护独立的统一光照帧对象。 |
 | 姿态检测 | 新增 `head_pose_mobilenetv2.onnx` 与 `OnnxHeadPose`，输出 Yaw/Pitch/Roll；锁屏识别在活体和 embedding 前执行姿态门控，并通过 locale key 返回方向提示或 `AUTH_POSE_TIMEOUT`。 |
 | 认证生命周期 | Credential Provider 增加 attempt ID、明确 `Waiting → Authenticating → Ready → Submitted` 状态、唯一终端响应处理、确定性管道/输入线程回收；删除 `TerminateThread` 路径。普通解锁只接受选中磁贴后的键盘按键或鼠标按键上升沿，鼠标移动不触发。 |
-| 服务生命周期 | 服务控制回调只发出停止请求，由服务主线程统一结束认证、释放摄像头、结束光照会话和关闭管道；客户端断开、超时、失败和停止共用清理出口。 |
-| 模型与数据 | 保留 `w600k_mbf.onnx`、512-D embedding、112×112 RGB、ArcFace 五点对齐和 `users.dat` V5；当前 V5/ONNX 模板继续使用，新光照管线不要求重新录入。更早的 dlib/旧对齐模板仍按 `legacy` 标记要求重新录入。新增姿态模型使随包模型约 31 MB。 |
+| 服务生命周期 | 服务控制回调只发出停止请求，由服务主线程统一结束认证、释放摄像头、模型和管道；客户端断开、超时、失败和停止共用清理出口。 |
+| 模型与数据 | 保留 `w600k_mbf.onnx`、512-D embedding、112×112 RGB、ArcFace 五点对齐和 `users.dat` V5；当前 V5/ONNX 模板继续使用，不要求重新录入。更早的 dlib/旧对齐模板仍按 `legacy` 标记要求重新录入；每个账号最多保存 10 张人脸。新增姿态模型使随包模型约 31 MB。 |
 | Console 与安装器 | 移除暗光增强、姿态实时左上角叠加、`diag_glasses` 和 `jpeg62.dll`/`libpng16.dll`/`z.dll` 相关依赖；Console 增加单实例、高 DPI 清单、录入/人脸管理自定义弹窗与统一多语言；安装器增加目录规范化、合法性检查、原生快捷方式、自定义弹窗、隐藏安装控制台窗口和轻量独立 `Uninstall.exe`。 |
 | 文档与语言 | `zh-CN`、`ko-KR`、`en-US` 语言包继续以根目录 locale 为唯一来源；IPC 状态和错误只传 locale key，不在服务端硬编码显示文本。 |
 
@@ -79,8 +79,8 @@ FaceLogin/
 │   ├── config_util.cpp/h           # 应用配置 JSON 序列化
 │   ├── registry_util.h             # 注册表读写工具
 │   ├── locale_util.cpp/h           # 语言包加载/解析 (ResolveLocale, LocaleCatalog)
-│   ├── photometric_types.h         # 光照、姿态与统一帧数据类型
-│   └── photometric_pipeline.cpp/h  # 统一逐帧光照管线与硬件控制适配
+│   ├── boot_evidence.cpp/h         # Kernel-Boot 事件读取
+│   └── session_util.cpp/h          # 冷启动/注销登录入口代次
 ├── face_service/                   # 人脸识别 Windows 服务
 │   ├── CMakeLists.txt
 │   ├── main.cpp                    # 服务入口 (SCM / standalone)
@@ -178,7 +178,7 @@ graph TB
     subgraph Storage["数据存储"]
         direction LR
         UsersDB["users.dat<br/>V5 加密凭据 (多账号多人脸)"]
-        Models["models/<br/>*.dat + *.onnx"]
+        Models["models/<br/>*.onnx + license"]
         Config["config.json<br/>热配置"]
         Logs["*.log<br/>日志文件"]
     end
@@ -222,30 +222,28 @@ sequenceDiagram
         User->>LogonUI: 按键或点击鼠标
         CP->>CP: 开始当前认证尝试
     end
-    CP->>Pipe: AUTH_REQUEST (attemptId)
     CP->>Pipe: AUTH_REQUEST
     Pipe->>Svc: 转发请求
     Svc->>Svc: 初始化摄像头
     loop 每帧 (~30fps, 最长15s)
-        Svc->>Svc: 抓帧 → 检测 → 106点地标 → 逐帧光照归一化
-        Svc->>Svc: MobileNetV2 姿态门控
-        Svc->>Svc: 活体检测 (眨眼 / 反欺诈 / none)
-        Svc->>Svc: 计算512维嵌入
-        Svc->>DB: 匹配嵌入向量 (欧氏距离)
-        alt 匹配成功
-            DB-->>Svc: user + 加密密码
-            Svc->>Svc: DPAPI 解密密码
-            Svc-->>Pipe: AUTH_SUCCESS:SID:UPN:DOMAIN\USER:PASSWORD
-            Pipe-->>CP: 凭据
-            CP->>CP: CredPackAuthenticationBufferW 打包
-            CP-->>LogonUI: KerbInteractiveLogon 序列化
-            LogonUI->>LSA: 验证凭据
-            LSA-->>LogonUI: STATUS_SUCCESS
-            LogonUI->>User: ✅ 桌面解锁
-        else 超时
-            Svc-->>Pipe: AUTH_TIMEOUT
-            Pipe-->>CP: 超时
-            CP->>LogonUI: "未识别到人脸，请重试" (credential.noFace)
+        Svc->>Svc: 抓帧 → SCRFD → 106点地标
+        Svc->>Svc: MobileNetV2 姿态平滑与门控
+        Svc->>Svc: 计算512维嵌入并匹配账号
+        alt 同一账号连续匹配两帧
+            Svc->>Svc: 执行活体策略 (none / Blink / Anti-Spoof)
+            alt none 或活体通过
+                Svc->>Pipe: 唯一 AUTH_SUCCESS
+                Pipe-->>CP: 凭据
+                CP->>CP: CredPackAuthenticationBufferW 打包
+                CP-->>LogonUI: KerbInteractiveLogon 序列化
+                LogonUI->>LSA: 验证凭据
+                LSA-->>LogonUI: STATUS_SUCCESS
+                LogonUI->>User: ✅ 桌面解锁
+            else 活体失败
+                Svc-->>Pipe: AUTH_ERROR:key
+            end
+        else 人脸未检测、姿态不合法或暂未匹配
+            Svc-->>Pipe: STATUS:key
         end
     end
 ```
@@ -256,7 +254,7 @@ sequenceDiagram
 sequenceDiagram
     participant User as 👤 用户
     participant App as FaceLoginConsole
-    participant Cam as 摄像头 (MF)
+    participant Cam as 摄像头 (MF / DS)
     participant Detector as 人脸检测+识别
     participant Store as users.dat
     participant Pipe as 命名管道
@@ -264,7 +262,7 @@ sequenceDiagram
 
     User->>App: 以管理员运行
     App->>App: 获取用户身份<br/>(GetUserNameExW UPN + 影子SID检测)
-    App->>Cam: StartPreview()
+    App->>Cam: StartPreview() (MF优先，DS回退)
     loop 渲染循环 (~30fps)
         App->>Cam: GrabFrame()
         App->>Detector: 人脸检测 + 地标
@@ -321,10 +319,12 @@ FACELOGIN_ERROR(L"...");
 ```
 
 **特性**：
-- 同时输出到文件和控制台 (Debug 模式)
+- 生产环境主要记录认证、服务、摄像头和配置等运行状态；Debug 模式可额外输出到调试器
 - 时间戳精度到毫秒
 - 线程安全写入
 - 每个进程独立日志文件 (service.log / credential_provider.log / enrollment.log)
+- 日志按天检查并限制保留窗口，旧版可能包含敏感认证载荷的日志会在打开时清理
+- Console 已移除逐帧耗时、性能告警、诊断图像和 `LogDiagnostic` 桥；日志页只保留运行日志和用户主动启用的未匹配人脸记录
 
 ### 4.2 IPC 协议 (`ipc_protocol.h/cpp`)
 
@@ -337,15 +337,11 @@ FACELOGIN_ERROR(L"...");
 | `AUTH_SUCCESS:DOMAIN\USER:PASSWORD` | 冒号分隔 (1个) | 旧格式（V1向后兼容） |
 | `AUTH_TIMEOUT` | 纯文本 | 15秒内未检测到匹配人脸 |
 | `AUTH_POSE_TIMEOUT` | 纯文本 | 15秒内姿态始终不合法 |
-| `AUTH_NO_FACE` | 纯文本 | 认证窗口内没有可用人脸 |
 | `AUTH_NO_MATCH` | 纯文本 | 检测到人脸但没有匹配；服务端可在连续失败后提前结束 |
 | `AUTH_ERROR:key` | 前缀+locale key | 错误状态（载荷为 locale key，见下） |
-| `AUTH_CANCELLED` | 纯文本 | 用户取消 |
 | `STATUS:key` | 前缀+locale key | 实时状态推送（载荷为 locale key） |
-| `RELOAD_DB` / `RELOAD_OK` | 纯文本 | 重载用户数据库 |
-| `CONFIG_RELOAD` / `CONFIG_RELOAD_OK` | 纯文本 | 重载配置文件 |
-| `GET_LOGS` / `GET_LOGS_OK:json` | 纯文本/JSON | 获取服务端日志 |
-| `PING` / `PONG` | 纯文本 | 连接存活检测 |
+| `RELOAD_DB` | 纯文本 | 重载用户数据库；服务端完成后断开连接 |
+| `CONFIG_RELOAD` | 纯文本 | 重载配置文件；服务端完成后断开连接 |
 
 **本地化契约（2.0.0）**：`STATUS:` 与 `AUTH_ERROR:` 的载荷**一律是 locale key**（如 `service.loadingModels`、`credential.poseYawLeft`、`credential.noMatch`），不是显示文本——服务端不承担翻译，凭据提供方是唯一翻译点（`LocalizeKey` → `LocaleCatalog`：当前语言包 → zh-CN 包 → 状态默认文本）。key 常量集中在 `ipc_protocol.h` 的 `L10N_*`（值与 `locales/*.json` 的 key 对应），新增消息零双改。`AUTH_POSE_TIMEOUT` 是独立终端结果，不能用普通 `AUTH_TIMEOUT` 替代。
 
@@ -359,7 +355,7 @@ FACELOGIN_ERROR(L"...");
 **AuthResult 结构**:
 ```cpp
 struct AuthResult {
-    enum class Status { Success, Timeout, PoseTimeout, NoFace, NoMatch, Error, Cancelled };
+    enum class Status { Success, Timeout, PoseTimeout, NoMatch, Error };
     Status status;
     std::wstring sid;      // S-1-5-21-... (V2)
     std::wstring upn;      // user@domain (V2, 可为空)
@@ -402,15 +398,9 @@ struct AppConfig {
     float          match_threshold        = 0.75f;    // 欧氏距离; 0.45(严格)…1.15(宽松)
     float          anti_spoof_threshold   = 0.30f;    // 反欺诈阈值
     bool           blink_glasses_mode     = false;    // 眼镜模式 (自适应眨眼)
-    PhotometricMode photometric_mode      = PhotometricMode::Off; // 内部策略；由用户开关映射
-    float          photometric_target_luma = 110.0f;   // 内部默认值
-    float          photometric_band       = 15.0f;     // 内部默认值
     bool           unload_models_after_auth = false;  // 内存优化 (识别后释放模型)
     std::string    camera_device          = "";       // 摄像头符号链接; 空=第一个
     int            camera_rotation        = 0;        // 0/90/180/270 顺时针
-    bool           face_exposure_control  = false;    // 唯一用户可见的光照归一化开关
-    float          face_exposure_target   = 110.0f;   // 旧配置迁移别名，保存时不再写出
-    float          face_exposure_band     = 15.0f;    // 旧配置迁移别名，保存时不再写出
     std::string    ui_language            = "auto";   // 界面语言: auto/zh-CN/ko-KR/en-US
     bool           capture_unknown_faces  = false;    // 记录未匹配人脸 (1.8.0)
     bool           cold_boot_key_trigger  = false;    // 开机需按键触发识别 (1.8.0)
@@ -485,19 +475,16 @@ ServiceMain()
   ├─ Initialize()
   │   ├─ 创建数据目录 + 加载配置
   │   ├─ 加载凭据数据库 (CredentialStore, V5, 每账号多人脸)
-  │   ├─ 初始化人脸检测器 (OnnxDetector SCRFD)
-  │   ├─ 初始化地标检测器 (OnnxLandmarkDetector 2d106det)
-  │   ├─ 初始化人脸识别器 (OnnxRecognizer)
-  │   ├─ 初始化活体检测器 (LivenessDetector / OnnxAntiSpoof)
-  │   ├─ 初始化摄像头 (MF 优先, DS 回退——见 §5.2 双模式)
+  │   ├─ 启动后台模型加载线程 (SCRFD / 106点 / 识别 / 姿态 / 反欺诈)
+  │   ├─ 记录摄像头策略 (认证请求时 MF 优先, DS 回退)
   │   └─ 创建管道服务端 (PipeServer)
   └─ Run()
-      └─ 循环: WaitForClient → ReadMessage → ProcessAuthRequest → Disconnect
+      └─ 循环: 处理服务事件 → WaitForClient → ReadMessage → ProcessAuthRequest → Disconnect
 
 服务控制:
   - SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN
   - 故障恢复: 3次重启, 间隔60秒, 重置周期24小时
-  - Stop/HandlerEx 只设置停止标志、唤醒模型等待并请求管道停止；摄像头、PhotometricSession 和模型由 Run() 所属主线程统一释放，管道最终关闭也由主线程收尾
+  - Stop/HandlerEx 只设置停止标志、唤醒模型等待并请求管道停止；摄像头和模型由 Run() 所属主线程统一释放，管道最终关闭也由主线程收尾
 ```
 
 **认证流程 (`ProcessAuthRequest`)**:
@@ -506,23 +493,20 @@ ServiceMain()
 1. 检查注册用户数 > 0
 2. 根据配置选择检测器/识别器/活体方法
 3. 延时初始化摄像头 (仅在收到认证请求时打开，避免摄像头占用)
-4. 丢弃前10帧 (摄像头自动曝光预热)
-5. 重置活体检测器
-6. 统一帧处理: SCRFD 检测 → 106点地标 → 鲁棒人脸统计 →
-   （可选）硬件曝光/增益慢速、可验证粗调 + 逐帧软件归一化；硬件失败只在当前会话降级
-7. 循环 (最长时间 m_authTimeoutSeconds = 15秒):
-   a. 抓取一帧并进入统一 `UnifiedFaceFrame`（没有固定 session gain）
-   b. 人脸检测 (SCRFD ONNX)
-   c. 检测最大人脸
-   d. 提取106点地标
-   e. MobileNetV2 头部姿态估计与姿态门控；不合法时只发送对应方向提示
-   f. 活体检测 (眨眼EAR / 静默反欺诈 / none)
-   g. 计算512维嵌入向量 (ONNX buffalo_s)
-   h. 数据库匹配 (欧氏距离 < 阈值 + 最佳/次佳比)
-   i. 匹配成功 → 发送唯一 AUTH_SUCCESS → 退出
-   j. 连续无匹配达到提前失败条件 → AUTH_NO_MATCH
-8. 姿态持续不合法超时 → AUTH_POSE_TIMEOUT；其他超时 → AUTH_TIMEOUT
-9. ReleaseCamera: 结束当前 `PhotometricSession`，读回并恢复原始硬件控制状态，再关闭摄像头
+4. 摄像头就绪保护：抓取少量帧确认采集链路可用
+5. 发送 `credential.recognizing` 状态
+6. 循环 (最长时间 `m_authTimeoutSeconds = 15` 秒):
+   a. 抓取一帧并执行 SCRFD 人脸检测
+   b. 提取 106 点地标并运行 MobileNetV2 姿态估计
+   c. 对姿态做平滑和滞回；不合法时只发送对应方向提示
+   d. 计算 512 维 embedding，按账号聚合匹配结果
+   e. 同一账号连续匹配两帧后进入活体阶段
+   f. `none` 直接通过；Blink 需要眨眼并在 2 秒内重新匹配；Anti-Spoof 将反欺诈推理绑定到同一账号的匹配帧，3–5 次尝试中任意一次通过即可
+   g. Anti-Spoof 候选账号发生变化时回到匹配阶段；不再执行独立的活体后二次匹配
+   h. 认证成功只发送一次 `AUTH_SUCCESS`，然后退出
+   i. 连续检测到人脸但均未匹配时提前发送 `AUTH_NO_MATCH`
+7. 姿态持续不合法超时 → `AUTH_POSE_TIMEOUT`；其他超时 → `AUTH_TIMEOUT`
+8. 统一释放摄像头、模型和管道资源
 ```
 
 **摄像头双模式（2.0.0：MF 优先，DS 仅回退）**:
@@ -535,9 +519,7 @@ ServiceMain()
 | Session 0 支持 | ✅ | ✅ |
 | 分辨率 | 1280×720 | 1280×720 |
 
-> 服务端与 Console 共用 MF 优先、DS 回退的采集策略；两者均向公共光照管线提供统一的帧和硬件控制能力。
-
-**统一光照管线（`common/photometric_pipeline.h/cpp`）**：录入预览、录入采样、认证匹配、活体和最终校验共用同一套逐帧处理。使用关键点轮廓的腐蚀区域计算 trimmed mean、median、P10/P90、裁剪比例、暗部比例、左右差异和均匀度；硬件控制只按驱动报告的离散步长运行，并用实际帧亮度验证方向。硬件无响应或方向反转时恢复原始状态并仅在当前会话降级为软件归一化，不写全局黑名单。正常亮度输入保持恒等变换；局部不均匀只在 112×112 识别 chip 上做受限低频照明校正，防伪仍使用全帧归一化结果，旧 `users.dat` 模板直接匹配。
+> 服务端与 Console 共用 MF 优先、DS 回退的采集策略。当前版本不再在公共库中维护曝光控制器或软件光照归一化；连续抓帧只是为了让摄像头驱动的自动曝光保持稳定。
 
 **配置项**（通过 `config.json` + `CONFIG_RELOAD` 热加载）:
 
@@ -548,15 +530,12 @@ ServiceMain()
 | `liveness_method` | `"none"` | 活体方法: blink / antispoof / none |
 | `match_threshold` | 0.75 | 欧氏距离阈值 (越小越严格; 1.8.0 从 0.65 重校准) |
 | `anti_spoof_threshold` | 0.30 | 反欺诈阈值 (越高越严格) |
-| `face_exposure_control` | `false` | 唯一用户可见的统一光照归一化开关；`true` 时启用软件逐帧归一化，并允许硬件验证粗调 |
-| `photometric_mode` / `photometric_target_luma` / `photometric_band` | 内部默认 `off` / 110 / 15 | 内部策略字段，不由用户直接设置；旧配置可读取迁移，保存时不再写出 |
-| `face_exposure_target` / `face_exposure_band` | 旧值 | 仅用于旧配置迁移，不再驱动旧曝光控制器 |
 | `unload_models_after_auth` | false | 内存优化：识别后卸载模型 + 清空工作集 |
 | `capture_unknown_faces` | false | 记录未匹配人脸 (1.8.0) |
 | `cold_boot_key_trigger` | false | 开机需按键触发识别 (1.8.0) |
 | `ui_language` | "auto" | 界面语言 (见 §4.6) |
 
-`photometric_*` 和曝光目标/容差字段不是当前用户设置项；它们只作为旧配置迁移输入。统一光照功能关闭时保持原始帧，开启后也只在统计结果显示暗光或过曝等必要条件时调整，不再提供单独的“暗光增强”分支。保存新配置时只写出 `face_exposure_control`。
+当前配置不提供软件曝光、暗光增强或光照归一化开关。历史配置中的未知曝光字段不会被当前 `AppConfig` 序列化，也不参与识别；保存配置时只写出当前实现支持的字段。
 
 ### 5.3 人脸地标 (`landmark_detector.h/cpp`)
 
@@ -608,6 +587,8 @@ EAR = (||P2-P6|| + ||P3-P5||) / (2 * ||P1-P4||)
 - 眼镜模式使用自适应基线阈值 + 单眼检测 + 姿态门禁（见 `liveness_detector.h` 顶部注释）
 - 参数由 `liveness_detector.h` 的 `kDefaultEarThreshold` / `kDefaultBlinkFrames` 定义，认证与注册两端共用
 
+锁屏 Anti-Spoof 不是独立的“先活体、再重新匹配”两段流程。服务先用同一账号的连续两帧匹配建立候选身份，再在候选身份仍保持一致的后续帧上执行 MiniFAS；按阈值决定 3–5 次最大尝试，任意一次通过即成功。候选身份变化会回到普通匹配。Blink 由于依赖时间序列，眨眼通过后仍保留短窗口内的新一轮人脸匹配确认；`liveness_method=none` 则跳过活体阶段。
+
 ### 5.6 ONNX 模型 (`onnx_models.h/cpp`)
 
 封装四个 ONNX 推理引擎:
@@ -645,7 +626,7 @@ EAR = (||P2-P6|| + ||P3-P5||) / (2 * ||P1-P4||)
   sid:            wchar_t[sidLen]         (V2+, e.g. "S-1-5-21-...")
   passwordLen:    uint32_t
   encryptedPass:  uint8_t[passwordLen]    (DPAPI 加密，或 0/1 字节 passwordless 哨兵)
-  faceCount:      uint32_t                (V4, ≥1, ≤ kMaxFacesPerUser=5)
+  faceCount:      uint32_t                (V4, ≥1, ≤ kMaxFacesPerUser=10)
   [faces] × faceCount:
     faceId:       uint32_t                (V4, 账号内唯一，≥1，删除后不复用)
     legacy:       uint32_t                (V5, 0/1 — 1=旧对齐录入, 需重录)
@@ -659,7 +640,7 @@ EAR = (||P2-P6|| + ||P3-P5||) / (2 * ||P1-P4||)
 
 **V5 (1.6.0)**: 每个 face 新增 `legacy` 标志。1.6.0 把对齐从 68 点换成 106 点、嵌入空间随之改变，旧版（≤V4）录入的人脸无法再匹配，`legacy=true` 标记它们（仅显示置灰），用户必须重新录入。`NeedsReenrollment()` 在加载到旧对齐数据时返回 true。
 
-**每账号多人脸**: `UserRecord.faces` 为 `vector<FaceRecord>`（`FaceRecord = {id, label, legacy, embedding}`）。`AddFace` 是 create-or-append：账号不存在则创建（首脸 id=1），存在则追加新脸（id=max+1）且**不动已存密码**；超 `kMaxFacesPerUser`（5）拒绝。`DeleteFace` 删某张脸，删后无脸则连带移除整个账号（0 脸账号永不落盘）。匹配为账号级聚合：账号内取各脸最小距离作为账号距离，账号间比较 best/second-best，避免同账号多脸互相竞争抬高 ratio。
+**每账号多人脸**: `UserRecord.faces` 为 `vector<FaceRecord>`（`FaceRecord = {id, label, legacy, embedding}`）。`AddFace` 是 create-or-append：账号不存在则创建（首脸 id=1），存在则追加新脸（id=max+1）且**不动已存密码**；超 `kMaxFacesPerUser`（10）拒绝。`DeleteFace` 删某张脸，删后无脸则连带移除整个账号（0 脸账号永不落盘）。匹配为账号级聚合：账号内取各脸最小距离作为账号距离，账号间比较 best/second-best，避免同账号多脸互相竞争抬高 ratio。
 
 **线程安全**: 所有操作在调用者持有锁的前提下执行。服务端在主循环中串行处理请求，无并发写入场景；唯一写者是录入控制台（单写者）。
 
@@ -708,16 +689,18 @@ HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\
 
 实现 `ICredentialProvider` 接口。
 
-**磁贴字段** (4个):
+**磁贴字段** (4个，标题和状态字段通常隐藏):
 
 | 字段ID | 类型 | 标签 | 说明 |
 |---|---|---|---|
-| 0 | CPFT_LARGE_TEXT | 人脸登录 | 磁贴标题 |
-| 1 | CPFT_SMALL_TEXT | 状态 | 实时状态信息 |
-| 2 | CPFT_SUBMIT_BUTTON | 提交 | 隐藏的提交按钮 |
+| 0 | CPFT_LARGE_TEXT | 人脸登录 | 保留用于布局兼容，隐藏 |
+| 1 | CPFT_SMALL_TEXT | 状态 | 浮层不可用时的状态回退 |
+| 2 | CPFT_SUBMIT_BUTTON | 提交 | 隐藏 |
 | 3 | CPFT_COMMAND_LINK | 切换到密码登录 | 备用登录方式 |
 
-**自动登录**: `GetCredentialCount()` 在冷启动登录时根据 `cold_boot_key_trigger` 决定 `pbAutoLogonWithDefault`。默认值为 `false`，冷启动在 `Advise()` 后自动开始识别；设为 `true` 时等待一次键盘按键或鼠标按键。普通 `CPUS_UNLOCK_WORKSTATION` 解锁始终需要先选择人脸磁贴，再等待一次键盘按键或鼠标按键；鼠标移动不会触发识别。
+**自动登录**: 服务通过 Kernel-Boot 事件和注销事件维护一次性的登录入口代次，并把代次写入受全局互斥锁保护的注册表状态。`CPUS_LOGON` 只有被服务授权的冷启动/注销入口才走自动路径；默认 `cold_boot_key_trigger=false`，Provider 在 `Advise()` 后自动开始识别并保持 LogonUI 的默认自动提交流程。设为 `true` 时等待一次键盘按键或鼠标按键。普通 `CPUS_UNLOCK_WORKSTATION` 解锁始终需要先选择人脸磁贴，再等待一次键盘按键或鼠标按键；鼠标移动不会触发识别。
+
+冷启动判断不再依赖服务启动时间差或固定时间窗口。服务只读 `Microsoft-Windows-Kernel-Boot` 的最新 Event 27：Full Startup 和 Fast Startup 创建新的登录入口，Hibernate Resume 不创建；主动注销也创建新的登录入口。服务通过 `LoginEntryGeneration` / `AutoAttemptGeneration` 保证同一入口最多自动尝试一次，Provider 重新枚举凭据时沿用同一上下文，不把普通 Win+L 解锁误判为冷启动。
 
 **场景支持**: 支持 `CPUS_LOGON` 和 `CPUS_UNLOCK_WORKSTATION`。
 
@@ -748,9 +731,11 @@ HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\
 
 **多线程设计**:
 - 主线程: LogonUI 调用 COM 接口方法
-- 后台线程: 阻塞式 `ReadFile` 等待管道响应
-- 同步: `CRITICAL_SECTION` 保护状态变量, `HANDLE m_hCredsReady` 事件通知
-- 超时: 20 秒硬超时，防止阻塞 LogonUI
+- 认证连接线程: 异步连接管道并发送 `AUTH_REQUEST`
+- 管道读取线程: 统一接收状态和唯一终端响应
+- 输入线程: 只监测键盘按键和鼠标按钮上升沿，鼠标移动不会触发认证
+- 同步: `CRITICAL_SECTION` 保护状态和事件引用，所有外部回调均在释放锁后调用
+- 超时: 客户端认证截止时间在后台管道链路中处理，避免依赖 LogonUI 轮询
 
 **状态机**（2.0.0）:
 
@@ -764,7 +749,7 @@ Waiting ──→ Authenticating ──→ Ready ──→ Submitted (凭据已�
 - `Submitted`: `GetSerialization` 打包成功、凭据交 LSA 后进入；LSA 拒绝（`ReportResult` 失败）置 `Failed`——杜绝"拒绝错误页残留『人脸识别成功』"
 - 每次 `StartAuth()` 生成新的 attempt ID，并清除上一轮的 SID/UPN/用户名/密码、状态文本、no-match 标志和截止时间；迟到的管道响应若不属于当前 attempt 或当前状态不是 `Authenticating`，直接丢弃。
 - `GetSerialization()` 只在 `Ready` 状态打包凭据并转为 `Submitted`，不再解析第二次终端响应；终端结果只由后台管道读取回调处理。
-- `SetDeselected()`、`UnAdvise()`、`ReportResult()` 和析构统一走取消/清理入口，先使 attempt 失效，再在锁外回收管道和输入线程。
+- `SetDeselected()`、`UnAdvise()`、`ReportResult()` 和析构统一走取消/清理入口，先使 attempt 失效，再在锁外回收管道和输入线程；LogonUI 的短暂 `Advise/UnAdvise` 只撤销回调绑定，同一上下文会保留当前认证对象，避免中断正在进行的认证。
 
 **状态文本（多语言）**: 全部经 `Text(key, fallback)` 从 `LocaleCatalog` 取（当前语言包 → zh-CN → fallback 中文）；服务端 `STATUS:`/`AUTH_ERROR:` 载荷为 locale key，`LocalizeKey` 直查翻译（见 §4.2 / §4.6）。关键 key：`credential.pressAnyKey` / `credential.recognizing` / `credential.success` / `credential.noMatch` / `credential.noFace` / `credential.serviceUnavailable` / `credential.passwordless` 等。
 
@@ -778,7 +763,7 @@ class PipeClient {
 };
 ```
 
-**实时状态推送**: `STATUS:` 消息通过回调立即传递到 UI 更新显示文本；终端消息也只通过后台读取线程的唯一回调交付，不在 `GetSerialization()` 中重复轮询或解析。断开顺序是停止事件 → 取消 I/O → 等待读取线程退出 → 关闭句柄，禁止 `TerminateThread` 和对象提前释放。
+**实时状态推送**: `STATUS:` 消息通过回调立即传递到中央安全桌面浮层；标题和小文本字段保持隐藏，仅在浮层创建失败时使用小文本回退。终端消息只通过后台读取线程的唯一回调交付，不在 `GetSerialization()` 中重复轮询或解析。断开顺序是停止事件 → 取消 I/O → 等待读取线程退出 → 关闭句柄，禁止 `TerminateThread` 和对象提前释放。
 
 ---
 
@@ -808,13 +793,13 @@ Win32 GUI 应用程序。
 **页面一：人脸采集**
 
 - 摄像头 MF 优先、DS 回退，帧线程后台抓帧 + JPEG 编码 + 检测
-- 录入预览、正式采样与服务端认证共用统一逐帧光照管线；正常亮度时保持恒等变换，光照开关默认关闭
+- 录入预览使用连续摄像头帧；正式采样按需取得新帧并复用同一检测/地标流程；当前版本不包含软件曝光/光照归一化设置
 - 实时人脸检测 (SCRFD ONNX) + 106点地标；头部姿态模型作为公共观测能力，不在 Console 左上角绘制姿态数值
 - 采集流程:
   1. 根据配置执行活体检测 (眨眼 / 反欺诈 / none)
-  2. 活体通过且帧质量合格 → 采集 10 帧人脸嵌入向量
+  2. 活体通过 → 采集 10 帧人脸嵌入向量
   3. 嵌入一致性检查 (平均两两距离 < 阈值)
-  4. 计算 10 帧平均嵌入；过曝、严重欠曝或不可恢复帧不进入模板平均
+  4. 计算 10 帧平均嵌入并写入模板
 
 **页面二：密码录入**
 
@@ -823,7 +808,7 @@ Win32 GUI 应用程序。
 - DPAPI 加密密码 → 更新 `users.dat` V5 格式 (含 SID/UPN/多人脸)
 - 通过命名管道 `RELOAD_DB` 通知服务热加载
 
-**JS 接口** (通过 COM IDispatch，约 38 个 dispId，1–39 及 42):
+**JS 接口** (通过 COM IDispatch；当前使用的 dispId 包含 1–39、43–46):
 
 | dispId | 方法 | 说明 |
 |---|---|---|
@@ -857,7 +842,7 @@ Win32 GUI 应用程序。
 | 35–37 | GetAboutSeen / SetAboutSeen / GetConsoleVersion | 关于卡片 |
 | 38 | NeedsReenrollment | 旧对齐数据需重录检测 |
 | 39 | IsCapturing | 采集是否进行中 |
-| 42 | LogDiagnostic | JS→日志诊断桥 (卡90%排查) |
+| 43–45 | GetUnknownFaceEvents / DeleteUnknownFace / ClearUnknownFaces | 未匹配人脸记录的读取和清理 |
 | 46 | ReloadUi | 重建页面（语言切换）——重读嵌入 HTML + 按当前 config 注入语言包 + NavigateToString |
 
 > 完整清单见 `WebviewHost.cpp` 的 `GetIDsOfNames` / `Invoke`。
@@ -879,7 +864,7 @@ Win32 GUI 应用程序。
 |---|---|
 | 录入 | 摄像头预览 + Canvas 渲染 + 人脸框叠加 + 活体提示 + 采集进度 |
 | 人脸 | 多人脸管理（添加/删除/重命名/清空） |
-| 设置 | 界面语言 / 活体方法 / 反欺诈阈值 / 匹配严格度 / 摄像头旋转 / 摄像头选择 / 眼镜模式 / 统一光照归一化开关（默认关闭） / 内存优化 / 记录未匹配人脸 / 开机按键触发 |
+| 设置 | 界面语言 / 活体方法 / 反欺诈阈值 / 匹配严格度 / 摄像头旋转 / 摄像头选择 / 眼镜模式 / 内存优化 / 记录未匹配人脸 / 开机按键触发 |
 | 日志 | Console 日志 / Service 日志切换 + 自动刷新 + 彩色等级显示 + 未知人脸照片浏览 |
 
 **前端 i18n（2.0.0）**：`STATIC_TEXT_KEYS` 以**精确中文 DOM 文本**为 key 映射 locale key，`applyI18n` 用 TreeWalker 遍历文本节点替换；`STATIC_PLACEHOLDER_KEYS` 管 placeholder；`RUNTIME_TEXT_KEYS` 管 JS 运行时字符串；`t(key) = I18N[key] || I18N_ZH[key] || key`。语言切换：设置页"界面语言"→ `H.SetConfig` 写 `ui_language` → `H.ReloadUi()` 重建。服务端和 Credential Provider 的姿态提示也只发送 locale key，由当前语言包翻译。
@@ -1100,7 +1085,7 @@ cd installer\FaceLoginSetup
 
 **凭据打包**: 本地账户使用 `Domain\Username` 格式，MSA 账户使用 UPN `user@domain.com` 格式。均使用 `MICROSOFT_AUTHENTICATION_PACKAGE_V1_0` 认证包。
 
-**数据存储**: V5 数据库同时存储 username、UPN 和 SID，按 SID 优先匹配；每账号可存多张人脸。
+**数据存储**: V5 数据库同时存储 username、UPN 和 SID，按 SID 优先匹配；每账号最多可存 10 张人脸。
 
 ---
 
@@ -1123,7 +1108,7 @@ cd installer\FaceLoginSetup
 | 服务启动超时 | 模型加载慢 (~1s) | 正常现象，后台继续启动 |
 | 服务启动失败 | 缺少运行时 DLL | 安装时确保 DLL 与 EXE 同目录 |
 | 锁屏不显示磁贴 | 未注册或已禁用 / 无注册用户 | 检查注册表 Disabled 键值，确认已录入人脸 |
-| 识别率低 | 光照不足 / 姿态不合法 / 嵌入质量差 | 先保持正面姿态并确保脸部完整入镜；可开启设置中的「统一光照归一化」，该功能不要求重新录入，严重过曝或欠曝时仍需调整环境光 |
+| 识别率低 | 光照不足 / 姿态不合法 / 嵌入质量差 | 先保持正面姿态、确保脸部完整入镜并改善环境光；当前版本不提供软件光照归一化，严重过曝或欠曝时应调整摄像头或环境光 |
 | 姿态提示持续出现 | Yaw / Pitch / Roll 超出锁屏合法范围 | 按提示调整具体方向；当前门控优先保证约 25° 内的可接受姿态，极大侧脸只用于方向判断 |
 | 摄像头不工作 | 摄像头占用 / MF 初始化失败 / Session 0 权限 | 检查摄像头是否被其他程序占用；服务先尝试 Media Foundation，失败后回退 DirectShow |
 | 人脸登录后用户名密码错误 | MSA 账户凭据格式不对 | 确认 V5 数据库含正确 UPN |
@@ -1192,9 +1177,6 @@ STATUS:credential.noMatch
 # 认证超时
 AUTH_TIMEOUT
 
-# 认证窗口内没有可用人脸
-AUTH_NO_FACE
-
 # 检测到人脸但连续匹配失败
 AUTH_NO_MATCH
 
@@ -1205,7 +1187,6 @@ AUTH_ERROR:service.cameraUnavailable
 AUTH_ERROR:service.antiSpoofFailed
 AUTH_ERROR:service.blinkFailed
 AUTH_ERROR:service.finalMatchFailed
-AUTH_ERROR:credential.passwordless   # 遗留: 仅旧服务端发送, CP 端防御识别
 
 # 姿态持续不合法超时
 AUTH_POSE_TIMEOUT

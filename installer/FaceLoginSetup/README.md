@@ -1,19 +1,21 @@
-# README
+# FaceLoginSetup
 
-## About
+FaceLoginSetup 是 FaceLogin 的 Windows 图形安装器，使用 Go、Wails v2、Vue 3、TypeScript 和 WebView2 构建。它负责安装、升级和卸载 FaceLogin 的服务、Credential Provider、Console、模型、语言包及运行库。
 
-This is the official Wails Vue-TS template.
+## 开发
 
-You can configure the project by editing `wails.json`. More information about the project settings can be found
-here: https://wails.io/docs/reference/project-config
+完整的安装器开发说明请参阅 [DEVELOPMENT.md](DEVELOPMENT.md)，整体项目架构请参阅仓库根目录的 [DEVELOPMENT.md](../../DEVELOPMENT.md)。
 
-## Live Development
+前置条件：Windows x64、Go 1.25+、Node.js/npm 和 Wails CLI v2。
 
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
+```powershell
+cd installer\FaceLoginSetup
 
-## Building
+# 本地前端开发
+wails dev
 
-To build a redistributable, production mode package, use `wails build`.
+# 发布构建：先生成轻量 Uninstall.exe，再生成完整 FaceLoginSetup.exe
+.\build-installer.ps1
+```
+
+`build-installer.ps1` 会将 `resources/` 中的 C++ 程序、模型、运行库和语言包嵌入完整安装器；独立卸载器使用 `uninstaller` build tag 构建，不包含这些安装资源，因此体积更小。

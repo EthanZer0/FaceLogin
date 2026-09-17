@@ -1,23 +1,35 @@
-# Vue 3 + TypeScript + Vite
+# FaceLoginSetup 前端
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue
-3 `<script setup>` SFCs, check out
-the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+这里是 `FaceLoginSetup` 安装器使用的 Vue 3 + TypeScript + Vite 前端。它与 Go/Wails 后端共同构成安装、升级、卸载界面，不是独立部署的网站。
 
-## Recommended IDE Setup
+## 开发与构建
 
-- [VS Code](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar)
+在本目录执行：
 
-## Type Support For `.vue` Imports in TS
+```powershell
+npm install
+npm run dev
+```
 
-Since TypeScript cannot handle type information for `.vue` imports, they are shimmed to be a generic Vue component type
-by default. In most cases this is fine if you don't really care about component prop types outside of templates.
-However, if you wish to get actual prop types in `.vue` imports (for example to get props validation when using
-manual `h(...)` calls), you can enable Volar's Take Over mode by following these steps:
+生产构建由 Wails 调用：
 
-1. Run `Extensions: Show Built-in Extensions` from VS Code's command palette, look
-   for `TypeScript and JavaScript Language Features`, then right click and select `Disable (Workspace)`. By default,
-   Take Over mode will enable itself if the default TypeScript extension is disabled.
-2. Reload the VS Code window by running `Developer: Reload Window` from the command palette.
+```powershell
+npm run build
+```
 
-You can learn more about Take Over mode [here](https://github.com/johnsoncodehk/volar/discussions/471).
+`prebuild` 会先运行仓库根目录的 `scripts/sync-locales.mjs`，把根目录语言包同步到安装器使用的位置。提交前运行：
+
+```powershell
+node ../../../scripts/check-locales.mjs
+```
+
+完整安装器流程（包含 Go 绑定、资源嵌入、轻量卸载器和最终安装器）请参阅上级目录的 [README.md](../README.md) 与 [DEVELOPMENT.md](../DEVELOPMENT.md)。
+
+## 前端约定
+
+- 安装器界面支持简体中文和 English；公告文本位于 `src/notice-zh.json` 与 `src/notice-en.json`。
+- 业务调用通过 `wailsjs/go/main` 生成的 Wails 绑定完成，不在组件中直接执行系统命令。
+- 完整安装器嵌入 `resources/`；使用 `uninstaller` build tag 构建的独立卸载器不嵌入安装资源。
+- 修改公告、路径校验、快捷方式或自定义弹窗时，同时检查 `installer/FaceLoginSetup/DEVELOPMENT.md` 中的安装器流程和人工验收清单。
+
+推荐使用 VS Code + Vue Language Tools（Volar）进行 Vue/TypeScript 编辑。

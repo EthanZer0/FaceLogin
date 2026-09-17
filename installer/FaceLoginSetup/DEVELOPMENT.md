@@ -187,7 +187,6 @@ wails build -clean -platform windows/amd64
   "liveness_method": "none",
   "match_threshold": 0.75,
   "anti_spoof_threshold": 0.30,
-  "face_exposure_control": false,
   "unload_models_after_auth": false,
   "capture_unknown_faces": false,
   "cold_boot_key_trigger": false,
@@ -195,7 +194,7 @@ wails build -clean -platform windows/amd64
 }
 ```
 
-`photometric_mode`、`photometric_target_luma`、`photometric_band`、`face_exposure_target` 和 `face_exposure_band` 不是用户设置项。旧配置可以被 C++ 端读取用于迁移，但新配置保存时只保留用户可见的 `face_exposure_control`。
+当前版本不再提供软件曝光、暗光增强或光照归一化配置。旧配置中残留的曝光字段不会被当前 C++ 配置结构使用，保存配置时也不会重新写出。
 
 ### 升级公告
 
@@ -213,9 +212,13 @@ wails build -clean -platform windows/amd64
 |---|---|
 | `InstallPath` | 当前安装目录、安装检测和升级判断 |
 | `DataPath` | C++ 端追加 `models`、`data` 和 `log` 的根目录 |
-| 运行时值 | 服务/Console 使用的登录状态、启动时间和关于页版本等值，卸载时随整个键删除 |
+| `LoginEntryGeneration` / `AutoAttemptGeneration` | 服务与 Credential Provider 共享的一次性冷启动/注销登录入口代次 |
+| `LoginEntryActive` / `LoginEntrySession` / `LoginEntryBootRecord` | 当前登录入口是否有效、所属控制台会话和对应 Kernel-Boot 记录 |
+| `LastKernelBootRecord` | 已处理的最新 Kernel-Boot 事件记录号，避免重复创建登录入口 |
+| `ColdBootKeyTrigger` | Console 将 `cold_boot_key_trigger` 镜像给 Provider 的运行时开关 |
+| `AboutSeenVersion` | Console 关于卡片的版本提示状态 |
 
-不要在安装器中硬编码资源版本或删除旧配置字段；用户配置迁移由 C++ `config_util` 和本节的版本动作负责。安装器只负责首装配置文件和明确启用的强制升级动作。
+不要在安装器中硬编码资源版本或删除旧配置字段。当前配置由 C++ `config_util` 直接序列化；安装器只负责首装配置文件和明确启用的强制升级动作。冷启动代次由服务根据 Kernel-Boot/会话事件维护，不由安装器推断。
 
 ---
 
@@ -223,7 +226,7 @@ wails build -clean -platform windows/amd64
 
 1. 在仓库根目录编译 C++ 服务、Credential Provider 和 Console。
 2. 将最新 C++ 二进制、运行库、模型和三语言包同步到 `resources/`。
-3. 确认 `face_exposure_control` 默认值为 `false`，默认活体方式为 `none`，冷启动按键触发为 `false`。
+3. 确认当前默认活体方式为 `none`，冷启动按键触发为 `false`，且不再生成曝光/光照归一化配置项。
 4. 执行 `node scripts/check-locales.mjs`，确保三语言 key、占位符和 Console 文本一致。
 5. 运行 `.\build-installer.ps1`，同时生成 `resources/Uninstall.exe` 和完整 `build/bin/FaceLoginSetup.exe`。
 6. 检查完整安装器包含 `Uninstall.exe`、姿态模型和姿态模型许可证；检查独立卸载器不包含 `resources/` 内容。

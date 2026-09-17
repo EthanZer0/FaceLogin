@@ -28,7 +28,7 @@
 |:---:|:---:|:---:|
 | Native Windows lock-screen integration<br>Ordinary unlock starts after selecting the tile and pressing a key or mouse button | Blink / Anti-Spoof / None<br>MobileNetV2 head-pose gate | SCRFD detection + 106 landmarks<br>InsightFace 512-D embeddings |
 | **Multi-account support** | **Secure storage** | **Hot configuration** |
-| Local SAM + Microsoft online<br>accounts fully supported, multiple faces per account | Machine-scope DPAPI encryption<br>Pipe DACL access control | Runtime parameter changes<br>no service restart needed |
+| Local SAM + Microsoft online<br>accounts fully supported, up to 10 faces per account | Machine-scope DPAPI encryption<br>Pipe DACL access control | Runtime parameter changes<br>no service restart needed |
 
 </div>
 
@@ -93,11 +93,11 @@ Download `FaceLoginSetup.exe` from [Releases](https://github.com/EthanZer0/FaceL
 
 ### Step 2: Enroll your face
 
-Run `FaceLoginConsole.exe` as administrator. If Blink or Anti-Spoof liveness is enabled, follow its prompt; then enter your password and click **Save & Enroll**.
+Run `FaceLoginConsole.exe` as administrator. New installations default to no liveness check (`none`); if Blink or Anti-Spoof is enabled in Settings, follow its prompt. Then enter your password and click **Save & Enroll**.
 
 ### Step 3: Unlock
 
-Press `Win + L` to lock the screen, select the **Face Login** tile, and look at the camera. During ordinary unlock, selecting the tile arms input detection; the next keyboard key or mouse-button press starts recognition. Mouse movement alone is ignored. Cold boot starts recognition automatically by default, and can be configured to wait for a key or mouse button.
+Press `Win + L` to lock the screen, select the **Face Login** tile, and look at the camera. During ordinary unlock, selecting the tile arms input detection; the next keyboard key or mouse-button press starts recognition. Mouse movement alone is ignored. Recognition status is shown in a central overlay on the secure desktop. Cold boot starts recognition automatically by default, and can be configured to wait for a key or mouse button.
 
 If the pose is outside the accepted range, the lock screen shows a localized instruction for turning left/right, looking up/down, or tilting your head. Recognition resumes when the pose is valid.
 
@@ -127,7 +127,7 @@ Run the installer and switch to the **Uninstall** tab, or launch `Uninstall.exe`
 | Credential storage | DPAPI `CRYPTPROTECT_LOCAL_MACHINE` machine-scope encryption |
 | Memory protection | Password wiped with `SecureZeroMemory` immediately after use |
 | Liveness and pose | Liveness is configurable; lock-screen recognition applies a MobileNetV2 head-pose gate before matching |
-| Photometric processing | Unified per-frame normalization is off by default; when enabled it adjusts only when dark/overexposed conditions require it, with hardware fallback limited to the current session |
+| Camera handling | Media Foundation is preferred with DirectShow fallback; the current release has no software exposure normalization, so camera auto-exposure remains under the capture backend |
 | Match security | Euclidean distance threshold + best/second-best match ratio dual check |
 | Build hardening | ASLR, DEP, CFG, 64-bit high-entropy address randomization |
 
@@ -165,7 +165,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for the detailed technical documentation.
 ### C++ Components
 
 ```powershell
-# vcpkg dependencies (recognition/detection/landmarks are all ONNX; dlib provides only image utilities)
+# vcpkg dependencies (recognition/detection/landmarks/pose/anti-spoof are all ONNX; dlib provides only image utilities)
 vcpkg install dlib[core] onnxruntime --triplet x64-windows
 
 # Build (FaceLoginConsole.exe is written directly to installer/FaceLoginSetup/resources)
