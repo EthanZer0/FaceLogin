@@ -831,6 +831,11 @@ STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pc
     LeaveCriticalSection(&m_cs);
 
     if (loginEntry) {
+        // Login-entry input detection is active even before LogonUI selects
+        // the tile. Its waiting prompt must also be visible on the wallpaper.
+        EnterCriticalSection(&m_cs);
+        m_statusOverlayAllowed = !credUI;
+        LeaveCriticalSection(&m_cs);
         if (ReadRegDword(REGVAL_COLD_BOOT_KEY_TRIGGER, 0) != 0) {
             FACELOGIN_INFO(L"Auth activation: login entry waiting for key press");
             StartInputDetectionThread();
