@@ -21,15 +21,33 @@ struct AdaptiveLearningSample {
     std::vector<float> embedding;
 };
 
+struct AdaptiveLearningGroup {
+    uint64_t representativeSampleId = 0;
+    std::vector<uint64_t> sampleIds;
+    std::vector<float> embedding;
+};
+
 struct AdaptiveLearningArchive {
     std::wstring sid;
     uint32_t faceId = 0;
     bool enabled = true;
-    uint32_t builtSampleCount = 0;
     std::vector<AdaptiveLearningSample> samples;
     // Hidden implementation detail: several compact representatives can cover
     // distinct, user-confirmed conditions without comparing every raw sample.
-    std::vector<std::vector<float>> prototypes;
+    // Legacy features have no known membership until the next successful build.
+    std::vector<AdaptiveLearningGroup> groups;
+    uint64_t evaluatedThroughSampleId = 0;
+    size_t UsedSampleCount() const;
+};
+
+enum class AdaptiveBuildStatus { Success, NotEnoughSamples, NoConsistentGroup,
+                                 ArchiveNotFound, SaveFailed };
+struct AdaptiveBuildResult {
+    AdaptiveBuildStatus status = AdaptiveBuildStatus::ArchiveNotFound;
+    size_t totalSamples = 0;
+    size_t usedSamples = 0;
+    size_t groupCount = 0;
+    std::string ToJson() const;
 };
 
 class AdaptiveLearningStore {
@@ -49,7 +67,7 @@ public:
                    const std::wstring& file,
                    const std::vector<float>& embedding,
                    uint64_t addedAt);
-    bool RebuildArchive(const std::wstring& sid, uint32_t faceId);
+    AdaptiveBuildResult RebuildArchive(const std::wstring& sid, uint32_t faceId);
     bool SetArchiveEnabled(const std::wstring& sid, uint32_t faceId, bool enabled);
     bool DeleteArchive(const std::wstring& sid, uint32_t faceId);
     bool DeleteAllForSid(const std::wstring& sid);

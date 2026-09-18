@@ -471,6 +471,10 @@ bool EnrollmentWizard::PrepareFaceFrame(
 // Models survive StopPreview() (only the camera is torn down), so a restart
 // (e.g. cancel back to the camera screen from the append dialog) reuses them.
 bool EnrollmentWizard::EnsureModelsLoaded() {
+    const bool requiredModelsWereReady =
+        m_detector && m_detector->IsInitialized() &&
+        m_onnxDetector && m_onnxDetector->IsInitialized() &&
+        m_onnxRecognizer && m_onnxRecognizer->IsInitialized();
     std::wstring modelsDir = m_dataDir + L"\\models";
     std::wstring shapePath = modelsDir + L"\\2d106det.onnx";
 
@@ -532,9 +536,11 @@ bool EnrollmentWizard::EnsureModelsLoaded() {
         m_livenessMethod = LivenessMethod::Blink;
     }
 
-    FACELOGIN_INFO(L"Liveness method: %hs | Models ready",
-                   m_livenessMethod == LivenessMethod::Blink ? "blink" :
-                   m_livenessMethod == LivenessMethod::AntiSpoof ? "antispoof" : "none");
+    if (!requiredModelsWereReady) {
+        FACELOGIN_INFO(L"Liveness method: %hs | Models ready",
+                       m_livenessMethod == LivenessMethod::Blink ? "blink" :
+                       m_livenessMethod == LivenessMethod::AntiSpoof ? "antispoof" : "none");
+    }
 
     return true;
 }
@@ -1360,10 +1366,10 @@ std::string EnrollmentWizard::GetFacesJson() {
         const auto* archive = m_adaptiveLearning.FindArchive(m_sid, f.id);
         js << ",\"learning\":{\"sampleCount\":"
            << (archive ? archive->samples.size() : 0)
-           << ",\"builtSampleCount\":"
-           << (archive ? archive->builtSampleCount : 0)
+           << ",\"usedSampleCount\":"
+           << (archive ? archive->UsedSampleCount() : 0)
            << ",\"prototypeCount\":"
-           << (archive ? archive->prototypes.size() : 0)
+           << (archive ? archive->groups.size() : 0)
            << ",\"enabled\":" << (archive && archive->enabled ? "true" : "false")
            << "}}";
     }
@@ -1476,19 +1482,20 @@ bool EnrollmentWizard::ClaimUnknownFaceForLearning(const std::string& file, int 
     return true;
 }
 
-bool EnrollmentWizard::RebuildAdaptiveArchive(int faceId) {
-    if (faceId <= 0) return false;
+std::string EnrollmentWizard::RebuildAdaptiveArchive(int faceId) {
+    AdaptiveBuildResult result;
+    if (faceId <= 0) return result.ToJson();
     m_store.LoadDatabase();
     const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
-    if (userIndex >= m_store.GetUsers().size()) return false;
+    if (userIndex >= m_store.GetUsers().size()) return result.ToJson();
     const auto& faces = m_store.GetUsers()[userIndex].faces;
     const bool found = std::any_of(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
         return face.id == static_cast<uint32_t>(faceId) && !face.legacy;
     });
-    if (!found) return false;
-    if (!m_adaptiveLearning.RebuildArchive(m_sid, static_cast<uint32_t>(faceId))) return false;
-    NotifyServiceReload();
-    return true;
+    if (!found) return result.ToJson();
+    result = m_adaptiveLearning.RebuildArchive(m_sid, static_cast<uint32_t>(faceId));
+    if (result.status == AdaptiveBuildStatus::Success) NotifyServiceReload();
+    return result.ToJson();
 }
 
 bool EnrollmentWizard::SetAdaptiveArchiveEnabled(int faceId, bool enabled) {

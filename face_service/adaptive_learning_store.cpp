@@ -12,9 +12,10 @@ namespace facelogin {
 namespace {
 
 constexpr char kMagic[] = {'F', 'L', 'A', 'D'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 constexpr float kDuplicateDistance = 0.08f;
-constexpr float kClusterDistance = 0.42f;
+constexpr float kMaxDistanceToRepresentative = 0.70f;
+constexpr float kMaxPairDistance = 0.70f;
 
 template <typename T>
 bool ReadValue(std::ifstream& in, T& value) {
@@ -74,23 +75,6 @@ float Distance(const float a[], const float b[], size_t count) {
     return std::sqrt(sum);
 }
 
-std::vector<float> MeanEmbedding(const std::vector<const std::vector<float>*>& values) {
-    if (values.empty() || values.front()->empty()) return {};
-    std::vector<float> mean(values.front()->size(), 0.0f);
-    for (const auto* value : values) {
-        if (!value || value->size() != mean.size()) return {};
-        for (size_t i = 0; i < mean.size(); ++i) mean[i] += (*value)[i];
-    }
-    for (float& value : mean) value /= static_cast<float>(values.size());
-
-    float norm = 0.0f;
-    for (const float value : mean) norm += value * value;
-    norm = std::sqrt(norm);
-    if (norm <= std::numeric_limits<float>::epsilon()) return {};
-    for (float& value : mean) value /= norm;
-    return mean;
-}
-
 std::string Utf8(const std::wstring& value) {
     if (value.empty()) return {};
     const int bytes = WideCharToMultiByte(CP_UTF8, 0, value.data(),
@@ -104,6 +88,24 @@ std::string Utf8(const std::wstring& value) {
 }
 
 } // namespace
+
+size_t AdaptiveLearningArchive::UsedSampleCount() const {
+    size_t count = 0;
+    for (const auto& group : groups) count += group.sampleIds.size();
+    return count;
+}
+
+std::string AdaptiveBuildResult::ToJson() const {
+    const char* names[] = {"success", "notEnoughSamples", "noConsistentGroup",
+                           "archiveNotFound", "saveFailed"};
+    std::ostringstream out;
+    out << "{\"status\":\"" << names[static_cast<size_t>(status)]
+        << "\",\"totalSamples\":" << totalSamples
+        << ",\"usedSamples\":" << usedSamples
+        << ",\"unusedSamples\":" << totalSamples - usedSamples
+        << ",\"groupCount\":" << groupCount << "}";
+    return out.str();
+}
 
 std::wstring AdaptiveLearningStore::StorePath() const {
     return m_dataDir + L"\\data\\adaptive\\profiles.dat";
@@ -141,7 +143,7 @@ bool AdaptiveLearningStore::Load() {
     uint32_t archiveCount = 0;
     in.read(magic, sizeof(magic));
     if (!in || !std::equal(std::begin(magic), std::end(magic), std::begin(kMagic)) ||
-        !ReadValue(in, version) || version != kVersion ||
+        !ReadValue(in, version) || (version != 1 && version != kVersion) ||
         !ReadValue(in, archiveCount) || archiveCount > 1024) {
         return false;
     }
@@ -152,9 +154,12 @@ bool AdaptiveLearningStore::Load() {
         uint32_t enabled = 0;
         uint32_t sampleCount = 0;
         uint32_t prototypeCount = 0;
+        uint32_t legacyBuiltCount = 0;
         if (!ReadString(in, archive.sid) || archive.sid.empty() ||
             !ReadValue(in, archive.faceId) || archive.faceId == 0 ||
-            !ReadValue(in, enabled) || !ReadValue(in, archive.builtSampleCount) ||
+            !ReadValue(in, enabled) ||
+            !(version == 1 ? ReadValue(in, legacyBuiltCount)
+                           : ReadValue(in, archive.evaluatedThroughSampleId)) ||
             !ReadValue(in, sampleCount) || sampleCount > kMaxAdaptiveSamplesPerFace ||
             !ReadValue(in, prototypeCount) || prototypeCount > kMaxAdaptivePrototypesPerFace) {
             return false;
@@ -170,14 +175,27 @@ bool AdaptiveLearningStore::Load() {
             }
             archive.samples.push_back(std::move(sample));
         }
-        archive.prototypes.reserve(prototypeCount);
+        archive.groups.reserve(prototypeCount);
         for (uint32_t prototypeIndex = 0; prototypeIndex < prototypeCount; ++prototypeIndex) {
-            std::vector<float> prototype;
-            if (!ReadEmbedding(in, prototype)) return false;
-            archive.prototypes.push_back(std::move(prototype));
+            AdaptiveLearningGroup group;
+            if (!ReadEmbedding(in, group.embedding)) return false;
+            if (version >= 2) {
+                uint32_t count = 0;
+                if (!ReadValue(in, group.representativeSampleId) ||
+                    !ReadValue(in, count) || count > sampleCount) return false;
+                for (uint32_t j = 0; j < count; ++j) {
+                    uint64_t id = 0;
+                    if (!ReadValue(in, id) ||
+                        std::none_of(archive.samples.begin(), archive.samples.end(),
+                            [id](const AdaptiveLearningSample& sample) { return sample.id == id; }))
+                        return false;
+                    group.sampleIds.push_back(id);
+                }
+                if (count != 0 && std::find(group.sampleIds.begin(), group.sampleIds.end(),
+                    group.representativeSampleId) == group.sampleIds.end()) return false;
+            }
+            archive.groups.push_back(std::move(group));
         }
-        archive.builtSampleCount = std::min<uint32_t>(archive.builtSampleCount,
-                                                       static_cast<uint32_t>(archive.samples.size()));
         m_archives.push_back(std::move(archive));
     }
     m_loaded = true;
@@ -205,9 +223,9 @@ bool AdaptiveLearningStore::Save() const {
         WriteValue(out, archive.faceId);
         const uint32_t enabled = archive.enabled ? 1u : 0u;
         WriteValue(out, enabled);
-        WriteValue(out, archive.builtSampleCount);
+        WriteValue(out, archive.evaluatedThroughSampleId);
         const uint32_t sampleCount = static_cast<uint32_t>(archive.samples.size());
-        const uint32_t prototypeCount = static_cast<uint32_t>(archive.prototypes.size());
+        const uint32_t prototypeCount = static_cast<uint32_t>(archive.groups.size());
         WriteValue(out, sampleCount);
         WriteValue(out, prototypeCount);
         for (const auto& sample : archive.samples) {
@@ -216,7 +234,13 @@ bool AdaptiveLearningStore::Save() const {
             WriteString(out, sample.file);
             WriteEmbedding(out, sample.embedding);
         }
-        for (const auto& prototype : archive.prototypes) WriteEmbedding(out, prototype);
+        for (const auto& group : archive.groups) {
+            WriteEmbedding(out, group.embedding);
+            WriteValue(out, group.representativeSampleId);
+            const auto& members = group.sampleIds;
+            WriteValue(out, static_cast<uint32_t>(members.size()));
+            for (uint64_t id : members) WriteValue(out, id);
+        }
     }
     out.close();
     if (!out) {
@@ -283,66 +307,133 @@ bool AdaptiveLearningStore::AddSample(const std::wstring& sid, uint32_t faceId,
     return false;
 }
 
-bool AdaptiveLearningStore::RebuildArchive(const std::wstring& sid, uint32_t faceId) {
-    if (!Load()) return false;
-    AdaptiveLearningArchive* archive = FindArchiveMutable(sid, faceId);
-    if (!archive || archive->samples.size() < kMinAdaptiveSamplesToBuild) return false;
-
-    struct Cluster { std::vector<const std::vector<float>*> values; std::vector<float> center; };
-    std::vector<Cluster> clusters;
-    for (const auto& sample : archive->samples) {
-        if (sample.embedding.empty()) continue;
-        size_t bestIndex = clusters.size();
-        float bestDistance = std::numeric_limits<float>::max();
-        for (size_t i = 0; i < clusters.size(); ++i) {
-            if (clusters[i].center.size() != sample.embedding.size()) continue;
-            const float distance = Distance(clusters[i].center.data(), sample.embedding.data(),
-                                            sample.embedding.size());
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                bestIndex = i;
+namespace {
+// Build and presentation share the same analysis. Qualified groups are selected
+// first; the remainder is partitioned into small groups and isolated samples.
+std::vector<AdaptiveLearningGroup> AnalyzeSamples(const std::vector<AdaptiveLearningSample>& samples) {
+    const size_t n = samples.size();
+    std::vector<std::vector<float>> distances(n, std::vector<float>(n, 0));
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = i + 1; j < n; ++j) {
+            const float distance = samples[i].embedding.size() == samples[j].embedding.size()
+                ? Distance(samples[i].embedding.data(), samples[j].embedding.data(),
+                           samples[i].embedding.size())
+                : std::numeric_limits<float>::infinity();
+            distances[i][j] = distances[j][i] = distance;
+        }
+    }
+    struct Candidate { std::vector<size_t> members; size_t representative = 0; float average = 0; };
+    const auto medoid = [&](const std::vector<size_t>& members) {
+        size_t best = members.front();
+        float bestSum = std::numeric_limits<float>::infinity();
+        for (size_t i : members) {
+            float sum = 0;
+            for (size_t j : members) sum += distances[i][j];
+            if (sum < bestSum || (sum == bestSum && samples[i].id < samples[best].id)) {
+                best = i; bestSum = sum;
             }
         }
-        if (bestIndex == clusters.size() && clusters.size() < kMaxAdaptivePrototypesPerFace) {
-            Cluster cluster;
-            cluster.values.push_back(&sample.embedding);
-            cluster.center = sample.embedding;
-            clusters.push_back(std::move(cluster));
-        } else if (bestIndex < clusters.size() && bestDistance <= kClusterDistance) {
-            auto& cluster = clusters[bestIndex];
-            cluster.values.push_back(&sample.embedding);
-            cluster.center = MeanEmbedding(cluster.values);
+        return best;
+    };
+    std::vector<bool> available(n, true);
+    std::vector<AdaptiveLearningGroup> groups;
+    size_t minimum = kMinAdaptiveSamplesToBuild;
+    while (true) {
+        Candidate best;
+        for (size_t seed = 0; seed < n; ++seed) {
+            if (!available[seed]) continue;
+            Candidate candidate;
+            for (size_t i = 0; i < n; ++i)
+                if (available[i] && distances[seed][i] <= kMaxDistanceToRepresentative)
+                    candidate.members.push_back(i);
+            while (candidate.members.size() >= minimum) {
+                candidate.representative = medoid(candidate.members);
+                size_t worst = candidate.members.front();
+                float worstViolation = 1.0f;
+                for (size_t i : candidate.members) {
+                    float violation = distances[i][candidate.representative] / kMaxDistanceToRepresentative;
+                    for (size_t j : candidate.members)
+                        violation = std::max(violation, distances[i][j] / kMaxPairDistance);
+                    if (violation > worstViolation ||
+                        (violation == worstViolation && violation > 1 &&
+                         samples[i].id > samples[worst].id)) {
+                        worst = i; worstViolation = violation;
+                    }
+                }
+                if (worstViolation <= 1) break;
+                candidate.members.erase(std::find(candidate.members.begin(), candidate.members.end(), worst));
+            }
+            if (candidate.members.size() < minimum) continue;
+            float sum = 0;
+            for (size_t i : candidate.members)
+                for (size_t j : candidate.members) sum += distances[i][j];
+            candidate.average = sum / static_cast<float>(candidate.members.size() * candidate.members.size());
+            if (candidate.members.size() > best.members.size() ||
+                (candidate.members.size() == best.members.size() &&
+                 (candidate.average < best.average ||
+                  (candidate.average == best.average &&
+                   samples[candidate.representative].id < samples[best.representative].id))))
+                best = std::move(candidate);
         }
-        // A very distant sample is intentionally not forced into a profile.
+        if (best.members.empty()) {
+            if (minimum != 1) { minimum = 1; continue; }
+            break;
+        }
+        AdaptiveLearningGroup group;
+        group.representativeSampleId = samples[best.representative].id;
+        group.embedding = samples[best.representative].embedding;
+        for (size_t i : best.members) { available[i] = false; group.sampleIds.push_back(samples[i].id); }
+        std::sort(group.sampleIds.begin(), group.sampleIds.end());
+        groups.push_back(std::move(group));
     }
+    return groups;
+}
+} // namespace
 
-    std::vector<std::vector<float>> prototypes;
-    for (const auto& cluster : clusters) {
-        if (cluster.values.size() < 3) continue;
-        const auto prototype = MeanEmbedding(cluster.values);
-        if (!prototype.empty()) prototypes.push_back(prototype);
+AdaptiveBuildResult AdaptiveLearningStore::RebuildArchive(const std::wstring& sid, uint32_t faceId) {
+    AdaptiveBuildResult result;
+    if (!Load()) { result.status = AdaptiveBuildStatus::SaveFailed; return result; }
+    AdaptiveLearningArchive* archive = FindArchiveMutable(sid, faceId);
+    if (!archive) return result;
+    const auto& samples = archive->samples;
+    result.totalSamples = samples.size();
+    if (samples.size() < kMinAdaptiveSamplesToBuild) {
+        result.status = AdaptiveBuildStatus::NotEnoughSamples;
+        return result;
     }
-    if (prototypes.empty()) return false;
-
-    const auto previousPrototypes = archive->prototypes;
-    const uint32_t previousBuiltSampleCount = archive->builtSampleCount;
-    const bool previousEnabled = archive->enabled;
-    archive->prototypes = std::move(prototypes);
-    archive->builtSampleCount = static_cast<uint32_t>(archive->samples.size());
-    archive->enabled = true;
-    if (Save()) return true;
-
-    archive->prototypes = previousPrototypes;
-    archive->builtSampleCount = previousBuiltSampleCount;
-    archive->enabled = previousEnabled;
-    return false;
+    AdaptiveLearningArchive next = *archive;
+    next.groups.clear();
+    for (auto& group : AnalyzeSamples(samples)) {
+        if (group.sampleIds.size() < kMinAdaptiveSamplesToBuild) continue;
+        next.groups.push_back(std::move(group));
+        if (next.groups.size() == kMaxAdaptivePrototypesPerFace) break;
+    }
+    if (next.groups.empty()) {
+        result.status = AdaptiveBuildStatus::NoConsistentGroup;
+        return result;
+    }
+    next.evaluatedThroughSampleId = 0;
+    for (const auto& sample : samples)
+        next.evaluatedThroughSampleId = std::max(next.evaluatedThroughSampleId, sample.id);
+    next.enabled = true;
+    AdaptiveLearningArchive previous = std::move(*archive);
+    *archive = std::move(next);
+    if (!Save()) {
+        *archive = std::move(previous);
+        result.status = AdaptiveBuildStatus::SaveFailed;
+        return result;
+    }
+    result.status = AdaptiveBuildStatus::Success;
+    result.usedSamples = archive->UsedSampleCount();
+    result.groupCount = archive->groups.size();
+    return result;
 }
 
 bool AdaptiveLearningStore::SetArchiveEnabled(const std::wstring& sid, uint32_t faceId,
                                               bool enabled) {
     if (!Load()) return false;
     AdaptiveLearningArchive* archive = FindArchiveMutable(sid, faceId);
-    if (!archive || archive->prototypes.empty()) return false;
+    if (!archive || archive->groups.empty()) return false;
     archive->enabled = enabled;
     return Save();
 }
@@ -386,9 +477,10 @@ std::optional<float> AdaptiveLearningStore::FindBestDistance(
     const std::wstring& sid, uint32_t faceId, const float probe[], size_t probeDim) const {
     if (!m_loaded || !probe || probeDim == 0) return std::nullopt;
     const AdaptiveLearningArchive* archive = FindArchive(sid, faceId);
-    if (!archive || !archive->enabled || archive->prototypes.empty()) return std::nullopt;
+    if (!archive || !archive->enabled || archive->groups.empty()) return std::nullopt;
     float best = std::numeric_limits<float>::max();
-    for (const auto& prototype : archive->prototypes) {
+    for (const auto& group : archive->groups) {
+        const auto& prototype = group.embedding;
         if (prototype.size() != probeDim) continue;
         best = std::min(best, Distance(prototype.data(), probe, probeDim));
     }
@@ -407,17 +499,74 @@ std::string AdaptiveLearningStore::GetArchivesJson(const std::wstring& sid) cons
         out << "{\"faceId\":" << archive.faceId
             << ",\"enabled\":" << (archive.enabled ? "true" : "false")
             << ",\"sampleCount\":" << archive.samples.size()
-            << ",\"builtSampleCount\":" << archive.builtSampleCount
-            << ",\"prototypeCount\":" << archive.prototypes.size()
+            << ",\"usedSampleCount\":" << archive.UsedSampleCount()
+            << ",\"prototypeCount\":" << archive.groups.size()
             << ",\"samples\":[";
         for (size_t i = 0; i < archive.samples.size(); ++i) {
             if (i != 0) out << ",";
             const auto& sample = archive.samples[i];
+            const bool used = std::any_of(archive.groups.begin(), archive.groups.end(),
+                [&sample](const AdaptiveLearningGroup& group) {
+                    return std::find(group.sampleIds.begin(), group.sampleIds.end(), sample.id) != group.sampleIds.end();
+                });
             out << "{\"id\":" << sample.id
                 << ",\"file\":\"" << Utf8(sample.file) << "\""
-                << ",\"addedAt\":" << sample.addedAt << "}";
+                << ",\"addedAt\":" << sample.addedAt
+                << ",\"state\":\"" << (used ? "used" :
+                    sample.id <= archive.evaluatedThroughSampleId ? "unused" : "pending") << "\"}";
         }
-        out << "]}";
+        out << "],\"analysis\":{\"minimumSamples\":" << kMinAdaptiveSamplesToBuild
+            << ",\"representativeLimit\":" << kMaxDistanceToRepresentative
+            << ",\"pairLimit\":" << kMaxPairDistance << ",\"groups\":[";
+        const auto analyzed = AnalyzeSamples(archive.samples);
+        size_t selectedCount = 0;
+        for (size_t i = 0; i < analyzed.size(); ++i) {
+            if (i != 0) out << ",";
+            const auto& group = analyzed[i];
+            float maxPair = 0;
+            std::vector<const AdaptiveLearningSample*> members;
+            for (uint64_t id : group.sampleIds) {
+                const auto sample = std::find_if(archive.samples.begin(), archive.samples.end(),
+                    [id](const AdaptiveLearningSample& item) { return item.id == id; });
+                members.push_back(&*sample);
+            }
+            for (size_t a = 0; a < members.size(); ++a)
+                for (size_t b = a + 1; b < members.size(); ++b)
+                    maxPair = std::max(maxPair, Distance(members[a]->embedding.data(),
+                        members[b]->embedding.data(), group.embedding.size()));
+            const bool selected = members.size() >= kMinAdaptiveSamplesToBuild &&
+                                  selectedCount < kMaxAdaptivePrototypesPerFace;
+            if (selected) ++selectedCount;
+            out << "{\"representativeSampleId\":" << group.representativeSampleId
+                << ",\"maxPairDistance\":" << maxPair
+                << ",\"selected\":" << (selected ? "true" : "false")
+                << ",\"members\":[";
+            for (size_t j = 0; j < members.size(); ++j) {
+                if (j != 0) out << ",";
+                out << "{\"id\":" << members[j]->id << ",\"distance\":"
+                    << Distance(members[j]->embedding.data(), group.embedding.data(),
+                        group.embedding.size());
+                if (members.size() == 1) {
+                    const AdaptiveLearningSample* nearest = nullptr;
+                    float nearestDistance = std::numeric_limits<float>::infinity();
+                    for (const auto& other : archive.samples) {
+                        if (other.id == members[j]->id ||
+                            other.embedding.size() != group.embedding.size()) continue;
+                        const float distance = Distance(members[j]->embedding.data(),
+                            other.embedding.data(), group.embedding.size());
+                        if (distance < nearestDistance ||
+                            (nearest && distance == nearestDistance && other.id < nearest->id)) {
+                            nearest = &other; nearestDistance = distance;
+                        }
+                    }
+                    if (nearest) out << ",\"nearestSampleId\":" << nearest->id
+                                     << ",\"nearestDistance\":" << nearestDistance;
+                }
+                out << "}";
+            }
+            out << "]}";
+        }
+        out << "]}}";
     }
     out << "]";
     return out.str();

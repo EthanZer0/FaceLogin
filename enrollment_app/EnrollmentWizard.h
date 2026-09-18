@@ -88,7 +88,7 @@ public:
     // unknown-face gallery and never consume the regular ten-face quota.
     std::string GetAdaptiveArchiveJson(int faceId);
     bool ClaimUnknownFaceForLearning(const std::string& file, int faceId);
-    bool RebuildAdaptiveArchive(int faceId);
+    std::string RebuildAdaptiveArchive(int faceId);
     bool SetAdaptiveArchiveEnabled(int faceId, bool enabled);
     bool DeleteAdaptiveArchive(int faceId);
 

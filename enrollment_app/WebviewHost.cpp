@@ -639,7 +639,7 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
         }
         case 49: {
             if (p->cArgs < 1 || p->rgvarg[0].vt != VT_I4) return DISP_E_BADPARAMCOUNT;
-            if (res) *res = MakeBool(m_wizard->RebuildAdaptiveArchive(p->rgvarg[0].lVal));
+            if (res) *res = MakeStr(m_wizard->RebuildAdaptiveArchive(p->rgvarg[0].lVal));
             break;
         }
         case 50: {
