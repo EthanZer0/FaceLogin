@@ -3,47 +3,12 @@
 #include <dlib/image_transforms.h>
 #include <fstream>
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <stdexcept>
 
 namespace facelogin {
-
-// ============================================================================
-// Low-light enhancement (shared by recognizer + anti-spoof)
-// ============================================================================
-
-// A chip is "dark" when its mean luma is below ~40/255 (0.157). Normal indoor
-// faces are 100-180; genuinely dark scenes fall well below 40.
-static constexpr float kLowLightMeanThreshold = 40.0f;
-// Reference mean luma we stretch dark chips toward. ~110/255 ≈ mid-brightness,
-// close to what InsightFace/DeepPixBiS were trained on.
-static constexpr float kLowLightTargetMean   = 110.0f;
-
-void ApplyLowLightEnhance(dlib::matrix<dlib::rgb_pixel>& chip) {
-    const long n = static_cast<long>(chip.size());
-    if (n == 0) return;
-
-    // Mean luma over the chip.
-    double sum = 0.0;
-    for (long i = 0; i < n; i++) {
-        const auto& p = chip(i);
-        sum += 0.299 * p.red + 0.587 * p.green + 0.114 * p.blue;
-    }
-    float mean = static_cast<float>(sum / n);
-    if (mean >= kLowLightMeanThreshold) return;  // not dark — no-op
-
-    // Stretch brightness: gain brings the mean up to the target, clamped so a
-    // bright pixel can't overflow past 255.
-    float gain = kLowLightTargetMean / mean;
-    for (long i = 0; i < n; i++) {
-        auto& p = chip(i);
-        int r = static_cast<int>(p.red   * gain + 0.5f);
-        int g = static_cast<int>(p.green * gain + 0.5f);
-        int b = static_cast<int>(p.blue  * gain + 0.5f);
-        p.red   = static_cast<unsigned char>(r > 255 ? 255 : r);
-        p.green = static_cast<unsigned char>(g > 255 ? 255 : g);
-        p.blue  = static_cast<unsigned char>(b > 255 ? 255 : b);
-    }
-}
 
 // ============================================================================
 // OnnxRecognizer
@@ -87,8 +52,9 @@ bool OnnxRecognizer::Initialize(const std::wstring& modelPath) {
         m_input.assign(1 * 3 * 112 * 112, 0.0f);
         m_embedding.clear();
 
-        FACELOGIN_INFO(L"OnnxRecognizer initialized: %s", modelPath.c_str());
-        FACELOGIN_INFO(L"  Input: %hs, Output: %hs", m_inputName.c_str(), m_outputName.c_str());
+        FACELOGIN_INFO(L"Model ready: recognizer");
+        FACELOGIN_DEBUG(L"Recognizer tensors: input=%hs output=%hs",
+                        m_inputName.c_str(), m_outputName.c_str());
 
         m_initialized = true;
         return true;
@@ -110,10 +76,6 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
         // InsightFace buffalo_s expects 112x112 RGB, normalized to [-1, 1].
         // resize_image into the reusable buffer (same fixed size every call).
         dlib::resize_image(faceChip, m_faceChip);
-
-        // Optional low-light enhancement (config-gated): normalize brightness
-        // of dark chips so the embedding isn't distorted by a dark scene.
-        if (m_lowLightEnhance) ApplyLowLightEnhance(m_faceChip);
 
         // Convert to NCHW float tensor: [1, 3, 112, 112] normalized to [-1, 1]
         constexpr int N = 112;
@@ -165,10 +127,17 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
 std::vector<float> OnnxRecognizer::ComputeEmbedding(
     const dlib::matrix<dlib::rgb_pixel>& image,
     const dlib::full_object_detection& landmarks) {
-    return ComputeEmbedding(image, landmarks, AlignMode::OuterEye);
+    return ComputeEmbeddingAligned(image, landmarks, AlignMode::OuterEye);
 }
 
 std::vector<float> OnnxRecognizer::ComputeEmbedding(
+    const dlib::matrix<dlib::rgb_pixel>& image,
+    const dlib::full_object_detection& landmarks,
+    AlignMode mode) {
+    return ComputeEmbeddingAligned(image, landmarks, mode);
+}
+
+std::vector<float> OnnxRecognizer::ComputeEmbeddingAligned(
     const dlib::matrix<dlib::rgb_pixel>& image,
     const dlib::full_object_detection& landmarks,
     AlignMode mode) {
@@ -209,97 +178,6 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
     dlib::point_transform_affine tform = dlib::find_similarity_transform(src, dst);
     dlib::matrix<dlib::rgb_pixel> faceChip(112, 112);
     dlib::transform_image(image, faceChip, dlib::interpolate_bilinear(), dlib::inv(tform));
-    return ComputeEmbedding(faceChip);
-}
-
-// ---------------------------------------------------------------------------
-// Photometric variants (light-robust recognition fallback)
-// ---------------------------------------------------------------------------
-
-// Gray-World white balance: scale the R/G/B channel means to be equal so a
-// warm (dorm) vs cool (classroom) light source no longer tints the chip.
-// Gains are clamped to [0.5, 2.0] so a pathological single-color frame cannot
-// blow the correction out of proportion.
-static void ApplyWhiteBalance(dlib::matrix<dlib::rgb_pixel>& chip) {
-    long n = static_cast<long>(chip.size());
-    if (n == 0) return;
-    double sumR = 0, sumG = 0, sumB = 0;
-    for (long i = 0; i < n; i++) {
-        const auto& p = chip(i);
-        sumR += p.red; sumG += p.green; sumB += p.blue;
-    }
-    double meanR = sumR / n, meanG = sumG / n, meanB = sumB / n;
-    if (meanR < 1e-6 || meanG < 1e-6 || meanB < 1e-6) return;
-    double avg = (meanR + meanG + meanB) / 3.0;
-    double gr = avg / meanR, gg = avg / meanG, gb = avg / meanB;
-    auto clampGain = [](double g) { return g < 0.5 ? 0.5 : (g > 2.0 ? 2.0 : g); };
-    gr = clampGain(gr); gg = clampGain(gg); gb = clampGain(gb);
-    for (long i = 0; i < n; i++) {
-        auto& p = chip(i);
-        int r = static_cast<int>(p.red   * gr);
-        int g = static_cast<int>(p.green * gg);
-        int b = static_cast<int>(p.blue  * gb);
-        p.red   = static_cast<unsigned char>(r < 0 ? 0 : (r > 255 ? 255 : r));
-        p.green = static_cast<unsigned char>(g < 0 ? 0 : (g > 255 ? 255 : g));
-        p.blue  = static_cast<unsigned char>(b < 0 ? 0 : (b > 255 ? 255 : b));
-    }
-}
-
-// Brightness normalization: map the chip's mean luma to 128 so exposure
-// differences (dark vs bright rooms) no longer shift the embedding. Gain is
-// clamped to [0.5, 2.0].
-static void ApplyBrightnessNorm(dlib::matrix<dlib::rgb_pixel>& chip) {
-    long n = static_cast<long>(chip.size());
-    if (n == 0) return;
-    double sum = 0;
-    for (long i = 0; i < n; i++) {
-        const auto& p = chip(i);
-        sum += (p.red + p.green + p.blue) / 3.0;
-    }
-    double mean = sum / n;
-    if (mean < 1e-6) return;
-    double gain = 128.0 / mean;
-    if (gain < 0.5) gain = 0.5;
-    if (gain > 2.0) gain = 2.0;
-    for (long i = 0; i < n; i++) {
-        auto& p = chip(i);
-        int r = static_cast<int>(p.red   * gain);
-        int g = static_cast<int>(p.green * gain);
-        int b = static_cast<int>(p.blue  * gain);
-        p.red   = static_cast<unsigned char>(r > 255 ? 255 : r);
-        p.green = static_cast<unsigned char>(g > 255 ? 255 : g);
-        p.blue  = static_cast<unsigned char>(b > 255 ? 255 : b);
-    }
-}
-
-std::vector<float> OnnxRecognizer::ComputeEmbedding(
-    const dlib::matrix<dlib::rgb_pixel>& image,
-    const dlib::full_object_detection& landmarks,
-    LightVariant variant) {
-    if (variant == LightVariant::Original) {
-        return ComputeEmbedding(image, landmarks);
-    }
-    // Align exactly like the baseline path (OuterEye anchors), then correct
-    // the light on the 112×112 chip.
-    dlib::matrix<dlib::rgb_pixel> faceChip(112, 112);
-    {
-        const int kArc[5] = {39, 93, 80, 52, 69};
-        std::vector<dlib::vector<double, 2>> src, dst;
-        src.reserve(5); dst.reserve(5);
-        const double arcface_dst[5][2] = {
-            {38.2946, 51.6963}, {73.5318, 51.5014}, {56.0252, 71.7366},
-            {41.5493, 92.3655}, {70.7299, 92.2041}
-        };
-        for (int i = 0; i < 5; i++) {
-            auto& p = landmarks.part(kArc[i]);
-            src.emplace_back(static_cast<double>(p.x()), static_cast<double>(p.y()));
-            dst.emplace_back(arcface_dst[i][0], arcface_dst[i][1]);
-        }
-        dlib::point_transform_affine tform = dlib::find_similarity_transform(src, dst);
-        dlib::transform_image(image, faceChip, dlib::interpolate_bilinear(), dlib::inv(tform));
-    }
-    if (variant == LightVariant::WhiteBalance) ApplyWhiteBalance(faceChip);
-    else if (variant == LightVariant::Brightness) ApplyBrightnessNorm(faceChip);
     return ComputeEmbedding(faceChip);
 }
 
@@ -370,7 +248,7 @@ bool OnnxDetector::Initialize(const std::wstring& modelPath) {
         m_centerX.clear(); m_centerY.clear();
         m_results.clear();
 
-        FACELOGIN_INFO(L"OnnxDetector initialized: %s", modelPath.c_str());
+        FACELOGIN_INFO(L"Model ready: face detector");
         m_initialized = true;
         return true;
     } catch (const std::exception& e) {
@@ -618,6 +496,172 @@ std::optional<OnnxDetector::Detection> OnnxDetector::DetectLargestFace(
 }
 
 // ============================================================================
+// OnnxHeadPose
+// ============================================================================
+
+OnnxHeadPose::~OnnxHeadPose() = default;
+
+bool OnnxHeadPose::Initialize(const std::wstring& modelPath) {
+    try {
+        m_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING,
+                                           "FaceLoginHeadPose");
+        Ort::SessionOptions opts;
+        opts.SetIntraOpNumThreads(2);
+        opts.AddConfigEntry("session.intra_op.allow_spinning", "0");
+        opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        opts.DisableCpuMemArena();
+        opts.DisableMemPattern();
+
+        m_session = std::make_unique<Ort::Session>(*m_env, modelPath.c_str(), opts);
+        if (m_session->GetInputCount() != 1 || m_session->GetOutputCount() != 1) {
+            throw std::runtime_error("head-pose model must have one input and one output");
+        }
+
+        const auto inputShape = m_session->GetInputTypeInfo(0)
+            .GetTensorTypeAndShapeInfo().GetShape();
+        if (inputShape.size() != 4 ||
+            (inputShape[0] > 0 && inputShape[0] != 1) ||
+            inputShape[1] != 3 || inputShape[2] != kInputSize ||
+            inputShape[3] != kInputSize) {
+            throw std::runtime_error("unexpected head-pose input shape");
+        }
+        const auto outputInfo = m_session->GetOutputTypeInfo(0)
+            .GetTensorTypeAndShapeInfo();
+        if (outputInfo.GetElementCount() != 9) {
+            throw std::runtime_error("head-pose output is not a 3x3 rotation matrix");
+        }
+
+        Ort::AllocatorWithDefaultOptions allocator;
+        m_inputName = m_session->GetInputNameAllocated(0, allocator).get();
+        m_outputName = m_session->GetOutputNameAllocated(0, allocator).get();
+        m_memoryInfo = std::make_unique<Ort::MemoryInfo>(
+            Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault));
+        m_faceChip.set_size(kInputSize, kInputSize);
+        m_input.assign(3 * kInputSize * kInputSize, 0.0f);
+        m_initialized = true;
+        FACELOGIN_INFO(L"Model ready: head pose");
+        FACELOGIN_DEBUG(L"Head-pose tensors: input=%hs [1,3,224,224] output=%hs [1,3,3]",
+                       m_inputName.c_str(), m_outputName.c_str());
+        return true;
+    } catch (const std::exception& e) {
+        m_session.reset();
+        m_env.reset();
+        m_memoryInfo.reset();
+        m_initialized = false;
+        FACELOGIN_WARN(L"Head-pose model init failed: %hs", e.what());
+        return false;
+    }
+}
+
+HeadPoseStats OnnxHeadPose::Estimate(
+    const dlib::matrix<dlib::rgb_pixel>& image,
+    const dlib::rectangle& faceRect) {
+    HeadPoseStats result;
+    if (!m_initialized || image.size() == 0 || faceRect.is_empty()) return result;
+
+    std::lock_guard<std::mutex> lock(m_runMutex);
+    try {
+        const auto started = std::chrono::steady_clock::now();
+        const double faceWidth = std::max<double>(
+            1.0, static_cast<double>(faceRect.right() - faceRect.left()));
+        const double faceHeight = std::max<double>(
+            1.0, static_cast<double>(faceRect.bottom() - faceRect.top()));
+        const double faceAspect = faceWidth / faceHeight;
+
+        // Match the official ONNX example's expand_bbox() exactly: expand
+        // horizontally by 20% of the face height and vertically by 20% of the
+        // face width. Keep this rectangular crop and let the final resize to
+        // 224x224 match the reference preprocessing. A square crop based on
+        // face height introduces excessive horizontal background at profile.
+        constexpr double kExpandFactor = 0.20;
+        const double expandX = faceHeight * kExpandFactor;
+        const double expandY = faceWidth * kExpandFactor;
+        const double imageLeft = 0.0;
+        const double imageTop = 0.0;
+        const double imageRight = std::max<double>(0.0, image.nc() - 1.0);
+        const double imageBottom = std::max<double>(0.0, image.nr() - 1.0);
+        const double cropLeft = std::max(imageLeft, faceRect.left() - expandX);
+        const double cropTop = std::max(imageTop, faceRect.top() - expandY);
+        const double cropRight = std::min(imageRight, faceRect.right() + expandX);
+        const double cropBottom = std::min(imageBottom, faceRect.bottom() + expandY);
+        const double cropWidth = std::max<double>(1.0, cropRight - cropLeft);
+        const double cropHeight = std::max<double>(1.0, cropBottom - cropTop);
+        result.faceWidth = static_cast<float>(faceWidth);
+        result.faceHeight = static_cast<float>(faceHeight);
+        result.faceAspect = static_cast<float>(faceAspect);
+        result.cropWidth = static_cast<float>(cropWidth);
+        result.cropHeight = static_cast<float>(cropHeight);
+        result.cropAspect = static_cast<float>(cropWidth / cropHeight);
+        const dlib::drectangle cropRect(cropLeft, cropTop, cropRight, cropBottom);
+        dlib::extract_image_chip(
+            image, dlib::chip_details(cropRect,
+                                      dlib::chip_dims(kInputSize, kInputSize)),
+            m_faceChip);
+
+        constexpr float mean[3] = {0.485f, 0.456f, 0.406f};
+        constexpr float stddev[3] = {0.229f, 0.224f, 0.225f};
+        constexpr int plane = kInputSize * kInputSize;
+        for (int y = 0; y < kInputSize; ++y) {
+            for (int x = 0; x < kInputSize; ++x) {
+                const auto& pixel = m_faceChip(y, x);
+                const int index = y * kInputSize + x;
+                m_input[index] =
+                    (static_cast<float>(pixel.red) / 255.0f - mean[0]) / stddev[0];
+                m_input[plane + index] =
+                    (static_cast<float>(pixel.green) / 255.0f - mean[1]) / stddev[1];
+                m_input[2 * plane + index] =
+                    (static_cast<float>(pixel.blue) / 255.0f - mean[2]) / stddev[2];
+            }
+        }
+
+        const std::array<int64_t, 4> shape = {1, 3, kInputSize, kInputSize};
+        auto inputTensor = Ort::Value::CreateTensor<float>(
+            *m_memoryInfo, m_input.data(), m_input.size(), shape.data(), shape.size());
+        const char* inputNames[] = {m_inputName.c_str()};
+        const char* outputNames[] = {m_outputName.c_str()};
+        auto outputs = m_session->Run(Ort::RunOptions{}, inputNames, &inputTensor, 1,
+                                      outputNames, 1);
+        const float* rotation = outputs[0].GetTensorData<float>();
+        for (int i = 0; i < 9; ++i) {
+            if (!std::isfinite(rotation[i])) return result;
+        }
+
+        const double sy = std::sqrt(
+            static_cast<double>(rotation[0]) * rotation[0] +
+            static_cast<double>(rotation[3]) * rotation[3]);
+        const bool singular = sy < 1e-6;
+        const double pitch = singular
+            ? std::atan2(-rotation[5], rotation[4])
+            : std::atan2(rotation[7], rotation[8]);
+        const double yaw = std::atan2(-rotation[6], sy);
+        const double roll = singular ? 0.0 : std::atan2(rotation[3], rotation[0]);
+        constexpr double radiansToDegrees = 57.29577951308232;
+        result.pitch = static_cast<float>(pitch * radiansToDegrees);
+        result.yaw = static_cast<float>(yaw * radiansToDegrees);
+        result.roll = static_cast<float>(roll * radiansToDegrees);
+        result.inferenceMs = static_cast<float>(
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started).count());
+        result.valid = std::abs(result.yaw) <= 90.5f &&
+                       std::abs(result.pitch) <= 90.5f &&
+                       std::abs(result.roll) <= 90.5f;
+        result.quality = result.valid ? HeadPoseQuality::Valid
+                                      : HeadPoseQuality::Invalid;
+        if (std::isfinite(result.yaw) && std::abs(result.yaw) <= 90.5f) {
+            result.range = std::abs(result.yaw) <= 45.0f
+                ? HeadPoseRange::Normal
+                : HeadPoseRange::Wide;
+        } else {
+            result.range = HeadPoseRange::Invalid;
+        }
+        return result;
+    } catch (const std::exception& e) {
+        FACELOGIN_WARN(L"Head-pose inference failed: %hs", e.what());
+        return result;
+    }
+}
+
+// ============================================================================
 // OnnxAntiSpoof (DeepPixBiS)
 // ============================================================================
 
@@ -675,15 +719,15 @@ bool OnnxAntiSpoof::Initialize(const std::wstring& modelPath) {
         // [1,2] = facenox MiniFAS logits (real, spoof).
         m_facenoxMode = (outShape.size() == 2 && outShape[1] == 2);
         if (m_facenoxMode) {
-            FACELOGIN_INFO(L"OnnxAntiSpoof: facenox MiniFAS mode (input=%d, logit output)", m_inputSize);
+            FACELOGIN_DEBUG(L"Anti-spoof model type: MiniFAS input=%d", m_inputSize);
         }
 
         // Allocate reusable buffers for the hot inference path.
         m_resized.set_size(m_inputSize, m_inputSize);
         m_input.assign(1 * 3 * m_inputSize * m_inputSize, 0.0f);
 
-        FACELOGIN_INFO(L"OnnxAntiSpoof initialized: %s (input=%d, outputs=%zu)",
-                      modelPath.c_str(), m_inputSize, numOutputs);
+        FACELOGIN_INFO(L"Model ready: anti-spoof input=%d outputs=%zu",
+                      m_inputSize, numOutputs);
         m_initialized = true;
         return true;
     } catch (const std::exception& e) {
@@ -702,10 +746,6 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
     try {
         int isize = m_inputSize; // 128 (MiniFAS) or 224 (DeepPixBiS)
         dlib::resize_image(faceChip, m_resized);
-
-        // Optional low-light enhancement (config-gated): normalize brightness
-        // of dark chips so anti-spoof scores don't drop in dark scenes.
-        if (m_lowLightEnhance) ApplyLowLightEnhance(m_resized);
 
         // facenox MiniFAS expects RGB NCHW normalized to [0,1].
         // DeepPixBiS expects ImageNet normalization: (pixel/255 - mean) / std.
@@ -750,7 +790,7 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
             float real = logits[0];
             float spoof = logits[1];
             float score = real - spoof;
-            FACELOGIN_INFO(L"Anti-spoof (MiniFAS): real=%.4f spoof=%.4f score=%.4f",
+            FACELOGIN_DEBUG(L"Anti-spoof inference: real=%.4f spoof=%.4f score=%.4f",
                            real, spoof, score);
             return score;
         }

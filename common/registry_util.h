@@ -3,25 +3,32 @@
 #include <windows.h>
 #include <string>
 
+// Some common-library translation units intentionally target an older Windows
+// SDK contract, so the SDK header may hide this Windows 7+ API even though the
+// application itself requires a newer Windows version.
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600
+extern "C" ULONGLONG WINAPI GetTickCount64(void);
+#endif
+
 // Registry key used for all FaceLogin configuration
 const wchar_t FACELOGIN_REG_KEY[] = L"SOFTWARE\\FaceLogin";
 
 // Value names
 const wchar_t REGVAL_DATA_PATH[]   = L"DataPath";
 const wchar_t REGVAL_INSTALL_PATH[] = L"InstallPath";
-const wchar_t REGVAL_USER_LOGGED_IN[] = L"UserLoggedIn";
-const wchar_t REGVAL_SERVICE_START_UPTIME[] = L"ServiceStartUptime";
+// Internal login-entry generation. The service advances it from a Kernel-Boot
+// evidence record or a console logoff. The credential provider claims each
+// generation at most once for automatic recognition.
+const wchar_t REGVAL_LOGIN_ENTRY_GENERATION[] = L"LoginEntryGeneration";
+const wchar_t REGVAL_AUTO_ATTEMPT_GENERATION[] = L"AutoAttemptGeneration";
+const wchar_t REGVAL_LOGIN_ENTRY_ACTIVE[] = L"LoginEntryActive";
+const wchar_t REGVAL_LOGIN_ENTRY_SESSION[] = L"LoginEntrySession";
+const wchar_t REGVAL_LOGIN_ENTRY_BOOT_RECORD[] = L"LoginEntryBootRecord";
+const wchar_t REGVAL_LAST_KERNEL_BOOT_RECORD[] = L"LastKernelBootRecord";
 // Mirrored from config.cold_boot_key_trigger by the Console's SetConfig so
 // the credential provider (running inside LogonUI, which cannot reach
 // config.json reliably) knows whether cold-boot recognition needs a key press.
 const wchar_t REGVAL_COLD_BOOT_KEY_TRIGGER[] = L"ColdBootKeyTrigger";
-// Set once by the service/console when a camera was caught in a broken manual
-// exposure state (severe overexposure that Set(Auto) cannot undo — a driver
-// bug). While set, the exposure controller skips the camera channel entirely
-// and runs digital gain only, so the camera is never re-poisoned. The user
-// must restart the machine (or the camera driver) to recover the camera, and
-// may clear this value manually after that.
-const wchar_t REGVAL_EXPOSURE_HW_BROKEN[] = L"ExposureHardwareBroken";
 
 // Read a REG_SZ value from HKLM\SOFTWARE\FaceLogin.
 // Returns defaultValue if the key/value is missing or not a string.

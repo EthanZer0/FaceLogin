@@ -63,9 +63,8 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
     v.pdispVal->Release();
     host->Release();
 
-    // Log WebView2 process failures (renderer crash / unresponsive): with the
-    // JS side dead no diagnostic can be written, so this is the only evidence
-    // a frozen-looking UI can leave behind.
+    // Log WebView2 process failures (renderer crash / unresponsive), because
+    // they leave the Console UI unavailable to the user.
     {
         ICoreWebView2ProcessFailedEventHandler* pf = new ProcessFailedCallback();
         self->m_webview->add_ProcessFailed(pf, &self->m_processFailedToken);
@@ -212,12 +211,12 @@ int WebviewHost::Run() {
     // --- Compute window size with DPI-aware content fitting ---
     int scrW = GetSystemMetrics(SM_CXSCREEN), scrH = GetSystemMetrics(SM_CYSCREEN);
 
-    // Get the monitor DPI so we can convert CSS pixels to physical pixels.
     // CSS layout needs ~600 CSS px vertically (viewport 360 + chrome ~240).
-    HDC hdc = GetDC(nullptr);
-    int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
-    ReleaseDC(nullptr, hdc);
-    float dpiScale = dpiY / 96.0f;
+    // The process is PerMonitorV2-aware, so use the system DPI only for the
+    // initial placement. WM_DPICHANGED replaces the fixed size when the
+    // window moves to a monitor with a different scale.
+    UINT dpi = GetDpiForSystem();
+    float dpiScale = static_cast<float>(dpi) / 96.0f;
 
     // Desired client area in CSS pixels:
     //   Width: just above content max-width (640px) for comfortable margin
@@ -306,6 +305,14 @@ LRESULT WebviewHost::HandleMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
 
+    case WM_DPICHANGED: {
+        const RECT* suggested = reinterpret_cast<const RECT*>(lp);
+        if (suggested) {
+            ApplyDpiChange(hWnd, *suggested);
+        }
+        return 0;
+    }
+
     // Fixed-size window: clamp min/max tracking size to the fixed size captured
     // at creation, so neither dragging the edge (already disabled) nor the
     // system menu can resize the window. Using the stored m_fixedW/H — NOT
@@ -365,6 +372,19 @@ void WebviewHost::ResizeWebView(HWND hWnd) {
     }
 }
 
+void WebviewHost::ApplyDpiChange(HWND hWnd, const RECT& suggestedRect) {
+    // Windows supplies a correctly scaled window rectangle. Use it instead
+    // of recomputing the non-client area, which keeps the title bar and the
+    // WebView2 client area aligned at 125/150/200% scaling.
+    m_fixedW = suggestedRect.right - suggestedRect.left;
+    m_fixedH = suggestedRect.bottom - suggestedRect.top;
+    SetWindowPos(hWnd, nullptr,
+                 suggestedRect.left, suggestedRect.top,
+                 m_fixedW, m_fixedH,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    ResizeWebView(hWnd);
+}
+
 // ==========================================================================
 // HostObject
 // ==========================================================================
@@ -408,7 +428,6 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"GetUserSid")   *ids = 18;
     else if (n == L"GetAccountType") *ids = 19;
     else if (n == L"GetLatestFrameAndFaces") *ids = 20;
-    else if (n == L"LogDiagnostic") *ids = 42;
     else if (n == L"GetCameraList") *ids = 21;
     else if (n == L"IsPasswordlessState") *ids = 22;
     else if (n == L"GetPasswordlessState") *ids = 22; // alias (1.9.0 frontend)
@@ -554,17 +573,6 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
         case 20: if (res) *res = MakeStr(m_wizard->GetLatestFrameAndFaces()); break;
         case 21: if (res) *res = MakeStr(m_wizard->GetCameraList()); break;
         case 22: if (res) *res = MakeInt(m_wizard->GetPasswordlessState()); break;
-        case 42: {  // LogDiagnostic: JS→log bridge (卡90% 排查)
-            if (p->cArgs < 1) break;
-            std::string msg;
-            if (p->rgvarg[0].vt == VT_BSTR) {
-                int len = WideCharToMultiByte(CP_UTF8, 0, p->rgvarg[0].bstrVal, -1, nullptr, 0, nullptr, nullptr);
-                msg.resize(len > 0 ? len - 1 : 0);
-                if (len > 0) WideCharToMultiByte(CP_UTF8, 0, p->rgvarg[0].bstrVal, -1, &msg[0], len, nullptr, nullptr);
-            }
-            m_wizard->LogDiagnostic(msg);
-            break;
-        }
         case 23: {
             std::wstring label = OptionalArg(p, 0);  // first JS arg: face label
             if (res) *res = MakeBool(m_wizard->SaveEnrollmentNoPassword(label));

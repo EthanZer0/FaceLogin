@@ -15,7 +15,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="DEVELOPMENT.md"><img src="https://img.shields.io/badge/platform-Windows%2010%2B%20x64-blue" alt="Platform"></a>
   <a href="DEVELOPMENT.md"><img src="https://img.shields.io/badge/language-C%2B%2B20%20%7C%20Go-orange" alt="Language"></a>
-  <a href="https://github.com/EthanZer0/FaceLogin/releases"><img src="https://img.shields.io/badge/version-1.9.0-green" alt="Version"></a>
+  <a href="https://github.com/EthanZer0/FaceLogin/releases"><img src="https://img.shields.io/badge/version-2.0.0-green" alt="Version"></a>
 </p>
 
 ---
@@ -24,11 +24,11 @@
 
 <div align="center">
 
-| 锁屏人脸解锁 | 双重活体检测 | ONNX 识别 |
+| 锁屏人脸解锁 | 可选活体检测与姿态门控 | ONNX 识别 |
 |:---:|:---:|:---:|
-| Windows 原生锁屏集成<br>无需额外操作 | EAR 眨眼 + facenox MiniFAS<br>防照片/视频/面具攻击 | SCRFD 检测 + InsightFace<br>ONNX 人脸识别 |
+| Windows 原生锁屏集成<br>普通解锁需选中磁贴后按键或点击鼠标 | Blink / Anti-Spoof / None<br>MobileNetV2 头部姿态门控 | SCRFD 检测 + 106 点地标<br>InsightFace 512-D embedding |
 | **多账户支持** | **安全存储** | **热配置** |
-| 本地 SAM + 微软在线<br>账户全兼容，每账号可录多张人脸 | DPAPI 机器范围加密<br>管道 DACL 访问控制 | 运行时修改识别参数<br>无需重启服务 |
+| 本地 SAM + 微软在线<br>账户全兼容，每账号最多录入 10 张人脸 | DPAPI 机器范围加密<br>管道 DACL 访问控制 | 运行时修改识别参数<br>无需重启服务 |
 
 </div>
 
@@ -93,15 +93,17 @@ flowchart TB
 
 ### 第二步：录入人脸
 
-以管理员身份运行 `FaceLoginConsole.exe`，按提示完成活体检测，输入密码，点击 **保存并录入**。
+以管理员身份运行 `FaceLoginConsole.exe`；新安装默认不启用活体检测（`none`），如在设置中启用了眨眼或反欺诈活体，请按提示完成检查，然后输入密码并点击 **保存并录入**。
 
 ### 第三步：解锁
 
-`Win + L` 锁屏后，注视摄像头，系统自动识别并解锁。
+`Win + L` 锁屏后，选择“人脸登录”磁贴并注视摄像头。普通解锁需要随后产生一次键盘按键或鼠标按键输入才开始识别；鼠标移动本身不会触发识别。识别状态会通过安全桌面上的中央浮层显示。冷启动默认自动开始识别，也可以在设置中改为等待按键或鼠标按键。
+
+姿态不符合要求时，界面会提示调整左右转头、抬头/低头或左右倾斜；回到合法范围后继续识别。
 
 ### 卸载
 
-运行安装程序切换到 **卸载** 标签页，或手动执行 `regsvr32 /u FaceLoginCredentialProvider.dll`。
+运行安装程序切换到 **卸载** 标签页，或直接运行安装目录中的 `Uninstall.exe`。卸载程序会停止并删除服务、注销凭据提供程序、删除安装目录及 FaceLogin 数据；请在卸载前备份需要保留的人脸数据。
 
 ---
 
@@ -113,7 +115,7 @@ flowchart TB
 | 摄像头 | USB 或内置，支持 1280×720 |
 | 运行时 | WebView2（Windows 11 内置，Win10 自动安装） |
 | 权限 | 管理员权限（安装和注册需要） |
-| 磁盘空间 | ~250 MB（含模型文件 ~21 MB） |
+| 磁盘空间 | 安装包约 100 MB；安装后程序、运行库和模型约 110 MB，另加用户数据 |
 
 ---
 
@@ -124,7 +126,8 @@ flowchart TB
 | 进程通信 | 命名管道 DACL：仅 SYSTEM + Administrators，拒绝远程 |
 | 凭据存储 | DPAPI `CRYPTPROTECT_LOCAL_MACHINE` 机器范围加密 |
 | 内存保护 | 密码使用后 `SecureZeroMemory` 即时擦除 |
-| 活体检测 | EAR 眨眼 + facenox MiniFAS 双重验证 |
+| 活体与姿态 | 活体方法可选；锁屏识别使用 MobileNetV2 姿态门控，姿态不合法时不进入匹配 |
+| 摄像头处理 | 服务优先使用 Media Foundation，失败时回退 DirectShow；当前版本不包含软件曝光归一化，自动曝光由摄像头采集链路负责 |
 | 匹配安全 | 欧氏距离阈值 + 最佳/次佳匹配比双重校验 |
 | 编译加固 | ASLR、DEP、CFG、64位高熵地址随机化 |
 
@@ -140,7 +143,7 @@ FaceLogin/
 ├── enrollment_app/         # 人脸录入控制台（WebView2 GUI）
 ├── installer/              # Go Wails 图形安装程序
 ├── locales/                # 独立语言包（zh-CN / ko-KR / en-US）
-├── scripts/                # 辅助脚本（模型下载、诊断工具、语言包一致性检查）
+├── scripts/                # 构建脚本与语言包一致性检查
 └── assets/                 # 图标资源
 ```
 
@@ -162,7 +165,7 @@ FaceLogin/
 ### C++ 组件
 
 ```powershell
-# vcpkg 依赖（识别/检测/地标全部用 ONNX，dlib 仅提供图像数据结构）
+# vcpkg 依赖（识别/检测/地标/姿态/反欺诈全部用 ONNX，dlib 仅提供图像数据结构）
 vcpkg install dlib[core] onnxruntime --triplet x64-windows
 
 # 构建（FaceLoginConsole.exe 直接输出到 installer/FaceLoginSetup/resources/）
@@ -175,9 +178,11 @@ cmake --build build --config Release
 
 ```powershell
 cd installer/FaceLoginSetup
-# 将 FaceLoginService.exe / FaceLoginCredentialProvider.dll 复制到 resources/ 后编译
-wails build -clean -platform windows/amd64
+# 先将 C++ 产物和模型同步到 resources/，再构建完整安装器
+.\build-installer.ps1
 ```
+
+`build-installer.ps1` 会先单独构建不内嵌安装资源的轻量 `Uninstall.exe`，复制到 `resources/`，再构建完整的 `FaceLoginSetup.exe`。如只需调试前端或 Go 代码，也可以直接使用 Wails 命令，但发布安装包应使用该脚本。
 
 ### 模型文件
 
@@ -187,6 +192,7 @@ wails build -clean -platform windows/amd64
 | `det_500m.onnx` | SCRFD 人脸检测 | [InsightFace](https://github.com/deepinsight/insightface) |
 | `w600k_mbf.onnx` | InsightFace 人脸识别 | [InsightFace](https://github.com/deepinsight/insightface) |
 | `minifas_quantized.onnx` | 静默反欺诈 | [facenox/face-antispoof-onnx](https://github.com/facenox/face-antispoof-onnx) |
+| `head_pose_mobilenetv2.onnx` | MobileNetV2 头部姿态估计（Yaw/Pitch/Roll） | [yakhyo/head-pose-estimation](https://github.com/yakhyo/head-pose-estimation/releases/tag/weights) |
 
 ---
 

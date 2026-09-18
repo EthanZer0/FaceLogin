@@ -7,9 +7,15 @@
 // ISampleGrabberCB::BufferCB copies frames into a shared buffer protected
 // by a CRITICAL_SECTION.  GrabFrame() copies out.
 
-#define WINVER       0x0602
+#ifndef WINVER
+#define WINVER 0x0602
+#endif
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0602
+#endif
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 
 #include <dlib/matrix.h>
 #include <dlib/pixel.h>
@@ -95,12 +101,6 @@ public:
     void Resume();   // restart graph for next auth session
     void Shutdown();
 
-    // Camera control interfaces for the face-exposure controller (1.9.0).
-    // QI'd off the capture filter during Initialize; null when the device
-    // does not expose them. Borrowed pointers — valid until Shutdown().
-    IAMVideoProcAmp* GetVideoProcAmp() const { return m_vpa; }
-    IAMCameraControl* GetCameraControl() const { return m_cc; }
-
     static bool InitializeCOM();
     static void ShutdownCOM();
 
@@ -135,8 +135,6 @@ private:
     IBaseFilter*     m_pCapture      = nullptr;
     ISampleGrabber*  m_pGrabber      = nullptr;
     IBaseFilter*     m_pNullRenderer = nullptr;
-    IAMVideoProcAmp* m_vpa           = nullptr;   // camera controls, QI'd off the filter
-    IAMCameraControl* m_cc           = nullptr;
 
     GrabberCB m_callback;
 

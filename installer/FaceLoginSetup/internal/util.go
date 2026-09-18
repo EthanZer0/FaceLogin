@@ -6,9 +6,20 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/windows/registry"
 )
+
+// hiddenCommand starts a native Windows helper without creating a transient
+// console window. The installer is a GUI application, so every command-line
+// helper must use this wrapper; otherwise Windows may briefly attach a new
+// console while the helper runs.
+func hiddenCommand(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return cmd
+}
 
 // ReadRegString reads a REG_SZ from HKLM\SOFTWARE\FaceLogin.
 // Returns defaultValue if missing.
@@ -84,11 +95,9 @@ func deleteRegKeyTree(parent registry.Key, subpath string) error {
 	return registry.DeleteKey(parent, subpath)
 }
 
-// DeleteRegKey removes the ENTIRE HKLM\SOFTWARE\FaceLogin key tree — the
-// top-level values (InstallPath, DataPath) plus the runtime values
-// (UserLoggedIn, ServiceStartUptime, AboutSeenVersion) and any subkeys
-// (Credentials\*, Enrollments\*) written by the service and console.
-// Used by uninstall so no orphaned registry data survives a full purge.
+// DeleteRegKey removes the complete HKLM\SOFTWARE\FaceLogin key tree,
+// including installation settings and any service or console subkeys.
+// It is used by uninstall so no FaceLogin registry state survives a full purge.
 // Returns nil when the key does not exist (idempotent).
 func DeleteRegKey() error {
 	return deleteRegKeyTree(registry.LOCAL_MACHINE, `SOFTWARE\FaceLogin`)
@@ -100,7 +109,6 @@ func DeleteRegKey() error {
 func GetDefaultInstallDir() string {
 	return filepath.Join(os.Getenv("ProgramFiles"), "FaceLogin")
 }
-
 
 // FileExists checks if a file exists and is not a directory.
 func FileExists(path string) bool {
@@ -143,6 +151,73 @@ func IsSafeInstallDir(path string) bool {
 	return true
 }
 
+// ValidateInstallDir validates a user-selected installation target before any
+// service, registry, or filesystem mutation occurs. The installer accepts a
+// custom parent directory, but the final component must remain the product
+// directory so the registered service and uninstaller have a stable layout.
+func ValidateInstallDir(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("installer.error.installPathRequired")
+	}
+	if !filepath.IsAbs(path) || filepath.VolumeName(path) == "" {
+		return fmt.Errorf("installer.error.installPathAbsolute")
+	}
+
+	clean := filepath.Clean(path)
+	if !strings.EqualFold(filepath.Base(clean), "FaceLogin") {
+		return fmt.Errorf("installer.error.installPathName")
+	}
+
+	// Allow normal subdirectories such as C:\Program Files\FaceLogin, but
+	// reject the protected directory itself as the product target.
+	protected := []string{
+		os.Getenv("windir"),
+		os.Getenv("SystemRoot"),
+		os.Getenv("ProgramData"),
+		os.Getenv("Public"),
+		os.Getenv("UserProfile"),
+		os.Getenv("ProgramFiles"),
+		os.Getenv("ProgramFiles(x86)"),
+	}
+	for _, reserved := range protected {
+		if reserved != "" && strings.EqualFold(clean, filepath.Clean(reserved)) {
+			return fmt.Errorf("installer.error.installPathProtected")
+		}
+	}
+	if filepath.Dir(clean) == clean {
+		return fmt.Errorf("installer.error.installPathRoot")
+	}
+
+	info, err := os.Stat(clean)
+	if err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("installer.error.installPathNotDirectory")
+		}
+		entries, readErr := os.ReadDir(clean)
+		if readErr != nil {
+			return fmt.Errorf("installer.error.installPathUnreadable")
+		}
+		if len(entries) > 0 && !IsSafeInstallDir(clean) &&
+			!strings.EqualFold(ReadRegString("InstallPath", ""), clean) {
+			return fmt.Errorf("installer.error.installPathNotFaceLogin")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("installer.error.installPathUnavailable")
+	}
+
+	parent := filepath.Dir(clean)
+	if parentInfo, parentErr := os.Stat(parent); parentErr == nil {
+		if !parentInfo.IsDir() {
+			return fmt.Errorf("installer.error.installParentNotDirectory")
+		}
+	} else if !os.IsNotExist(parentErr) {
+		return fmt.Errorf("installer.error.installParentUnavailable")
+	}
+
+	return nil
+}
+
 // CopyFile copies a file from src to dst. Parent directories of dst must exist.
 func CopyFile(src, dst string) error {
 	data, err := os.ReadFile(src)
@@ -154,7 +229,7 @@ func CopyFile(src, dst string) error {
 
 // RunCommand runs a command and returns stdout+stderr combined.
 func RunCommand(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := hiddenCommand(name, args...)
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }

@@ -50,7 +50,6 @@ body{
   background-color:var(--ground);
   overflow:hidden;
   user-select:none;-webkit-user-select:none;
-  -webkit-font-smoothing:antialiased;
 }
 input,textarea,select{user-select:text;-webkit-user-select:text}
 button{font-family:inherit}
@@ -226,7 +225,14 @@ button{font-family:inherit}
   font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
   margin-bottom:16px;text-transform:uppercase;
 }
-#screen-settings .settings-body{overflow-y:auto}
+#screen-settings .settings-body{
+  overflow-y:auto;
+  /* The custom-select focus ring expands beyond its trigger. Reserve a small
+     horizontal safety area so the ring is not clipped by this scroll
+     container, and keep the control clear of the right-hand scrollbar. */
+  padding:16px 18px 24px 12px;
+  scrollbar-gutter:stable;
+}
 .field{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
 .field label{font-size:10px;font-weight:500;color:var(--fog);letter-spacing:.1em}
 .field input,.field select{
@@ -281,11 +287,12 @@ button{font-family:inherit}
   background:#FFFFFF;position:relative;transition:border-color .15s,background .15s}
 .check:hover .cbx{border-color:var(--live)}
 .check input:focus-visible ~ .cbx{box-shadow:0 0 0 3px rgba(14,159,110,.18)}
-.cbx::after{content:'';position:absolute;left:3.25px;top:1px;width:5px;height:8px;
-  border:#fff;border-width:0 2.5px 2.5px 0;border-style:solid;transform:rotate(45deg) scale(0);opacity:0;
+.cbx::after{content:'';position:absolute;left:50%;top:50%;width:8px;height:7px;
+  background:#fff;clip-path:polygon(0 42%,18% 24%,40% 50%,82% 0,100% 18%,40% 100%);
+  transform:translate(-50%,-50%) scale(0);transform-origin:center;opacity:0;
   transition:transform .12s ease,opacity .12s}
 .check input:checked ~ .cbx{background-color:var(--live);border-color:var(--live)}
-.check input:checked ~ .cbx::after{transform:rotate(45deg) scale(1);opacity:1}
+.check input:checked ~ .cbx::after{transform:translate(-50%,-50%) scale(1);opacity:1}
 .check input:disabled ~ .cbx{opacity:.4}
 .range-wrap{width:100%}
 .rng{position:relative;width:100%;height:24px;cursor:pointer}
@@ -494,6 +501,76 @@ button{font-family:inherit}
 .cam-picker input:focus{border-color:var(--live);box-shadow:0 0 0 3px rgba(14,159,110,.12)}
 .cam-picker .btn{margin-top:0}
 .cam-picker .btn-secondary{margin-top:10px}
+
+/* ================================================================
+   Face rename modal
+   ================================================================ */
+.rename-overlay{
+  position:fixed;inset:0;z-index:110;
+  align-items:center;justify-content:center;
+  background:rgba(22,26,34,.45);backdrop-filter:blur(2px);
+  display:flex;
+  visibility:hidden;opacity:0;pointer-events:none;
+  transition:opacity .22s ease,visibility 0s .22s;
+}
+.rename-overlay.active{
+  visibility:visible;opacity:1;pointer-events:auto;
+  transition:opacity .22s ease,visibility 0s;
+}
+.rename-card{
+  width:90%;max-width:380px;background:var(--face);
+  border:1px solid var(--hair);border-radius:8px;
+  box-shadow:0 18px 60px rgba(22,26,34,.2);padding:24px;
+  opacity:0;transform:translateY(20px) scale(.96);
+  transition:opacity .24s ease,transform .30s cubic-bezier(.34,1.45,.5,1);
+}
+.rename-overlay.active .rename-card{opacity:1;transform:translateY(0) scale(1)}
+.rename-card h2{
+  font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
+  margin-bottom:8px;text-transform:uppercase;
+}
+.rename-card p.dim{font-size:11px;color:#8A919E;line-height:1.6;margin-bottom:18px}
+.rename-card input{
+  box-sizing:border-box;width:100%;border:1px solid var(--hair);border-radius:var(--radius);
+  padding:9px 12px;font-size:13px;outline:none;background:var(--face);color:var(--ink);
+}
+.rename-card input:focus{border-color:var(--live);box-shadow:0 0 0 3px rgba(14,159,110,.12)}
+.rename-actions{display:flex;gap:8px;margin-top:14px}
+.rename-actions .btn{flex:1;margin-top:0}
+
+/* ================================================================
+   Face delete confirmation modal
+   ================================================================ */
+.delete-overlay{
+  position:fixed;inset:0;z-index:110;
+  align-items:center;justify-content:center;
+  background:rgba(22,26,34,.45);backdrop-filter:blur(2px);
+  display:flex;
+  visibility:hidden;opacity:0;pointer-events:none;
+  transition:opacity .22s ease,visibility 0s .22s;
+}
+.delete-overlay.active{
+  visibility:visible;opacity:1;pointer-events:auto;
+  transition:opacity .22s ease,visibility 0s;
+}
+.delete-card{
+  width:90%;max-width:380px;background:var(--face);
+  border:1px solid var(--hair);border-radius:8px;
+  box-shadow:0 18px 60px rgba(22,26,34,.2);padding:24px;
+  opacity:0;transform:translateY(20px) scale(.96);
+  transition:opacity .24s ease,transform .30s cubic-bezier(.34,1.45,.5,1);
+}
+.delete-overlay.active .delete-card{opacity:1;transform:translateY(0) scale(1)}
+.delete-card h2{
+  font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
+  margin-bottom:8px;text-transform:uppercase;
+}
+.delete-card p.dim{font-size:11px;color:#8A919E;line-height:1.6;margin-bottom:18px}
+.delete-actions{display:flex;gap:8px;margin-top:14px}
+.delete-actions .btn{flex:1;margin-top:0}
+.btn-danger{background:var(--err);color:#FFFFFF;flex-shrink:0}
+.btn-danger:hover{background:#B52226}
+.btn-danger:active{transform:scale(.985)}
 
 /* ================================================================
    About modal — click the footer version tag
@@ -935,26 +1012,6 @@ button{font-family:inherit}
 
     <div class="field">
       <label class="check tip">
-        <input type="checkbox" id="cfg-low-light">
-        <span class="cbx"></span>
-        <span>暗光增强（暗光环境下人脸识别不稳定时开启）</span>
-        <span class="tip-ico">i</span>
-        <span class="tip-box">暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。</span>
-      </label>
-    </div>
-
-    <div class="field">
-      <label class="check tip">
-        <input type="checkbox" id="cfg-exposure">
-        <span class="cbx"></span>
-        <span>人脸曝光自动控制（过曝/欠曝导致识别不稳定时开启）</span>
-        <span class="tip-ico">i</span>
-        <span class="tip-box">自动把脸部亮度调节到目标区间：优先调用摄像头硬件曝光/增益，不支持时用数字增益兜底。录入与解锁使用同一目标，换环境/换光线不再明显影响识别。开启后请重新录入人脸。</span>
-      </label>
-    </div>
-
-    <div class="field">
-      <label class="check tip">
         <input type="checkbox" id="cfg-unload-models">
         <span class="cbx"></span>
         <span>内存优化（识别后释放模型，降低后台内存占用）</span>
@@ -1131,6 +1188,35 @@ button{font-family:inherit}
 </div>
 
 <!-- ================================================================== -->
+<!-- Face Rename Modal                                                   -->
+<!-- ================================================================== -->
+<div class="rename-overlay" id="rename-overlay" onclick="if(event.target===this)closeRenameDialog()">
+  <div class="rename-card" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+    <h2 id="rename-title"></h2>
+    <p class="dim" id="rename-description"></p>
+    <input type="text" id="rename-input" maxlength="32" autocomplete="off">
+    <div class="rename-actions">
+      <button type="button" class="btn btn-secondary" id="rename-cancel" onclick="closeRenameDialog()"></button>
+      <button type="button" class="btn btn-primary" id="rename-confirm" onclick="onRenameConfirm()"></button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- Face Delete Confirmation Modal                                     -->
+<!-- ================================================================== -->
+<div class="delete-overlay" id="face-delete-overlay" onclick="if(event.target===this)closeDeleteDialog()">
+  <div class="delete-card" role="dialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description">
+    <h2 id="delete-title"></h2>
+    <p class="dim" id="delete-description"></p>
+    <div class="delete-actions">
+      <button type="button" class="btn btn-secondary" id="delete-cancel" onclick="closeDeleteDialog()"></button>
+      <button type="button" class="btn btn-danger" id="delete-confirm" onclick="onDeleteConfirm()"></button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
 <!-- About Modal — click the footer version tag                        -->
 <!-- ================================================================== -->
 <div class="about-overlay" id="about-overlay" onclick="if(event.target===this)closeAbout()">
@@ -1188,7 +1274,7 @@ var STATIC_TEXT_KEYS = {
   '给这张脸命名': 'console.field.faceLabel',
   '该账号没有密码（仅使用 PIN/Hello），跳过密码录入': 'console.passwordless.skip',
   '无密码账号无法用于人脸解锁，人脸识别只能完成录入。': 'console.passwordless.warning',
-  '你的密码将使用 DPAPI 加密，仅存储在本机。': 'console.password.storage',
+  '你的密码将使用 DPAPI 加密，仅存储在本机。无密码账户（空密码本地账号）人脸解锁将尝试空密码登录——Windows 默认允许空密码控制台登录（锁屏解锁），失败时请改用 PIN/Hello。': 'console.password.storage',
   '保存并录入': 'console.enroll.save',
   '人脸管理': 'console.faces.title',
   '当前账号：': 'console.faces.currentAccount',
@@ -1219,10 +1305,6 @@ var STATIC_TEXT_KEYS = {
   '无 (None)': 'console.settings.livenessNone',
   '眼镜模式（戴眼镜导致眨眼检测不稳定时开启）': 'console.settings.glasses',
   '眼镜模式使用自适应眨眼检测，对镜框/反光更鲁棒，但可能不如默认模式稳定。非必要建议保持关闭。': 'console.settings.glassesHelp',
-  '暗光增强（暗光环境下人脸识别不稳定时开启）': 'console.settings.lowLight',
-  '暗光增强会对偏暗的人脸图像做亮度归一化，提升暗光下的识别与反欺诈通过率。正常亮度下无影响。非必要建议保持关闭。': 'console.settings.lowLightHelp',
-  '人脸曝光自动控制（过曝/欠曝导致识别不稳定时开启）': 'console.settings.exposureControl',
-  '自动把脸部亮度调节到目标区间：优先调用摄像头硬件曝光/增益，不支持时用数字增益兜底。录入与解锁使用同一目标，换环境/换光线不再明显影响识别。开启后请重新录入人脸。': 'console.settings.exposureControlHelp',
   '内存优化（识别后释放模型，降低后台内存占用）': 'console.settings.memory',
   '识别完成后释放人脸模型并清空进程工作集，服务后台内存占用从约 60MB 降至 1MB 以内（实测约 0.6MB）。下次解锁时模型自动重新加载（约 0.2-0.5 秒），对识别速度影响很小。适合内存敏感的设备，或希望服务常驻内存极低的用户。': 'console.settings.memoryHelp',
   '记录未匹配人脸（陌生人出现在锁屏前时保存照片与记录）': 'console.settings.unknownFaces',
@@ -1273,7 +1355,6 @@ var RUNTIME_TEXT_KEYS = {
   '已检测到该账号无密码，将跳过密码录入。': 'console.passwordless.detected',
   '尚未录入人脸。切换到“录入”页开始录入。': 'console.faces.empty',
   '点击“开始采集”即可为当前账号追加一张新人脸。': 'console.faces.addHint',
-  '确定删除这张脸吗？': 'console.faces.deleteConfirm',
   '已删除。': 'console.faces.deleted',
   '删除失败，请重试。': 'console.faces.deleteFailed',
   '已重命名。': 'console.faces.renamed',
@@ -1729,8 +1810,6 @@ function loadSettings() {
     window.__CFG_UI_LANGUAGE_INITIAL__ = cfg.ui_language || 'auto';
     document.getElementById('cfg-rotation').value = String(cfg.camera_rotation || 0);
     document.getElementById('cfg-blink-glasses').checked = !!cfg.blink_glasses_mode;
-    document.getElementById('cfg-low-light').checked = !!cfg.low_light_enhance;
-    document.getElementById('cfg-exposure').checked = !!cfg.face_exposure_control;
     document.getElementById('cfg-unload-models').checked = !!cfg.unload_models_after_auth;
 
     // Populate the camera dropdown from the enumerated devices.
@@ -1811,8 +1890,6 @@ function onSaveSettings() {
     match_threshold: 0.45 + (90 - strictness) / 100,
     anti_spoof_threshold: parseFloat(document.getElementById('cfg-antispoof-threshold').value) / 100,
     blink_glasses_mode: document.getElementById('cfg-blink-glasses').checked,
-    low_light_enhance: document.getElementById('cfg-low-light').checked,
-    face_exposure_control: document.getElementById('cfg-exposure').checked,
     unload_models_after_auth: document.getElementById('cfg-unload-models').checked,
     capture_unknown_faces: document.getElementById('cfg-capture-unknown').checked,
     cold_boot_key_trigger: document.getElementById('cfg-coldboot-key').checked,
@@ -1875,19 +1952,9 @@ function onCapture() {
   document.getElementById('cap-pct').textContent = '';
   document.getElementById('cap-fill').style.width = '0%';
 
-  var tCapture = Date.now();
   H.CaptureFaceSamples();
-  try {
-    H.LogDiagnostic('capture_start method=' + liveMethod + ' t=' + tCapture
-      + ' com_ret=' + (Date.now() - tCapture) + 'ms');
-  } catch(e) {}
-  // Diagnostics (卡90% 排查): the JS call above BLOCKS the UI thread until the
-  // C++ side returns. CaptureFaceSamples only spawns a thread and returns
-  // fast, so a big com_ret here means the C++ method itself hung — not the
-  // capture loop.
 
   var livenessPoll = setInterval(function() {
-    var tickAt = Date.now();
     var checking = false;
     var passed = false;
     try { checking = H.IsLivenessChecking(); } catch(e) {}
@@ -1895,14 +1962,6 @@ function onCapture() {
 
     if (!checking) {
       clearInterval(livenessPoll);
-      // Diagnostics (卡90% 排查): the transition from liveness→sampling.
-      // liveness_dur = wall time from capture_start to here; com_ret = time
-      // the IsLivenessChecking() COM call itself blocked (a healthy read is
-      // microseconds, so a large value means the UI thread was wedged).
-      try {
-        H.LogDiagnostic('liveness_done passed=' + !!passed
-          + ' dur=' + (Date.now() - tCapture) + 'ms com_ret=' + (Date.now() - tickAt) + 'ms t=' + Date.now());
-      } catch(e) {}
       if (!passed) {
         captureActive = false;
         prog.style.display = 'none';
@@ -1923,19 +1982,10 @@ function onCapture() {
       // If the backend hasn't finished after 8s (backend stuck, frame thread
       // died, detection never succeeds), stop polling and tell the user —
       // never hang at 90% forever.
-      var pollStart = Date.now();
       var CAPTURE_TIMEOUT_MS = 8000;
-      // Diagnostics (卡90% 排查): track poll intervals. If the UI thread is
-      // starved (slow GetLatestFrameAndFaces / COM), intervals blow past the
-      // intended 200ms — log the gap so we can see the stall in enrollment.log.
-      var lastPollAt = Date.now();
+      var pollStart = Date.now();
       var samplePoll = setInterval(function() {
         var now = Date.now();
-        var gap = now - lastPollAt;
-        lastPollAt = now;
-        if (gap > 500) {
-          try { H.LogDiagnostic('poll_stall gap=' + gap + 'ms n_before t=' + now); } catch(e) {}
-        }
         var n = H.GetSampleCount();
         var pct = Math.round(n / 10 * 100);
         document.getElementById('samples-tag').textContent = n + ' / 10';
@@ -1945,13 +1995,6 @@ function onCapture() {
           // Hard timeout regardless of backend state — guaranteed exit.
           clearInterval(samplePoll);
           captureActive = false;
-          // Diagnostics (卡90% 排查): distinguish a true 8s backend timeout
-          // from a UI thread stall. If this fires, it means the backend did
-          // NOT reach 10 samples (or the poll was starved — cross-check the
-          // C++ "sampling loop ended captured=N/10" line).
-          try {
-            H.LogDiagnostic('capture_timeout n=' + H.GetSampleCount() + ' t=' + Date.now());
-          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
@@ -1965,14 +2008,6 @@ function onCapture() {
         }
         if (n >= 10) {          clearInterval(samplePoll);
           captureActive = false;
-          // Diagnostics (卡90% 排查): capture succeeded end-to-end, with total
-          // wall time from sampling start to 10/10. Healthy is ~2-3s (10 ×
-          // ~200ms poll ticks); a large dur means the UI thread was starved
-          // between ticks.
-          try {
-            H.LogDiagnostic('capture_done n=' + n + ' dur=' + (Date.now() - pollStart)
-              + 'ms t=' + Date.now());
-          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
@@ -2031,7 +2066,6 @@ function onCapture() {
             var st = H.IsPasswordlessState();
             if (typeof st !== 'number') st = parseInt(st, 10);
             if (isNaN(st)) st = 0;
-            console.log('GetPasswordlessState -> ' + st);
             var skipField = document.getElementById('field-skip-pass');
             var skipChk = document.getElementById('fld-skip-pass');
             var passField = document.getElementById('pwd-pass-field');
@@ -2049,7 +2083,7 @@ function onCapture() {
               skipField.style.display = 'none';
               skipChk.checked = false;
             }
-          } catch(e) { console.log('GetPasswordlessState threw: ' + e); }
+          } catch(e) {}
           document.getElementById('fld-pass').focus();
         } else if (H.IsCapturing && !H.IsCapturing()) {
           // Backend stopped early without reaching 10 samples — the capture
@@ -2059,12 +2093,6 @@ function onCapture() {
           // response. Reset the UI and tell the user what happened.
           clearInterval(samplePoll);
           captureActive = false;
-          // Diagnostics (卡90% 排查): backend bailed early — cross-check the
-          // C++ "Enrollment sampling loop ended: captured=N/10" line to see
-          // whether it was a liveness failure or a sample-loop bail.
-          try {
-            H.LogDiagnostic('capture_early_end n=' + H.GetSampleCount() + ' t=' + Date.now());
-          } catch(e) {}
           prog.style.display = 'none';
           btn.disabled = false;
           spinner.style.display = 'none';
@@ -2084,11 +2112,21 @@ function onCapture() {
 // Multi-face management (1.3.0)
 // ================================================================
 
+var faceLabelsById = Object.create(null);
+var renameFaceId = null;
+var renamePreviousFocus = null;
+var deleteFaceId = null;
+var deletePreviousFocus = null;
+
 function loadFaces() {
   checkAccountRefresh();  // prompt to refresh a stale MSA→local record if present
   try {
     var faces = JSON.parse(H.GetFacesJson());
     var count = H.GetFaceCount();
+    faceLabelsById = Object.create(null);
+    for (var j = 0; j < faces.length; j++) {
+      faceLabelsById[String(faces[j].id)] = faces[j].label || '';
+    }
     var list = document.getElementById('face-list');
     document.getElementById('faces-count').textContent = t('console.faces.count', { count: count });
     try { document.getElementById('faces-user').textContent = H.GetUsername(); } catch(e) {}
@@ -2118,21 +2156,82 @@ function goAddFace() {
 }
 
 function onDeleteFace(id) {
-  if (!confirm('确定删除这张脸吗？')) return;
+  openDeleteDialog(id);
+}
+
+function openDeleteDialog(id) {
+  deleteFaceId = id;
+  deletePreviousFocus = document.activeElement;
+  var overlay = document.getElementById('face-delete-overlay');
+  document.getElementById('delete-title').textContent = t('console.faces.deleteTitle');
+  document.getElementById('delete-description').textContent = t('console.faces.deleteConfirm');
+  document.getElementById('delete-cancel').textContent = t('console.faces.renameCancel');
+  document.getElementById('delete-confirm').textContent = t('console.faces.delete');
+  overlay.classList.add('active');
+  requestAnimationFrame(function() {
+    document.getElementById('delete-cancel').focus();
+  });
+}
+
+function closeDeleteDialog() {
+  var overlay = document.getElementById('face-delete-overlay');
+  if (overlay) overlay.classList.remove('active');
+  deleteFaceId = null;
+  var previousFocus = deletePreviousFocus;
+  deletePreviousFocus = null;
+  if (previousFocus && previousFocus.focus) previousFocus.focus();
+}
+
+function onDeleteConfirm() {
+  if (deleteFaceId === null) return;
+  var id = deleteFaceId;
+  closeDeleteDialog();
   try {
     if (H.DeleteFace(id)) {
-      showBanner('faces', '已删除。', 'ok');
+      showBanner('faces', t('console.faces.deleted'), 'ok');
       loadFaces();
     } else {
-      showBanner('faces', '删除失败，请重试。', 'error');
+      showBanner('faces', t('console.faces.deleteFailed'), 'error');
     }
   } catch(e) { showBanner('faces', t('console.faces.deleteFailedDetail', { error: e.message }), 'error'); }
 }
 
 function onRenameFace(id) {
-  var name = prompt(t('console.faces.renamePrompt'));
-  if (name === null) return;  // cancelled
-  name = name.trim();
+  openRenameDialog(id);
+}
+
+function openRenameDialog(id) {
+  renameFaceId = id;
+  renamePreviousFocus = document.activeElement;
+  var overlay = document.getElementById('rename-overlay');
+  var input = document.getElementById('rename-input');
+  document.getElementById('rename-title').textContent = t('console.faces.renameTitle');
+  document.getElementById('rename-description').textContent = t('console.faces.renameDescription');
+  document.getElementById('rename-cancel').textContent = t('console.faces.renameCancel');
+  document.getElementById('rename-confirm').textContent = t('console.faces.renameConfirm');
+  input.placeholder = t('console.faces.renamePlaceholder');
+  input.value = faceLabelsById[String(id)] || '';
+  overlay.classList.add('active');
+  requestAnimationFrame(function() {
+    input.focus();
+    input.select();
+  });
+}
+
+function closeRenameDialog() {
+  var overlay = document.getElementById('rename-overlay');
+  if (overlay) overlay.classList.remove('active');
+  renameFaceId = null;
+  var previousFocus = renamePreviousFocus;
+  renamePreviousFocus = null;
+  if (previousFocus && previousFocus.focus) previousFocus.focus();
+}
+
+function onRenameConfirm() {
+  if (renameFaceId === null) return;
+  var id = renameFaceId;
+  var name = document.getElementById('rename-input').value.trim();
+  closeRenameDialog();
   try {
     if (H.RenameFace(id, name)) {
       showBanner('faces', '已重命名。', 'ok');
@@ -2142,6 +2241,16 @@ function onRenameFace(id) {
     }
   } catch(e) { showBanner('faces', t('console.faces.renameFailedDetail', { error: e.message }), 'error'); }
 }
+
+document.getElementById('rename-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    onRenameConfirm();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeRenameDialog();
+  }
+});
 
 function onClearAllFaces() {
   if (!confirm('确定清空当前账号的全部人脸吗？将无法使用人脸登录。')) return;
@@ -2584,7 +2693,7 @@ function closeFaceViewer() {
 // of truth for the version string (no hardcoded duplicates to bump per
 // release). In a browser preview there is no host, so fall back to a fixed
 // default so the layout still renders.
-var CONSOLE_VERSION = '1.9.0';
+var CONSOLE_VERSION = '2.0.0';
 function consoleVersion() {
   try { if (H.GetConsoleVersion) { var v = H.GetConsoleVersion(); if (v) return v; } } catch (e) {}
   return CONSOLE_VERSION;
@@ -2637,9 +2746,19 @@ function openExternal(url) {
   window.open(url, '_blank', 'noopener');
 }
 // ESC closes every open modal consistently (about / refresh / cam-picker /
-// face-viewer: same behavior as clicking the backdrop).
+// face-viewer / rename: same behavior as clicking the backdrop).
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
+    var renameOverlay = document.getElementById('rename-overlay');
+    if (renameOverlay && renameOverlay.classList.contains('active')) {
+      closeRenameDialog();
+      return;
+    }
+    var deleteOverlay = document.getElementById('face-delete-overlay');
+    if (deleteOverlay && deleteOverlay.classList.contains('active')) {
+      closeDeleteDialog();
+      return;
+    }
     var ids = ['about-overlay', 'refresh-overlay', 'cam-picker-overlay', 'face-viewer-overlay'];
     for (var i = 0; i < ids.length; i++) {
       var el = document.getElementById(ids[i]);

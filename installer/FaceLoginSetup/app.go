@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -13,19 +14,50 @@ import (
 
 // App struct
 type App struct {
-	ctx context.Context
+	ctx                   context.Context
+	standaloneUninstaller bool
+	installDir            string
 }
 
 // NewApp creates a new App application struct
-func NewApp() *App {
-	return &App{}
+func NewApp(standaloneUninstaller bool) *App {
+	return &App{standaloneUninstaller: standaloneUninstaller}
 }
 
 // startup is called when the app starts. The context is saved so we can call runtime methods.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	// Set up the embedded FS reference for extraction
-	internal.EmbeddedFS = resources
+	a.installDir = internal.ReadRegString(REGVAL_INSTALL_PATH, "")
+	if a.standaloneUninstaller && a.installDir == "" {
+		// A registry-cleanup retry must still be able to remove the standalone
+		// uninstaller when it is launched directly from the install folder.
+		if exe, err := os.Executable(); err == nil {
+			a.installDir = filepath.Dir(exe)
+		}
+	}
+	// Set up the embedded FS reference for extraction. The lightweight
+	// standalone uninstaller intentionally provides no resource payload.
+	installEmbeddedResources()
+}
+
+// IsStandaloneUninstaller lets the shared Wails frontend render only the
+// existing uninstall page when this binary is launched as Uninstall.exe.
+func (a *App) IsStandaloneUninstaller() bool {
+	return a.standaloneUninstaller
+}
+
+// FinalizeStandaloneUninstall starts a short-lived copy of this executable in
+// %TEMP%. It waits for this UI process to exit, then removes the otherwise
+// locked Uninstall.exe and the now-empty install directory.
+func (a *App) FinalizeStandaloneUninstall() bool {
+	if !a.standaloneUninstaller || a.installDir == "" {
+		return false
+	}
+	if err := internal.LaunchUninstallCleanup(a.installDir); err != nil {
+		return false
+	}
+	runtime.Quit(a.ctx)
+	return true
 }
 
 // ProgressEvent is sent to the frontend during install/uninstall.
@@ -97,12 +129,24 @@ func (a *App) GetUpgradeNotice() map[string]interface{} {
 	return internal.GetUpgradeNotice()
 }
 
+// CreateDesktopShortcut creates the optional user-facing Console shortcut
+// after the core installation has completed.
+func (a *App) CreateDesktopShortcut(installDir string) map[string]interface{} {
+	if err := internal.CreateDesktopShortcut(filepath.Clean(installDir)); err != nil {
+		return result(false, err.Error())
+	}
+	return result(true, "installer.result.desktopShortcutCreated")
+}
+
 // Install runs the full installation.
 func (a *App) Install(installDir string, locale string) map[string]interface{} {
 	var err error
 
 	a.emit(0, "installer.progress.startInstall", "running", "")
 	installDir = filepath.Clean(installDir)
+	if err = internal.ValidateInstallDir(installDir); err != nil {
+		return result(false, err.Error())
+	}
 
 	// Step 1: Stop and delete existing service
 	a.emit(0, "installer.progress.stopExistingService", "running", "")
@@ -188,6 +232,12 @@ func (a *App) Install(installDir string, locale string) map[string]interface{} {
 	// Step 8: Finalize
 	enrollDest := filepath.Join(installDir, "FaceLoginConsole.exe")
 	_ = internal.ExtractResource("resources/FaceLoginConsole.exe", enrollDest)
+	// Install a dedicated lightweight entry point for removal. It uses the same
+	// signed Wails UI but is built without the installation payload.
+	uninstallDest := filepath.Join(installDir, "Uninstall.exe")
+	if copyErr := internal.ExtractResource("resources/Uninstall.exe", uninstallDest); copyErr != nil {
+		return result(false, fmt.Sprintf("create standalone uninstaller: %v", copyErr))
+	}
 
 	a.emit(100, "installer.progress.complete", "done", "")
 	return result(true, "installer.result.installed")
@@ -222,6 +272,12 @@ func (a *App) Uninstall() map[string]interface{} {
 		a.emit(50, "installer.progress.unregisterProvider", "done", "")
 	}
 
+	// Remove only the shortcut that points to this installation. A same-named
+	// shortcut targeting another program is intentionally preserved.
+	if installDir != "" {
+		_ = internal.RemoveDesktopShortcut(installDir)
+	}
+
 	// Step 3: Delete installed program files AND user data (data/, log/) and
 	// remove the install directory if it becomes empty. This is a FULL purge —
 	// enrolled faces, config, and logs are gone (the frontend warns about this
@@ -252,11 +308,7 @@ func (a *App) Uninstall() map[string]interface{} {
 		a.emit(70, "installer.progress.deleteFiles", "done", "")
 	}
 
-	// Step 4: Clean registry — remove the whole HKLM\SOFTWARE\FaceLogin key
-	// (InstallPath/DataPath plus the runtime values UserLoggedIn,
-	// ServiceStartUptime, AboutSeenVersion written by the service and console).
-	// DeleteRegValue() alone would only remove two values and leave the key and
-	// the orphaned runtime values behind.
+	// Step 4: Clean registry — remove the complete FaceLogin state key.
 	a.emit(70, "installer.progress.cleanRegistry", "running", "")
 	_ = internal.DeleteRegKey()
 	a.emit(85, "installer.progress.cleanRegistry", "done", "")

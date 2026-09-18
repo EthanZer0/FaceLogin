@@ -4,6 +4,7 @@
 #include <string>
 #include <accctrl.h>
 #include <aclapi.h>
+#include <atomic>
 
 namespace facelogin {
 
@@ -21,7 +22,7 @@ public:
     PipeServer& operator=(const PipeServer&) = delete;
 
     // Create the named pipe and wait for a client connection.
-    // Blocks until a client connects or the handle is closed (via Close()).
+    // Blocks until a client connects or RequestStop() supplies a wake client.
     // Returns true when a client has connected.
     bool WaitForClient(DWORD timeoutMs = 30000);
 
@@ -33,24 +34,18 @@ public:
     // Write a null-terminated UTF-16LE message to the pipe (synchronous).
     bool WriteMessage(const std::wstring& message);
 
-    // Wait (bounded) until the client has consumed pending output and the
-    // pipe is idle — i.e. no more bytes remain to be read. This replaces the
-    // unbounded ReadFile(dummy) handshake: it never blocks forever, and
-    // returns immediately if the client has already closed its end.
-    // Returns true if the pipe drained (or the client closed); false on
-    // timeout.
-    bool DrainOutput(DWORD timeoutMs = 5000);
-
     // Disconnect current client (allows a new client to connect).
     void Disconnect();
 
     // Close the pipe entirely. Unblocks any pending I/O.
     void Close();
 
-    // Get the raw pipe handle (for FlushFileBuffers, etc.)
-    HANDLE GetHandle() const { return m_hPipe; }
+    // Called by the service control callback. Signals the owner thread and
+    // wakes a pending connection wait without releasing owner-thread state.
+    void RequestStop();
+    void WakeWait();
 
-    bool IsConnected() const { return m_connected; }
+    bool IsConnected() const { return m_connected.load(); }
 
     // Non-blocking: returns true if the connected client has closed its end
     // of the pipe (or the pipe is otherwise broken). Uses PeekNamedPipe so it
@@ -60,8 +55,10 @@ public:
 private:
     PSECURITY_DESCRIPTOR CreateSecurityDescriptor();
 
-    HANDLE m_hPipe = INVALID_HANDLE_VALUE;
-    bool m_connected = false;
+    std::atomic<HANDLE> m_hPipe{INVALID_HANDLE_VALUE};
+    std::atomic<bool> m_connected{false};
+    std::atomic<bool> m_stopRequested{false};
+    std::atomic<bool> m_wakeRequested{false};
 };
 
 } // namespace facelogin

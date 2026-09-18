@@ -4,9 +4,10 @@
 #include "../common/registry_util.h"
 #include "../common/config_util.h"
 #include "../common/locale_util.h"
-#include <dsrole.h>
+#include "../common/session_util.h"
 #include <shlwapi.h>
 #include <shlobj.h>
+#include <wtsapi32.h>
 #include <fstream>
 #include <cstdint>
 
@@ -23,8 +24,8 @@ FaceLoginProvider::FaceLoginProvider() {
     const std::string uiLang = facelogin::LoadConfig(installDir).ui_language;
     facelogin::LocaleCatalog locale;
     const bool localeOk = locale.Load(installDir, uiLang);
-    FACELOGIN_INFO(L"[l10n] Provider: installDir='%ls' ui_language='%hs' locale='%hs' loadOk=%d",
-                   installDir.c_str(), uiLang.c_str(), locale.locale().c_str(), localeOk);
+    FACELOGIN_INFO(L"[l10n] Provider: ui_language='%hs' locale='%hs' loadOk=%d",
+                   uiLang.c_str(), locale.locale().c_str(), localeOk);
     m_fieldLabels[0] = locale.GetWide("credential.title", L"人脸登录");
     m_fieldLabels[1] = locale.GetWide("credential.field.status", L"状态");
     m_fieldLabels[2] = locale.GetWide("credential.field.submit", L"提交");
@@ -32,13 +33,15 @@ FaceLoginProvider::FaceLoginProvider() {
 
     // Define fields for our credential tile (no tile image — text only)
 
-    // Field 0: Large text ("人脸登录")
+    // Field 0: Large text title retained for descriptor compatibility. The
+    // credential keeps it hidden because all FaceLogin text uses the overlay.
     m_rgFieldDescriptors[0].dwFieldID = 0;
     m_rgFieldDescriptors[0].cpft = CPFT_LARGE_TEXT;
     m_rgFieldDescriptors[0].pszLabel = m_fieldLabels[0].data();
     m_rgFieldDescriptors[0].guidFieldType = GUID_NULL;
 
-    // Field 1: Small text (status message)
+    // Field 1: Small text fallback. It stays hidden while the central status
+    // overlay is available and is shown only if overlay creation fails.
     m_rgFieldDescriptors[1].dwFieldID = 1;
     m_rgFieldDescriptors[1].cpft = CPFT_SMALL_TEXT;
     m_rgFieldDescriptors[1].pszLabel = m_fieldLabels[1].data();
@@ -59,10 +62,19 @@ FaceLoginProvider::FaceLoginProvider() {
 
 FaceLoginProvider::~FaceLoginProvider() {
     FACELOGIN_INFO(L"FaceLoginProvider destroyed");
-    if (m_pCredential) {
-        m_pCredential->Release();
-        m_pCredential = nullptr;
+    ReleaseCredential(true);
+    if (m_pEvents) {
+        m_pEvents->Release();
+        m_pEvents = nullptr;
     }
+}
+
+void FaceLoginProvider::ReleaseCredential(bool contextChange) {
+    if (!m_pCredential) return;
+    if (contextChange) m_pCredential->ShutdownForContextChange();
+    else m_pCredential->UnadviseProvider();
+    m_pCredential->Release();
+    m_pCredential = nullptr;
 }
 
 // ============================================================================
@@ -93,9 +105,11 @@ static DWORD ReadUserCountFromDatabase() {
 
     // Read header: magic (4), version (4), count (4)
     uint32_t magic = 0, version = 0, count = 0;
-    file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-    file.read(reinterpret_cast<char*>(&version), sizeof(version));
-    file.read(reinterpret_cast<char*>(&count), sizeof(count));
+    if (!file.read(reinterpret_cast<char*>(&magic), sizeof(magic)) ||
+        !file.read(reinterpret_cast<char*>(&version), sizeof(version)) ||
+        !file.read(reinterpret_cast<char*>(&count), sizeof(count))) {
+        return 0;
+    }
 
     // Accept v1..v5 databases. The header fields this function reads
     // (magic / version / count) are identical across all versions —
@@ -106,7 +120,8 @@ static DWORD ReadUserCountFromDatabase() {
         return 0;  // Invalid database → treat as no users
     }
 
-    return count;
+    constexpr uint32_t kMaximumSupportedUsers = 100000;
+    return count <= kMaximumSupportedUsers ? count : 0;
 }
 
 // ============================================================================
@@ -148,6 +163,10 @@ STDMETHODIMP_(ULONG) FaceLoginProvider::Release() {
 
 STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, DWORD dwFlags) {
+    const CREDENTIAL_PROVIDER_USAGE_SCENARIO previousCpus = m_cpus;
+    const bool previousLoginEntry = m_isLoginEntry;
+    const ULONGLONG previousGeneration = m_loginEntryGeneration;
+    const DWORD previousSessionId = m_loginEntrySessionId;
     FACELOGIN_INFO(L"SetUsageScenario: cpus=%d, flags=0x%08X", cpus, dwFlags);
     m_cpus = cpus;
 
@@ -155,6 +174,7 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     // recognition. Let the built-in password provider handle this.
     if (cpus == CPUS_CHANGE_PASSWORD) {
         FACELOGIN_INFO(L"SetUsageScenario: CPUS_CHANGE_PASSWORD — delegating to password provider");
+        ReleaseCredential(true);
         return E_NOTIMPL;
     }
 
@@ -166,62 +186,44 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     // to the built-in password/pin providers.
     if (cpus == CPUS_CREDUI || cpus == CPUS_PLAP) {
         FACELOGIN_INFO(L"SetUsageScenario: CPUS_CREDUI/CPUS_PLAP — delegating to password provider");
+        ReleaseCredential(true);
         return E_NOTIMPL;
     }
 
-    // ── LOGON / UNLOCK → cold-boot detection ────────────────────────
-    // Cold-boot detection via system uptime comparison.
-    //
-    // The service writes GetTickCount64() to ServiceStartUptime at every startup.
-    // GetTickCount64 resets to near-zero on each boot, so comparing the CP's
-    // current uptime to the service's recorded uptime tells us whether they are
-    // on the same boot cycle.
-    //
-    // Decision matrix:
-    //   serviceUptime == 0          → fallback to UserLoggedIn (service not ready)
-    //   currentUptime < serviceUptime → cross-boot: stale registry value from
-    //                                   prior boot → definitely cold boot
-    //   delta < 120s, UserLoggedIn=0 → cold boot → auto-trigger
-    //   delta < 120s, UserLoggedIn=1 → fast-startup resume → manual trigger
-    //   delta >= 120s               → unlock (service started long ago) → manual
-    ULONGLONG serviceUptime = ReadRegQword(REGVAL_SERVICE_START_UPTIME, 0);
-    ULONGLONG currentUptime = GetTickCount64();
-    const ULONGLONG COLD_BOOT_THRESHOLD_MS = 120000; // 2 minutes
-    DWORD userLoggedIn = ReadRegDword(REGVAL_USER_LOGGED_IN, 0);
+    // Windows 10+ can report CPUS_LOGON for both initial logon and unlock.
+    // Only a service-owned Kernel-Boot/logoff generation authorizes automatic
+    // recognition. The provider deliberately does not inspect WTS user or
+    // lock state: those values race LogonUI during startup.
+    const ULONGLONG loginEntryGeneration = facelogin::GetLoginEntryGeneration();
+    m_loginEntryGeneration = loginEntryGeneration;
+    m_loginEntrySessionId = WTSGetActiveConsoleSessionId();
+    const bool generationPending = facelogin::IsLoginEntryPending(
+        m_loginEntryGeneration, m_loginEntrySessionId);
+    const ULONGLONG autoAttemptGeneration =
+        facelogin::GetAutoAttemptGeneration();
+    const bool generationUnclaimed = generationPending &&
+        autoAttemptGeneration != m_loginEntryGeneration;
+    const bool sameActiveEntry = m_pCredential &&
+        previousCpus == cpus &&
+        previousGeneration == m_loginEntryGeneration &&
+        previousSessionId == m_loginEntrySessionId;
 
-    if (serviceUptime == 0) {
-        // Service hasn't written ServiceStartUptime yet — fall back to
-        // UserLoggedIn only.
-        m_isColdBoot = (userLoggedIn == 0);
-        FACELOGIN_INFO(L"SetUsageScenario: ServiceStartUptime=0, UserLoggedIn=%lu → coldBoot=%d",
-                      userLoggedIn, static_cast<int>(m_isColdBoot));
-    } else if (currentUptime < serviceUptime) {
-        // Cross-boot: the registry value is from a previous boot (since
-        // GetTickCount64 always increases within one boot and resets to
-        // near-zero on each new boot).  Current boot is fresh → cold boot.
-        m_isColdBoot = true;
-        FACELOGIN_INFO(L"SetUsageScenario: cross-boot detected (current=%llu < service=%llu) → coldBoot=true",
-                      currentUptime, serviceUptime);
-    } else {
-        // Same boot: delta tells us how long ago the service started.
-        ULONGLONG delta = currentUptime - serviceUptime;
-        if (delta < COLD_BOOT_THRESHOLD_MS) {
-            // CP and service started close together — could be cold boot
-            // or fast-startup resume.  UserLoggedIn disambiguates.
-            m_isColdBoot = (userLoggedIn == 0);
-            FACELOGIN_INFO(L"SetUsageScenario: delta=%llu < %llums, UserLoggedIn=%lu → coldBoot=%d",
-                          delta, COLD_BOOT_THRESHOLD_MS, userLoggedIn,
-                          static_cast<int>(m_isColdBoot));
-        } else {
-            // Far apart: service started long ago → unlock scenario.
-            m_isColdBoot = false;
-            FACELOGIN_INFO(L"SetUsageScenario: delta=%llu >= %llums → coldBoot=false",
-                          delta, COLD_BOOT_THRESHOLD_MS);
-        }
-    }
+    // A generation is eligible for automatic sign-in exactly once. If an old
+    // active marker survives into a later LogonUI instance, it must not turn a
+    // normal Win+L unlock into an automatic default-tile flow. Preserve an
+    // already-running instance's classification across LogonUI's own
+    // re-enumeration so its in-flight cold-start attempt remains intact.
+    m_isLoginEntry = cpus == CPUS_LOGON && generationPending &&
+        (generationUnclaimed || (sameActiveEntry && previousLoginEntry));
 
-    // Clean up NetWkstaUserEnum includes — no longer needed
-    // (already removed above)
+    FACELOGIN_INFO(L"LoginEntry: cpus=%d sessionId=%lu generation=%llu "
+                   L"autoGeneration=%llu pending=%d unclaimed=%d decision=%s",
+                   cpus, m_loginEntrySessionId,
+                   m_loginEntryGeneration,
+                   autoAttemptGeneration,
+                   static_cast<int>(generationPending),
+                   static_cast<int>(generationUnclaimed),
+                   m_isLoginEntry ? L"automatic-entry" : L"key-triggered-unlock");
 
     // Check if the Disabled registry flag is set
     HKEY hKey;
@@ -234,6 +236,7 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
         RegCloseKey(hKey);
         if (disabled) {
             FACELOGIN_INFO(L"Provider is disabled via registry");
+            ReleaseCredential(true);
             return E_NOTIMPL;  // This will cause LogonUI to skip this provider
         }
     }
@@ -244,15 +247,37 @@ STDMETHODIMP FaceLoginProvider::SetUsageScenario(
     FACELOGIN_INFO(L"User count from database: %lu", userCount);
     if (userCount == 0) {
         FACELOGIN_INFO(L"No enrolled users — hiding face login tile");
+        ReleaseCredential(true);
         return E_NOTIMPL;
     }
 
-    // Create our credential
-    m_pCredential = new FaceLoginCredential();
-    if (!m_pCredential) {
-        return E_OUTOFMEMORY;
+    // LogonUI may transiently tear down and rebuild its credential collection
+    // during initial sign-in.  Advise/UnAdvise only govern callback validity;
+    // they are not an authentication-session boundary.  Preserve the same
+    // credential object (and therefore its in-flight pipe/session) when the
+    // usage context is unchanged.  A genuinely new scenario/login entry gets
+    // a fresh object and deterministically tears down the old session.
+    const bool sameContext = m_pCredential &&
+        previousCpus == cpus &&
+        previousLoginEntry == m_isLoginEntry &&
+        previousGeneration == m_loginEntryGeneration &&
+        previousSessionId == m_loginEntrySessionId;
+
+    if (!sameContext) {
+        ReleaseCredential(true);
+        m_pCredential = new FaceLoginCredential();
+        if (!m_pCredential) {
+            return E_OUTOFMEMORY;
+        }
+        CredentialContext context;
+        context.usageScenario = m_cpus;
+        context.loginEntry = m_isLoginEntry;
+        context.loginEntryGeneration = m_loginEntryGeneration;
+        context.loginEntrySessionId = m_loginEntrySessionId;
+        m_pCredential->Initialize(context);
+    } else {
+        FACELOGIN_INFO(L"CredentialLifecycle: preserving active credential across re-enumeration");
     }
-    m_pCredential->Initialize(this);
 
     return S_OK;
 }
@@ -267,7 +292,7 @@ STDMETHODIMP FaceLoginProvider::SetSerialization(
 
 STDMETHODIMP FaceLoginProvider::Advise(
     ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext) {
-    FACELOGIN_INFO(L"Advise called");
+    FACELOGIN_DEBUG(L"Provider Advise");
 
     if (m_pEvents) {
         m_pEvents->Release();
@@ -280,6 +305,18 @@ STDMETHODIMP FaceLoginProvider::Advise(
         m_pEvents->AddRef();
     }
 
+    FACELOGIN_INFO(
+        L"ProviderBinding: action=advise cpus=%d loginEntry=%d "
+        L"generation=%llu sessionId=%lu providerEventsAttached=%d "
+        L"adviseContext=%p credential=%p",
+        static_cast<int>(m_cpus),
+        static_cast<int>(m_isLoginEntry),
+        m_loginEntryGeneration,
+        m_loginEntrySessionId,
+        static_cast<int>(m_pEvents != nullptr),
+        reinterpret_cast<void*>(upAdviseContext),
+        m_pCredential);
+
     if (m_pCredential) {
         m_pCredential->AdviseProvider(m_pEvents, upAdviseContext);
     }
@@ -288,7 +325,19 @@ STDMETHODIMP FaceLoginProvider::Advise(
 }
 
 STDMETHODIMP FaceLoginProvider::UnAdvise() {
-    FACELOGIN_INFO(L"UnAdvise called");
+    FACELOGIN_DEBUG(L"Provider UnAdvise");
+
+    FACELOGIN_INFO(
+        L"ProviderBinding: action=unadvise cpus=%d loginEntry=%d "
+        L"generation=%llu sessionId=%lu providerEventsAttached=%d "
+        L"adviseContext=%p credential=%p",
+        static_cast<int>(m_cpus),
+        static_cast<int>(m_isLoginEntry),
+        m_loginEntryGeneration,
+        m_loginEntrySessionId,
+        static_cast<int>(m_pEvents != nullptr),
+        reinterpret_cast<void*>(m_upAdviseContext),
+        m_pCredential);
 
     if (m_pEvents) {
         m_pEvents->Release();
@@ -340,15 +389,19 @@ STDMETHODIMP FaceLoginProvider::GetCredentialCount(
     *pdwCount = 1;
     *pdwDefault = 0;
 
-    // ALWAYS set auto-logon so LogonUI selects our tile.
-    // The cold-boot vs unlock distinction is handled inside Advise() and
-    // SetSelected():
-    //   cold boot: auto-logon=TRUE → GetSerialization polled → StartAuth in Advise()
-    //   unlock:    auto-logon=FALSE in SetSelected → user must click Submit button
-    //              → GetSerialization runs synchronous auth
-    *pbAutoLogonWithDefault = m_isColdBoot ? TRUE : FALSE;
-    FACELOGIN_INFO(L"GetCredentialCount: count=%d, default=%d, autoLogon=%d, coldBoot=%d",
-                  *pdwCount, *pdwDefault, *pbAutoLogonWithDefault, static_cast<int>(m_isColdBoot));
+    // A service-created login-entry generation is the cold-start / post-logoff
+    // automatic path.  Keep LogonUI in its default auto-logon flow from the
+    // first enumeration so Advise() and GetSerialization() form one stable
+    // session, as they did in the proven 1.9.x flow.  Ordinary lock/unlock
+    // remains explicitly selected and key-triggered.
+    *pbAutoLogonWithDefault = m_isLoginEntry ? TRUE : FALSE;
+    FACELOGIN_DEBUG(L"GetCredentialCount: default=%lu autoLogon=%d "
+                   L"loginEntry=%d generation=%llu sessionId=%lu",
+                   *pdwDefault,
+                   *pbAutoLogonWithDefault,
+                   static_cast<int>(m_isLoginEntry),
+                   m_loginEntryGeneration,
+                   m_loginEntrySessionId);
 
     return S_OK;
 }
@@ -362,21 +415,4 @@ STDMETHODIMP FaceLoginProvider::GetCredentialAt(
 
     return m_pCredential->QueryInterface(IID_ICredentialProviderCredential,
                                          reinterpret_cast<void**>(ppcpc));
-}
-
-bool FaceLoginProvider::IsDomainJoined() const {
-    PDSROLE_PRIMARY_DOMAIN_INFO_BASIC info = nullptr;
-    bool result = false;
-
-    if (DsRoleGetPrimaryDomainInformation(nullptr,
-            DsRolePrimaryDomainInfoBasic,
-            reinterpret_cast<PBYTE*>(&info)) == ERROR_SUCCESS) {
-        result = (info->MachineRole == DsRole_RoleMemberWorkstation ||
-                  info->MachineRole == DsRole_RoleMemberServer ||
-                  info->MachineRole == DsRole_RoleBackupDomainController ||
-                  info->MachineRole == DsRole_RolePrimaryDomainController);
-        DsRoleFreeMemory(info);
-    }
-
-    return result;
 }

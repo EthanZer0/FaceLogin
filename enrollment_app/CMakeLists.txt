@@ -47,14 +47,14 @@ set_target_properties(FaceLoginConsole PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
 
-# Embed DPI-aware manifest for sharp text on high-DPI displays
-target_sources(FaceLoginConsole PRIVATE FaceLoginEnrollment.manifest)
-set_source_files_properties(FaceLoginEnrollment.manifest PROPERTIES
-    VS_TOOL_OVERRIDE "manifest"
-    HEADER_FILE_ONLY TRUE
-)
-
 # Custom output directory
 set_target_properties(FaceLoginConsole PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/installer/FaceLoginSetup/resources"
+)
+
+# Merge the explicit DPI manifest into the linker-generated application
+# manifest. This works with both the Visual Studio and Ninja generators.
+target_link_options(FaceLoginConsole PRIVATE
+    "/MANIFEST:EMBED"
+    "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/FaceLoginEnrollment.manifest"
 )

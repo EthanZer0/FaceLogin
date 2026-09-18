@@ -3,6 +3,8 @@
 #include "../common/ipc_protocol.h"
 #include "../common/secure_buffer.h"
 #include "../common/registry_util.h"
+#include "../common/boot_evidence.h"
+#include "../common/session_util.h"
 #include "../common/config_util.h"
 #include "../common/image_utils.h"
 #include "liveness_detector.h"
@@ -33,11 +35,29 @@ static std::wstring Utf8ToWstr(const std::string& s) {
     return ws;
 }
 
+// A match result contains the credential payload needed only after a complete
+// authentication succeeds.  Consensus and anti-spoof binding must instead use
+// a stable account identity, so two different enrolled users can never lend
+// their match and liveness evidence to one another.
+static std::wstring MatchAccountKey(const CredentialStore::MatchResult& match) {
+    if (!match.sid.empty()) return L"sid:" + match.sid;
+    if (!match.upn.empty()) return L"upn:" + match.upn;
+    return L"name:" + match.username;
+}
+
+static bool SameMatchedAccount(const CredentialStore::MatchResult& match,
+                               const std::wstring& accountKey) {
+    return !accountKey.empty() &&
+           CompareStringOrdinal(MatchAccountKey(match).c_str(), -1,
+                                accountKey.c_str(), -1, TRUE) == CSTR_EQUAL;
+}
+
 FaceService::FaceService() {
     s_pInstance = this;
 }
 
 FaceService::~FaceService() {
+    CleanupSessionResources();
     if (m_wicFactory) m_wicFactory->Release();
     m_wicFactory = nullptr;
     s_pInstance = nullptr;
@@ -197,8 +217,8 @@ void FaceService::SaveUnknownFace(const dlib::matrix<dlib::rgb_pixel>& frame,
         }
     }
 
-    FACELOGIN_WARN(L"Unknown face captured: %s (distance=%.3f)",
-                   jpgPath.c_str(), bestDistance);
+    FACELOGIN_WARN(L"Unknown face diagnostic frame captured (distance=%.3f)",
+                   bestDistance);
 }
 
 void WINAPI FaceService::ServiceMain(DWORD argc, LPWSTR* argv) {
@@ -290,35 +310,54 @@ DWORD WINAPI FaceService::HandlerEx(DWORD control, DWORD eventType,
         // PBT_APMRESUMESUSPEND = resumed from sleep/hibernate. The camera may
         // still be in low-power recovery, so force a fresh camera init on the
         // next auth instead of reusing a stale SourceReader.
-        if (eventType == PBT_APMRESUMESUSPEND) {
-            FACELOGIN_INFO(L"Power resume event — forcing camera re-init on next auth");
-            pService->m_resumedFlag.store(true);
+        if (eventType == PBT_APMRESUMESUSPEND ||
+            eventType == PBT_APMRESUMEAUTOMATIC) {
+            FACELOGIN_INFO(L"Power resume event — refreshing boot evidence");
+            pService->QueueServiceEvent(
+                ServiceEventType::KernelBootRefresh, 0xFFFFFFFF);
         }
         return NO_ERROR;
     }
     case SERVICE_CONTROL_SESSIONCHANGE: {
-        // Only respond to LOGON (user signed in) and LOGOFF (user signed out).
-        // Ignore other events like WTS_SESSION_LOCK (7), WTS_SESSION_UNLOCK (8),
-        // WTS_CONSOLE_CONNECT (1), etc. — those don't change logged-in state.
+        // Session notifications describe the login state directly. Only a
+        // logoff starts a new login-entry generation; lock/unlock do not.
         auto* evt = reinterpret_cast<WTSSESSION_NOTIFICATION*>(eventData);
-        if (evt && evt->cbSize == sizeof(WTSSESSION_NOTIFICATION)
-            && evt->dwSessionId == WTSGetActiveConsoleSessionId()) {
-            if (eventType == WTS_SESSION_LOGON) {
-                FACELOGIN_INFO(L"Session LOGON: session=%lu → UserLoggedIn=1",
-                              evt->dwSessionId);
-                WriteRegDword(REGVAL_USER_LOGGED_IN, 1);
-            } else if (eventType == WTS_SESSION_LOGOFF) {
-                FACELOGIN_INFO(L"Session LOGOFF: session=%lu → UserLoggedIn=0",
-                              evt->dwSessionId);
-                WriteRegDword(REGVAL_USER_LOGGED_IN, 0);
-                // Clear the service start uptime so the next logon is
-                // detected as a cold boot (fresh ServiceStartUptime written
-                // on next service restart, or if the service stays running,
-                // the CP will see ServiceStartUptime=0 and treat it as cold
-                // boot via the UserLoggedIn=0 fallback).
-                WriteRegQword(REGVAL_SERVICE_START_UPTIME, 0);
-            } else {
-                FACELOGIN_INFO(L"Session change ignored: eventType=%lu", eventType);
+        if (evt && evt->cbSize == sizeof(WTSSESSION_NOTIFICATION)) {
+            const DWORD activeSession = WTSGetActiveConsoleSessionId();
+            if (evt->dwSessionId == activeSession || activeSession == 0xFFFFFFFF) {
+                if (eventType == WTS_SESSION_LOGOFF) {
+                    pService->QueueServiceEvent(
+                        ServiceEventType::SessionLogoff, evt->dwSessionId);
+                } else if (eventType == WTS_SESSION_LOGON) {
+                    // Service startup can precede creation of the interactive
+                    // console session. Retry the current Kernel-Boot record
+                    // now that this session is available; do not complete the
+                    // generation here, because LogonUI still needs to claim it.
+                    pService->QueueServiceEvent(
+                        ServiceEventType::KernelBootRefresh, evt->dwSessionId);
+                } else if (eventType == WTS_SESSION_DESKTOP_READY) {
+                    pService->QueueServiceEvent(
+                        ServiceEventType::LoginEntryCompleted, evt->dwSessionId);
+                } else if (eventType == WTS_SESSION_LOCK) {
+                    // Locking can be emitted while LogonUI is preparing a
+                    // fresh cold-start entry. It is not proof that an entry
+                    // has completed, so it must not consume its generation.
+                    FACELOGIN_INFO(L"Console session locked: session=%lu (generation retained)",
+                                   evt->dwSessionId);
+                } else if (eventType == WTS_SESSION_UNLOCK) {
+                    // WTS_SESSION_DESKTOP_READY is not consistently delivered
+                    // after a successful interactive logon.  UNLOCK is the
+                    // reliable evidence that this session has reached its
+                    // desktop, so finish any active cold-start/logoff entry
+                    // here as well. CompleteLoginEntryGeneration() is
+                    // idempotent and therefore a no-op for ordinary Win+L
+                    // unlocks, whose generation was already completed.
+                    pService->QueueServiceEvent(
+                        ServiceEventType::LoginEntryCompleted, evt->dwSessionId);
+                    FACELOGIN_INFO(L"Console session unlocked: session=%lu "
+                                   L"(completing active login entry)",
+                                   evt->dwSessionId);
+                }
             }
         }
         return NO_ERROR;
@@ -346,7 +385,7 @@ bool FaceService::Initialize() {
         }
     }
     CreateDirectoryW(m_dataDir.c_str(), nullptr);
-    m_modelsDir = GetModelsDir();
+    m_modelsDir = m_dataDir + L"\\models";
 
     // Load configuration from config.json (falls back to registry). Must happen
     // before camera init — the configured camera_device is used below.
@@ -359,8 +398,7 @@ bool FaceService::Initialize() {
     Logger::Instance().SetLogFile(logPath);
     Logger::Instance().SetMinLevel(LogLevel::Info);
     FACELOGIN_INFO(L"=== FaceLoginService initializing ===");
-    FACELOGIN_INFO(L"Data dir: %s", m_dataDir.c_str());
-    FACELOGIN_INFO(L"Models dir: %s", m_modelsDir.c_str());
+    FACELOGIN_INFO(L"Data and model directories initialized");
 
     m_store = std::make_unique<CredentialStore>();
     m_store->SetDataDir(m_dataDir);
@@ -370,20 +408,7 @@ bool FaceService::Initialize() {
     }
     FACELOGIN_INFO(L"Loaded %zu registered user(s)", m_store->GetUserCount());
 
-    // Write the service's system uptime at startup for the CP's cold-boot
-    // detection.  The CP compares its own uptime to this value:
-    //   close to this value (within ~120s) → cold boot (CP loaded near service)
-    //   far above, or below (cross-boot stale) → cold boot
-    //   far above (same boot, hours later) → unlock
-    //
-    // ALWAYS overwrite — registry persists across reboots, and GetTickCount64
-    // resets to 0 on each boot, so a stale value from a prior boot would
-    // corrupt detection if we skipped the write.
-    {
-        ULONGLONG uptime = GetTickCount64();
-        WriteRegQword(REGVAL_SERVICE_START_UPTIME, uptime);
-        FACELOGIN_INFO(L"Initialize: ServiceStartUptime = %llu", uptime);
-    }
+    ProcessKernelBootEvidence(L"service-start");
 
     m_detector = nullptr;  // loaded by the background thread — see StartBackgroundModelLoad()
 
@@ -417,16 +442,6 @@ FACELOGIN_INFO(L"Camera pipeline: MF preferred, DirectShow fallback — initiali
                        m_config.camera_device.empty() ? L"" : L" (configured device)");
     }
 
-    if (m_config.face_exposure_control) {
-        // Enrolled embeddings live in the pre-gain brightness domain;
-        // switching the input domain on requires fresh anchors (same rule as
-        // the V5 alignment change).
-        FACELOGIN_WARN(L"Face exposure control ENABLED (target=%.0f band=%.0f) — "
-                       L"re-enroll faces afterwards: old embeddings are in the "
-                       L"pre-normalization brightness domain",
-                       m_config.face_exposure_target, m_config.face_exposure_band);
-    }
-
     m_pipeServer = std::make_unique<PipeServer>();
 
     // dlib recognizer/detector were removed — the system is now pure ONNX.
@@ -446,23 +461,16 @@ FACELOGIN_INFO(L"Camera pipeline: MF preferred, DirectShow fallback — initiali
 }
 
 // ============================================================================
-// Lazy model loading (1.5.0)
+// Lazy model loading
 //
 // The pipe listener must be up as soon as possible so the credential provider
-// connects the moment the lock screen appears. Loading the 99.7MB dlib shape
-// predictor + 3 ONNX sessions synchronously in Initialize() pushed that by
-// seconds on a cold boot. Instead:
-//   - SCRFD (2.5MB) loads synchronously in Initialize() — light, needed for
-//     the first frame, and its absence would block even a liveness-less auth.
-//   - Everything heavier loads in this background thread, kicked off right
-//     before Run() enters the pipe loop. The lock screen shows ~10-20s after
-//     SCM starts the service, which is normally enough for the loads to finish
-//     in the background — the user never waits.
-//   - If a request arrives before they finish, ProcessAuthRequest() calls
-//     EnsureModelsLoaded(), which blocks until ready (or fails/stop).
+// connects when the lock screen appears. Loading all ONNX sessions
+// synchronously delays cold boot, so the detector and remaining sessions load
+// in a background thread before the pipe loop. If a request arrives first,
+// EnsureModelsLoaded() waits until the sessions are ready or loading fails.
 // ============================================================================
 
-bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
+bool FaceService::LoadHeavyModels() {
     FACELOGIN_INFO(L"Loading heavy models in background...");
 
     // 0. SCRFD face detector (det_500m, ~22MB? — actually ~2.5MB). Moved into
@@ -479,10 +487,24 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
         std::lock_guard<std::mutex> lock(m_modelMutex);
         m_onnxDetector = std::move(detector);
     }
-    FACELOGIN_INFO(L"SCRFD detector loaded");
+        FACELOGIN_DEBUG(L"Model ready: detector");
 
-    // 1. 106-point landmark detector (2d106det.onnx, ~5MB — replaces the
-    // 99.7MB dlib shape predictor).
+    // Head pose is an optional observer. It is loaded with the heavy model
+    // group so the service and Console use the same model asset and lifetime,
+    // but failure never blocks face authentication.
+    {
+        auto headPose = std::make_unique<OnnxHeadPose>();
+        std::wstring path = m_modelsDir + L"\\head_pose_mobilenetv2.onnx";
+        if (headPose->Initialize(path)) {
+            std::lock_guard<std::mutex> lock(m_modelMutex);
+            m_headPose = std::move(headPose);
+            FACELOGIN_DEBUG(L"Model ready: head pose");
+        } else {
+            FACELOGIN_WARN(L"MobileNetV2 head-pose model unavailable; pose logging disabled");
+        }
+    }
+
+    // 1. 106-point landmark detector (2d106det.onnx).
     {
         auto detector = std::make_unique<OnnxLandmarkDetector>();
         std::wstring path = m_modelsDir + L"\\2d106det.onnx";
@@ -493,7 +515,7 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
         std::lock_guard<std::mutex> lock(m_modelMutex);
         m_detector = std::move(detector);
     }
-    FACELOGIN_INFO(L"2d106det landmark detector loaded");
+    FACELOGIN_DEBUG(L"Model ready: landmarks");
 
     // 2. InsightFace recognizer (w600k_mbf.onnx).
     {
@@ -503,30 +525,27 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
             FACELOGIN_ERROR(L"ONNX recognizer failed to load — recognition unavailable");
             return false;
         }
-        recognizer->SetLowLightEnhance(lowLightEnhance);
         std::lock_guard<std::mutex> lock(m_modelMutex);
         m_onnxRecognizer = std::move(recognizer);
     }
-    FACELOGIN_INFO(L"ONNX recognizer loaded (InsightFace buffalo_s)");
+    FACELOGIN_DEBUG(L"Model ready: recognizer");
 
     // 3. Anti-spoof model (facenox MiniFAS, 1.6.0 — replaces DeepPixBiS/OULU).
     {
         auto antiSpoof = std::make_unique<OnnxAntiSpoof>();
         std::wstring path = m_modelsDir + L"\\minifas_quantized.onnx";
         if (antiSpoof->Initialize(path)) {
-            antiSpoof->SetLowLightEnhance(lowLightEnhance);
             std::lock_guard<std::mutex> lock(m_modelMutex);
             m_antiSpoof = std::move(antiSpoof);
-            FACELOGIN_INFO(L"Anti-spoof model loaded (facenox MiniFAS)");
+            FACELOGIN_DEBUG(L"Model ready: anti-spoof MiniFAS");
         } else {
             // Fall back to the legacy OULU model if present.
             std::wstring ouluPath = m_modelsDir + L"\\OULU_Protocol_2_model_0_0.onnx";
             auto oulu = std::make_unique<OnnxAntiSpoof>();
             if (oulu->Initialize(ouluPath)) {
-                oulu->SetLowLightEnhance(lowLightEnhance);
                 std::lock_guard<std::mutex> lock(m_modelMutex);
                 m_antiSpoof = std::move(oulu);
-                FACELOGIN_INFO(L"Anti-spoof fallback: DeepPixBiS/OULU loaded");
+                FACELOGIN_DEBUG(L"Model ready: anti-spoof fallback");
             } else {
                 FACELOGIN_WARN(L"Anti-spoof model not available");
             }
@@ -539,7 +558,8 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
     // would race. It happens on the main thread in ValidateLivenessMethod(),
     // called after the models are known ready.
 
-    FACELOGIN_INFO(L"Heavy models loaded");
+    FACELOGIN_INFO(L"Models ready: detector, landmarks, recognizer%s",
+                   m_antiSpoof ? L", anti-spoof" : L"");
     return true;
 }
 
@@ -554,12 +574,11 @@ bool FaceService::LoadHeavyModels(bool lowLightEnhance) {
 void FaceService::UnloadHeavyModels() {
     std::lock_guard<std::mutex> lock(m_modelMutex);
     if (m_onnxDetector)     { m_onnxDetector.reset(); }
+    if (m_headPose)         { m_headPose.reset(); }
     if (m_detector)         { m_detector.reset(); }
     if (m_onnxRecognizer)   { m_onnxRecognizer.reset(); }
     if (m_antiSpoof)        { m_antiSpoof.reset(); }
-    m_modelsLoading.store(false);
-    m_modelsReady.store(false);
-    m_modelsFailed.store(false);
+    m_modelState.store(ModelLoadState::NotLoaded);
     FACELOGIN_INFO(L"Heavy models unloaded after auth");
 }
 
@@ -591,29 +610,24 @@ void FaceService::TrimWorkingSet() {
 }
 
 void FaceService::StartBackgroundModelLoad() {
-    // Capture the config values the loader needs NOW. The main thread can
-    // rewrite m_config via CONFIG_RELOAD while the loader is running; reading
-    // the struct here avoids a data race and the loader's low-light toggle is
-    // overridden by CONFIG_RELOAD afterward anyway.
-    const bool lowLightEnhance = m_config.low_light_enhance;
-
-    m_modelsLoading.store(true);
-    m_modelLoadThread = std::thread([this, lowLightEnhance]() {
+    m_modelState.store(ModelLoadState::Loading);
+    m_modelLoadThread = std::thread([this]() {
         // Load under a scoped RAII so the flags are cleared on every exit path
         // (including exceptions).
         struct LoadGuard {
             FaceService* svc;
             bool ok;
             ~LoadGuard() {
-                svc->m_modelsLoading.store(false);
-                svc->m_modelsReady.store(ok);
-                svc->m_modelsFailed.store(!ok);
+                if (svc->m_modelState.load() != ModelLoadState::Stopping) {
+                    svc->m_modelState.store(ok ? ModelLoadState::Ready
+                                               : ModelLoadState::Failed);
+                }
                 svc->m_modelCv.notify_all();
             }
         };
         bool ok = false;
         try {
-            ok = LoadHeavyModels(lowLightEnhance);
+            ok = LoadHeavyModels();
         } catch (const std::exception& e) {
             FACELOGIN_ERROR(L"Model loader threw: %hs", e.what());
         }
@@ -642,8 +656,8 @@ void FaceService::ValidateLivenessMethod() {
 // Returns false only if a REQUIRED model failed to load (auth cannot proceed)
 // or the service is stopping.
 bool FaceService::EnsureModelsLoaded() {
-    if (m_modelsReady.load()) return true;
-    if (m_modelsAbort.load()) return false;
+    if (m_modelState.load() == ModelLoadState::Ready) return true;
+    if (m_modelState.load() == ModelLoadState::Stopping) return false;
 
     // Unloaded after a prior auth, or the startup background load is still in
     // flight. Wait for any in-flight load; if none is running, load now on this
@@ -651,20 +665,16 @@ bool FaceService::EnsureModelsLoaded() {
     {
         std::unique_lock<std::mutex> lock(m_modelMutex);
         m_modelCv.wait(lock, [this]() {
-            return !m_modelsLoading.load() || m_modelsReady.load() ||
-                   m_modelsFailed.load() || m_modelsAbort.load();
+            return m_modelState.load() != ModelLoadState::Loading;
         });
-        if (m_modelsReady.load()) return true;
-        if (m_modelsFailed.load() && !m_modelsLoading.load()) return false;
-        if (m_modelsAbort.load()) return false;
+        if (m_modelState.load() == ModelLoadState::Ready) return true;
+        if (m_modelState.load() == ModelLoadState::Failed) return false;
+        if (m_modelState.load() == ModelLoadState::Stopping) return false;
     }
 
     // No load in flight and not ready — load synchronously on this thread.
-    const bool lowLightEnhance = m_config.low_light_enhance;
-    bool ok = LoadHeavyModels(lowLightEnhance);
-    m_modelsLoading.store(false);
-    m_modelsReady.store(ok);
-    m_modelsFailed.store(!ok);
+    bool ok = LoadHeavyModels();
+    m_modelState.store(ok ? ModelLoadState::Ready : ModelLoadState::Failed);
     m_modelCv.notify_all();
     return ok;
 }
@@ -672,7 +682,7 @@ bool FaceService::EnsureModelsLoaded() {
 // Release anyone blocked in EnsureModelsLoaded() during service shutdown so
 // Stop() can join the loader thread without deadlocking.
 void FaceService::AbortModelLoadWait() {
-    m_modelsAbort.store(true);
+    m_modelState.store(ModelLoadState::Stopping);
     m_modelCv.notify_all();
     if (m_modelLoadThread.joinable()) {
         m_modelLoadThread.join();
@@ -680,11 +690,12 @@ void FaceService::AbortModelLoadWait() {
 }
 
 void FaceService::Run() {
-    m_running = true;
+    m_stopRequested.store(false);
 
-    while (m_running) {
+    while (!m_stopRequested.load()) {
+        ProcessPendingServiceEvents();
         if (!m_pipeServer->WaitForClient(60000)) {
-            if (!m_running) break;
+            if (m_stopRequested.load()) break;
             continue;
         }
 
@@ -694,11 +705,16 @@ void FaceService::Run() {
             continue;
         }
 
-        FACELOGIN_INFO(L"Received request: %s", request.c_str());
+        if (request == ipc::MSG_AUTH_REQUEST) {
+            FACELOGIN_INFO(L"IPC: authentication request");
+        } else if (request == ipc::MSG_RELOAD_DB) {
+            FACELOGIN_INFO(L"IPC: database reload request");
+        } else if (request == ipc::MSG_CONFIG_RELOAD) {
+            FACELOGIN_INFO(L"IPC: configuration reload request");
+        }
 
         if (request == ipc::MSG_RELOAD_DB) {
             m_store->ReloadDatabase();   // force re-read (LoadDatabase is cached)
-            m_pipeServer->WriteMessage(ipc::MSG_RELOAD_OK);
             m_pipeServer->Disconnect();
             FACELOGIN_INFO(L"Database reloaded");
         }
@@ -718,9 +734,6 @@ void FaceService::Run() {
             // configure, so fail the reload with a descriptive error.
             if (!EnsureModelsLoaded()) {
                 FACELOGIN_ERROR(L"CONFIG_RELOAD: required models failed to load");
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_MODEL_LOAD_FAILED));
-                FlushFileBuffers(m_pipeServer->GetHandle());
-                m_pipeServer->DrainOutput(5000);
                 m_pipeServer->Disconnect();
                 continue;
             }
@@ -740,10 +753,6 @@ void FaceService::Run() {
                     m_antiSpoof.reset();
                 }
             }
-            // Propagate the low-light enhancement toggle to the models (hot reload).
-            m_onnxRecognizer->SetLowLightEnhance(m_config.low_light_enhance);
-            if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(m_config.low_light_enhance);
-            m_pipeServer->WriteMessage(ipc::MSG_CONFIG_RELOAD_OK);
             m_pipeServer->Disconnect();
             FACELOGIN_INFO(L"Configuration reloaded: rec=%hs det=%hs live=%hs thr=%.2f rotation=%d",
                           m_config.recognition_model.c_str(), m_config.detector.c_str(),
@@ -751,84 +760,98 @@ void FaceService::Run() {
                           m_livenessMethod == LivenessMethod::AntiSpoof ? "antispoof" : "none",
                           m_matchThreshold, m_config.camera_rotation);
         }
-        else if (request == ipc::MSG_GET_LOGS) {
-            auto lines = Logger::Instance().GetRecentLogs(500);
-            std::wstring resp(ipc::MSG_GET_LOGS_OK_PREFIX);
-            for (size_t i = 0; i < lines.size(); i++) {
-                if (i > 0) resp += L"\x1E"; // ASCII record separator
-                // Escape backslashes and the separator char itself
-                std::wstring safe = lines[i];
-                // Remove trailing \r\n from each line
-                while (!safe.empty() && (safe.back() == L'\r' || safe.back() == L'\n'))
-                    safe.pop_back();
-                resp += safe;
-            }
-            m_pipeServer->WriteMessage(resp);
-            m_pipeServer->Disconnect();
-            FACELOGIN_DEBUG(L"Sent %zu log lines to client", lines.size());
-        }
         else if (request == ipc::MSG_AUTH_REQUEST) {
-            // Lazy-init camera: create + start on demand, then fully shutdown
-            // after auth to free the device for other processes.
-            if (!EnsureCameraForAuth()) {
-                m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_CAMERA_UNAVAILABLE));
-                FlushFileBuffers(m_pipeServer->GetHandle());
-                m_pipeServer->DrainOutput(5000);
-                m_pipeServer->Disconnect();
-                continue;            }            ProcessAuthRequest();
-            ReleaseCamera();
-            // Free the heavy model sessions now that the auth pipeline has fully
-            // unwound, dropping idle RSS back to baseline. Reload happens on the
-            // next auth (see EnsureModelsLoaded). Note: this intentionally does
-            // NOT unload SCRFD — it's the lightest model and needed for the very
-            // first frame of the next auth. Gated by config (default off — keep
-            // models resident for the fastest auth).
-            if (m_config.unload_models_after_auth) {
-                UnloadHeavyModels();
-                // Empty the working set so the freed model pages actually leave
-                // the resident set (heap free ≠ physical-page return on
-                // Windows). Pages are paged out and re-faulted in on demand —
-                // the next auth must reload the models from disk anyway, so
-                // this only costs a few extra page faults.
-                TrimWorkingSet();
-            }
-            m_pipeServer->Disconnect();
-        }
-        else if (request == ipc::MSG_PING) {
-            m_pipeServer->WriteMessage(ipc::MSG_PONG);
+            HandleAuthRequest();
             m_pipeServer->Disconnect();
         }
         else {
-            FACELOGIN_WARN(L"Unknown request: %s", request.c_str());
+            FACELOGIN_WARN(L"Unknown pipe request (chars=%zu)", request.size());
             m_pipeServer->Disconnect();
+        }
+    }
+
+    CleanupSessionResources();
+}
+
+void FaceService::ProcessKernelBootEvidence(const wchar_t* reason) {
+    const KernelBootEvidence evidence = QueryLatestKernelBootEvidence();
+    if (!evidence.valid) {
+        FACELOGIN_WARN(L"KernelBoot: reason=%s query failed error=%lu",
+                       reason, evidence.error);
+        return;
+    }
+
+    const bool createsLoginEntry = evidence.kind == KernelBootKind::FullStartup ||
+        evidence.kind == KernelBootKind::FastStartup;
+    const DWORD sessionId = WTSGetActiveConsoleSessionId();
+    const KernelBootRegistration registration = RegisterKernelBootEvidence(
+        evidence.recordId, sessionId, createsLoginEntry);
+
+    FACELOGIN_INFO(L"KernelBoot: reason=%s record=%llu bootType=%lu kind=%s "
+                   L"sessionId=%lu createsLoginEntry=%d observed=%d seeded=%d "
+                   L"generation=%llu created=%d",
+                   reason, evidence.recordId, evidence.bootType,
+                   KernelBootKindName(evidence.kind), sessionId,
+                   static_cast<int>(createsLoginEntry),
+                   static_cast<int>(registration.observed),
+                   static_cast<int>(registration.seeded), registration.generation,
+                   static_cast<int>(registration.createdLoginEntry));
+}
+
+void FaceService::QueueServiceEvent(ServiceEventType type, DWORD sessionId) {
+    {
+        std::lock_guard<std::mutex> lock(m_serviceEventMutex);
+        m_pendingServiceEvents.push_back({type, sessionId});
+    }
+    if (m_pipeServer) m_pipeServer->WakeWait();
+}
+
+void FaceService::ProcessPendingServiceEvents() {
+    std::vector<ServiceEvent> events;
+    {
+        std::lock_guard<std::mutex> lock(m_serviceEventMutex);
+        events.swap(m_pendingServiceEvents);
+    }
+
+    for (const auto& event : events) {
+        switch (event.type) {
+        case ServiceEventType::KernelBootRefresh:
+            ProcessKernelBootEvidence(L"service-event");
+            if (event.sessionId != 0xFFFFFFFF) {
+                FACELOGIN_INFO(L"Console session logon: session=%lu", event.sessionId);
+            }
+            break;
+        case ServiceEventType::SessionLogoff: {
+            const ULONGLONG generation = BeginLoginEntryGeneration(event.sessionId);
+            FACELOGIN_INFO(L"LoginEntry generation published: reason=session-logoff "
+                           L"sessionId=%lu generation=%llu",
+                           event.sessionId, generation);
+            break;
+        }
+        case ServiceEventType::LoginEntryCompleted:
+            CompleteLoginEntryGeneration(event.sessionId);
+            FACELOGIN_INFO(L"Login entry completed: session=%lu", event.sessionId);
+            break;
         }
     }
 }
 
-// Session events arrive via HandlerEx → SERVICE_CONTROL_SESSIONCHANGE.
-// eventType carries WTS_SESSION_LOGON / WTS_SESSION_LOGOFF.
-// eventData is a WTSSESSION_NOTIFICATION with the session ID.
-// We only care about the console session (session 1).
-
 void FaceService::Stop() {
-    m_running = false;
-    m_exposure.Reset();   // restore camera auto controls while they're alive
-    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
-        m_webcamMF->Shutdown();
-        m_webcamMF.reset();
-    }
-    if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
-        m_webcamDS->Shutdown();
-        m_webcamDS.reset();
-    }
-    m_cameraPipeline = CameraPipeline::None;
-    // Signal the model loader to stop and join it. If an auth request was
-    // blocked in EnsureModelsLoaded(), the abort flag releases it so it can
-    // exit cleanly (m_running is false → ProcessAuthRequest returns false).
+    m_stopRequested.store(true);
+    // The SCM callback only requests cancellation. Camera and model objects
+    // are owned and released by the Run() thread after the
+    // active request has unwound.
+    m_modelState.store(ModelLoadState::Stopping);
+    m_modelCv.notify_all();
+    if (m_pipeServer) m_pipeServer->RequestStop();
+}
+
+void FaceService::CleanupSessionResources() {
+    // Called by the Run/destructor owner thread only. It is intentionally
+    // idempotent so every exit path has one cleanup boundary.
+    ReleaseCamera();
     AbortModelLoadWait();
-    if (m_pipeServer) {
-        m_pipeServer->Close();
-    }
+    if (m_pipeServer) m_pipeServer->Close();
 }
 
 // ============================================================================
@@ -859,7 +882,6 @@ bool FaceService::EnsureCameraForAuth() {
         if (m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
             m_cameraPipeline = CameraPipeline::MF;
             FACELOGIN_INFO(L"MF camera initialized on demand for auth (preferred pipeline)");
-            AttachExposureControl();
             return true;
         }
         FACELOGIN_WARN(L"MF camera init failed in service mode — falling back to DirectShow");
@@ -870,7 +892,6 @@ bool FaceService::EnsureCameraForAuth() {
         if (m_webcamDS->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
             m_cameraPipeline = CameraPipeline::DS;
             FACELOGIN_INFO(L"DS camera initialized on demand for auth (fallback pipeline)");
-            AttachExposureControl();
             return true;
         }
         FACELOGIN_ERROR(L"Both MF and DS camera init failed in service mode");
@@ -879,15 +900,8 @@ bool FaceService::EnsureCameraForAuth() {
         return false;
     }
 
-    // Standalone: Media Foundation only.
-    // After a system resume the camera may still be in low-power recovery.
-    // Drop the stale instance so Initialize() rebuilds a fresh SourceReader
-    // instead of reusing the one that stalled.
-    if (m_resumedFlag.exchange(false) && m_webcamMF) {
-        FACELOGIN_INFO(L"Resume detected — rebuilding MF camera");
-        m_webcamMF->Shutdown();
-        m_webcamMF.reset();
-    }
+    // Standalone: Media Foundation only. Every completed authentication
+    // releases the camera, so each later attempt starts with a fresh reader.
     if (!m_webcamMF) {
         m_webcamMF = std::make_unique<WebcamCapture>();
         if (!m_webcamMF->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
@@ -899,44 +913,10 @@ bool FaceService::EnsureCameraForAuth() {
         FACELOGIN_INFO(L"MF camera initialized on demand for auth (standalone)");
     }
     m_cameraPipeline = CameraPipeline::MF;
-    AttachExposureControl();
     return true;
 }
 
-void FaceService::AttachExposureControl() {
-    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
-        m_exposure.Attach(m_webcamMF->GetVideoProcAmp(), m_webcamMF->GetCameraControl());
-    } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
-        m_exposure.Attach(m_webcamDS->GetVideoProcAmp(), m_webcamDS->GetCameraControl());
-    } else {
-        m_exposure.Attach(nullptr, nullptr);
-    }
-    m_exposure.Configure(m_config.face_exposure_control, m_config.face_exposure_target,
-                         m_config.face_exposure_band);
-    // Persistent "poisoned camera" flag (see REGVAL_EXPOSURE_HW_BROKEN): a
-    // previous session caught this camera in a broken manual exposure state
-    // that Set(Auto) could not undo. Never touch its controls again — the
-    // digital gain alone keeps the effective luma normalized.
-    if (ReadRegDword(REGVAL_EXPOSURE_HW_BROKEN, 0) == 1) {
-        m_exposure.ForceDigitalOnly();
-        FACELOGIN_WARN(L"Face exposure control: camera marked broken "
-                       L"(ExposureHardwareBroken=1) — hardware channel disabled, digital gain only");
-    }
-}
-
 void FaceService::ReleaseCamera() {
-    // Restore the camera's auto controls FIRST — the borrowed control
-    // interfaces must be touched while the capture object is still alive.
-    m_exposure.Reset();
-    // Persist the "poisoned camera" flag: severe overexposure with an
-    // un-recoverable manual state is a driver bug, not a lighting condition —
-    // blacklist the hardware channel so no future session re-poisons it.
-    if (m_exposure.WasSevereOverexposure()) {
-        WriteRegDword(REGVAL_EXPOSURE_HW_BROKEN, 1);
-        FACELOGIN_WARN(L"Face exposure control: camera poisoned by manual exposure — "
-                       L"persisted ExposureHardwareBroken=1 (restart the machine to "
-                       L"recover the camera, then delete the value to re-enable)");
-    }
     if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
         m_webcamMF->Shutdown();
         m_webcamMF.reset();
@@ -949,42 +929,135 @@ void FaceService::ReleaseCamera() {
     m_cameraPipeline = CameraPipeline::None;
 }
 
+bool FaceService::SendAuthTerminal(const std::wstring& message) {
+    if (m_terminalSentForCurrentRequest) {
+        FACELOGIN_WARN(L"Ignoring duplicate authentication terminal response");
+        return false;
+    }
+    m_terminalSentForCurrentRequest = true;
+
+    if (!m_pipeServer || !m_pipeServer->IsConnected()) return false;
+    const bool written = m_pipeServer->WriteMessage(message);
+    return written;
+}
+
+bool FaceService::HandleAuthRequest() {
+    m_terminalSentForCurrentRequest = false;
+    bool authenticated = false;
+    if (EnsureCameraForAuth()) {
+        authenticated = ProcessAuthRequest();
+    } else {
+        SendAuthTerminal(ipc::BuildAuthErrorMessage(
+            ipc::L10N_CAMERA_UNAVAILABLE));
+    }
+
+    // The service main thread owns camera teardown for every outcome,
+    // including disconnect, timeout and model failure.
+    ReleaseCamera();
+    if (m_config.unload_models_after_auth) {
+        UnloadHeavyModels();
+        TrimWorkingSet();
+    }
+    return authenticated;
+}
+
+bool FaceService::GrabAuthFrame(dlib::matrix<dlib::rgb_pixel>& frame) {
+    bool captured = false;
+    if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
+        captured = m_webcamMF->GrabFrame(frame);
+    } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
+        captured = m_webcamDS->GrabFrame(frame);
+    }
+    if (captured) RotateFrame(frame, m_config.camera_rotation);
+    return captured;
+}
+
+bool FaceService::PrepareAuthFaceFrame(
+    dlib::matrix<dlib::rgb_pixel>& frame,
+    dlib::rectangle& faceRect,
+    dlib::full_object_detection& landmarks,
+    HeadPoseStats* pose) {
+    if (pose) *pose = {};
+
+    auto detect = [this, &faceRect, &landmarks](
+                      const dlib::matrix<dlib::rgb_pixel>& candidate) {
+        const auto detected = m_onnxDetector->DetectLargestFace(candidate);
+        if (!detected) return false;
+        faceRect = dlib::rectangle(
+            static_cast<long>(detected->x1), static_cast<long>(detected->y1),
+            static_cast<long>(detected->x2), static_cast<long>(detected->y2));
+        landmarks = dlib::full_object_detection();
+        return m_detector->DetectLandmarks(candidate, faceRect, landmarks);
+    };
+
+    if (!detect(frame)) return false;
+
+    if (pose && m_headPose && m_headPose->IsInitialized()) {
+        *pose = m_headPose->Estimate(frame, faceRect);
+    }
+    return true;
+}
+
+const wchar_t* FaceService::PoseStatusKey(
+    const HeadPoseStats& pose,
+    const HeadPoseEvaluation& evaluation) {
+    if (evaluation.legality == HeadPoseLegality::Invalid) {
+        return ipc::L10N_POSE_INVALID;
+    }
+    if (evaluation.legality == HeadPoseLegality::Front) {
+        return ipc::L10N_RECOGNIZING;
+    }
+    if (evaluation.legality == HeadPoseLegality::Acceptable) {
+        return ipc::L10N_POSE_ACCEPTABLE;
+    }
+
+    const float yawScore = std::abs(pose.yaw) / 25.0f;
+    const float pitchScore = std::abs(pose.pitch) / 18.0f;
+    const float rollScore = std::abs(pose.roll) / 18.0f;
+    if (yawScore >= pitchScore && yawScore >= rollScore) {
+        return pose.yaw > 0.0f ? ipc::L10N_POSE_YAW_LEFT
+                               : ipc::L10N_POSE_YAW_RIGHT;
+    }
+    if (pitchScore >= rollScore) {
+        return pose.pitch > 0.0f ? ipc::L10N_POSE_PITCH_DOWN
+                                 : ipc::L10N_POSE_PITCH_UP;
+    }
+    return pose.roll > 0.0f ? ipc::L10N_POSE_ROLL_RIGHT
+                            : ipc::L10N_POSE_ROLL_LEFT;
+}
+
+FaceService::AuthFrameResult FaceService::AcquireLegalPoseFrame(
+    dlib::matrix<dlib::rgb_pixel>& frame,
+    dlib::rectangle& faceRect,
+    dlib::full_object_detection& landmarks,
+    HeadPoseStats& pose,
+    HeadPoseStabilizer& poseStabilizer,
+    const std::function<void(const wchar_t*)>& publishStatus) {
+    if (!GrabAuthFrame(frame)) return AuthFrameResult::NoFrame;
+    if (!PrepareAuthFaceFrame(frame, faceRect, landmarks, &pose)) {
+        publishStatus(ipc::L10N_POSE_INVALID);
+        return AuthFrameResult::Invalid;
+    }
+
+    const HeadPoseStabilityResult stability = poseStabilizer.Update(pose);
+    pose = stability.pose;
+    const HeadPoseEvaluation evaluation = stability.evaluation;
+    if (stability.pending) return AuthFrameResult::Pending;
+    if (!evaluation.accepted) {
+        publishStatus(PoseStatusKey(pose, evaluation));
+        return AuthFrameResult::Rejected;
+    }
+    return AuthFrameResult::Accepted;
+}
+
 bool FaceService::ProcessAuthRequest() {
     const char* camName = m_cameraPipeline == CameraPipeline::MF ? "MF" :
                           m_cameraPipeline == CameraPipeline::DS ? "DS" : "none";
     FACELOGIN_INFO(L"Starting face authentication... (camera=%hs)", camName);
 
-    // Single grab helper used by ALL auth stages (match, anti-spoof, blink,
-    // final verify): it applies the configured camera rotation so every stage
-    // operates on identically-oriented frames. Previously rotation was only
-    // applied in the match loop, leaving the liveness/verify stages to process
-    // unrotated frames — with 90/270 rotation the face was sideways there and
-    // detection/landmarks/EAR failed, blocking unlock.
-    // grabRaw: one frame straight from the active camera + rotation, WITHOUT
-    // the exposure session gain — the steer loop must measure the camera's
-    // true output. grabFrame wraps it with the session gain so every auth
-    // stage (match/liveness/verify) sees the normalized domain.
-    auto grabRaw = [this](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
-        bool ok = false;
-        if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF) {
-            ok = m_webcamMF->GrabFrame(f);
-        } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
-            ok = m_webcamDS->GrabFrame(f);
-        }
-        if (ok) RotateFrame(f, m_config.camera_rotation);
-        return ok;
-    };
-    auto grabFrame = [this, &grabRaw](dlib::matrix<dlib::rgb_pixel>& f) -> bool {
-        if (!grabRaw(f)) return false;
-        m_exposure.ApplySessionGain(f);
-        return true;
-    };
-
     if (m_store->GetUserCount() == 0) {
         FACELOGIN_WARN(L"No registered users");
-        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_NO_REGISTERED_USERS));
-        FlushFileBuffers(m_pipeServer->GetHandle());
-        m_pipeServer->DrainOutput(5000);
+        SendAuthTerminal(ipc::BuildAuthErrorMessage(ipc::L10N_NO_REGISTERED_USERS));
         return false;
     }
 
@@ -996,7 +1069,7 @@ bool FaceService::ProcessAuthRequest() {
     // "正在加载模型..." rather than a frozen "识别中". The message is NOT
     // flushed until after the wait below — if the models are already ready,
     // this whole block is a no-op and no extra STATUS message is sent.
-    if (!m_modelsReady.load() && m_modelsLoading.load()) {
+    if (m_modelState.load() == ModelLoadState::Loading) {
         m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_LOADING_MODELS);
     }
 
@@ -1007,9 +1080,7 @@ bool FaceService::ProcessAuthRequest() {
     // connected, so this only ever costs the tail of the boot time.
     if (!EnsureModelsLoaded()) {
         FACELOGIN_ERROR(L"Required models not loaded \u2014 cannot authenticate");
-        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(ipc::L10N_MODEL_LOAD_FAILED));
-        FlushFileBuffers(m_pipeServer->GetHandle());
-        m_pipeServer->DrainOutput(5000);
+        SendAuthTerminal(ipc::BuildAuthErrorMessage(ipc::L10N_MODEL_LOAD_FAILED));
         return false;
     }
 
@@ -1019,137 +1090,23 @@ bool FaceService::ProcessAuthRequest() {
     // touches liveness method), so no race with CONFIG_RELOAD.
     ValidateLivenessMethod();
 
-    // C: Warm up the camera exposure ADAPTIVELY instead of a fixed 5-frame
-    // delay. Dropping frames until the mean luma settles lets us exit the
-    // moment the exposure is stable (usually after 2-3 frames) instead of
-    // always waiting 5\u00d750ms \u2248 250ms. The saved time goes straight to the
-    // "press key \u2192 camera ready" latency.
-    //
-    // Safety: the very first frames after camera start can be dark or
-    // saturated. We require at least 2 frames and keep a short rolling window
-    // so a single outlier (a hand passing the lens, a light flicker) doesn't
-    // prematurely declare the exposure stable. If the camera never settles
-    // (e.g. extreme backlight), the MAX cap (10 frames) bounds the wait and we
-    // proceed anyway \u2014 a slightly under-exposed frame still detects a face.
+    // The first two frames only allow the capture backend to become readable.
     {
-        constexpr int kWarmupMinFrames = 2;    // never exit before this many
-        constexpr int kWarmupMaxFrames = 10;   // hard cap \u2014 proceed regardless
-        constexpr int kWarmupWindow     = 3;   // rolling window size
-        // Stability tolerance (mean-luma delta counted as "stable"). Raised
-        // 12 \u2192 20: a camera's auto-exposure converges gradually, so "continuous
-        // 3 frames within \u00b112" rarely fires and the warmup burns the full 10
-        // frames (~400ms) waiting for near-perfect stillness. \u00b120 still
-        // separates a genuinely dark scene (mean < 40) from a lit one (100+),
-        // so the adaptive behavior (wait in the dark, proceed fast in light) is
-        // preserved \u2014 it just stops waiting for a flat line that AGC never gives.
-        constexpr float kLumaTol        = 20.0f;
-        // Consecutive stable frames to exit. 3 \u2192 2: with a wider tolerance, two
-        // consistent windows are enough to trust the exposure has settled;
-        // recognition itself still runs several frames, so a marginal third
-        // window adds latency without meaningful protection.
-        constexpr int kStableFrames     = 2;   // consecutive stable frames to exit
-
+        constexpr int kWarmupMaxFrames = 2;
         dlib::matrix<dlib::rgb_pixel> warmFrame;
         int dropped = 0;
-        int stableRun = 0;
-        std::vector<float> window;      // rolling mean-luma window
-        window.reserve(kWarmupWindow);
 
         for (; dropped < kWarmupMaxFrames; dropped++) {
-            if (!grabFrame(warmFrame)) {
-                // No frame yet \u2014 the camera is still starting. Wait and retry.
+            if (!GrabAuthFrame(warmFrame)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
-
-            if (dropped >= kWarmupMinFrames) {
-                // Compute mean luma over a subsampled grid (every 4th pixel in
-                // each direction \u2014 180\u00d7101 samples for 1280\u00d7720) to keep the
-                // warmup cheap; full-frame mean luma would cost ~2ms per frame
-                // and we already know the exposure within \u00b1few percent.
-                double sum = 0.0;
-                long count = 0;
-                const long rows = warmFrame.nr();
-                const long cols = warmFrame.nc();
-                for (long r = 0; r < rows; r += 4) {
-                    for (long c = 0; c < cols; c += 4) {
-                        const auto& px = warmFrame(r, c);
-                        sum += 0.299 * px.red + 0.587 * px.green + 0.114 * px.blue;
-                        count++;
-                    }
-                }
-                float luma = static_cast<float>(sum / count);
-
-                // Rolling window: stable if all entries stay within tolerance.
-                window.push_back(luma);
-                if (static_cast<long>(window.size()) > kWarmupWindow) {
-                    window.erase(window.begin());
-                }
-                if (static_cast<long>(window.size()) == kWarmupWindow) {
-                    float minV = *std::min_element(window.begin(), window.end());
-                    float maxV = *std::max_element(window.begin(), window.end());
-                    if (maxV - minV <= kLumaTol) {
-                        stableRun++;
-                    } else {
-                        stableRun = 0;
-                    }
-                    if (stableRun >= kStableFrames) {
-                        FACELOGIN_INFO(L"Warmup: exposure stable after %d frames (luma=%.0f)", dropped + 1, luma);
-                        break;
-                    }
-                }
-            }
-
-            // Slow the polling to ~30ms once we've dropped the minimum, so the
-            // warmup doesn't spin the CPU at full grab rate while it waits.
-            std::this_thread::sleep_for(std::chrono::milliseconds(
-                dropped < kWarmupMinFrames ? 30 : 50));
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         if (dropped >= kWarmupMaxFrames) {
-            FACELOGIN_INFO(L"Warmup: max %d frames dropped, proceeding (exposure not settled)",
+            FACELOGIN_INFO(L"Camera readiness guard complete after %d frame attempts",
                            kWarmupMaxFrames);
         }
-    }
-
-    // Face-exposure convergence (1.9.0, config-gated): after the whole-frame
-    // AE warmup, steer the FACE's own brightness to the configured target —
-    // whole-frame luma hides a blown-out face in a dark scene (the observed
-    // failure mode: face region 12-25% clipped at 255 while the frame reads
-    // "dim"). Camera manual exposure/gain is preferred (physical exposure
-    // reduction prevents clipping that no digital gain can undo); the digital
-    // session gain always tops up the residual, so the match loop runs in a
-    // fixed brightness domain regardless of the camera's settling.
-    if (m_exposure.Enabled()) {
-        // Iterations are paced by the camera-step interval (400ms) — 9
-        // iterations ≈ 1.4-2s gives a responsive camera ~4 steps to converge
-        // while a camera that ignores manual mode demotes after 3 no-response
-        // steps and the digital gain carries the normalization.
-        constexpr int kMaxSteerIters = 9;
-        int steerIters = 0;
-        for (; steerIters < kMaxSteerIters; steerIters++) {
-            dlib::matrix<dlib::rgb_pixel> steerFrame;
-            if (!grabRaw(steerFrame)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                continue;
-            }
-            auto steerDet = m_onnxDetector->DetectLargestFace(steerFrame);
-            if (!steerDet) break;   // no face in view — nothing to steer
-            dlib::rectangle steerRect(static_cast<long>(steerDet->x1),
-                                      static_cast<long>(steerDet->y1),
-                                      static_cast<long>(steerDet->x2),
-                                      static_cast<long>(steerDet->y2));
-            if (m_exposure.SteerFrame(steerFrame, steerRect, steerIters + 1)) {
-                break;   // face luma in band — camera settled
-            }
-            // Demoted (broken/unresponsive camera driver): further iterations
-            // cannot fix the RAW brightness — the digital gain inside
-            // SteerFrame already normalized the effective luma. Move on to
-            // the match loop instead of burning the auth budget.
-            if (!m_exposure.HardwareActive()) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-        FACELOGIN_INFO(L"Exposure control: face convergence phase done (%d iteration(s))",
-                       steerIters);
     }
 
     // STATUS: Notify credential provider that recognition has started. The
@@ -1160,10 +1117,30 @@ bool FaceService::ProcessAuthRequest() {
         m_pipeServer->WriteMessage(statusMsg);
     }
 
+    // Intermediate status payloads are locale keys, never display text. Keep
+    // the last key so a stable pose does not cause a STATUS write on every
+    // camera frame.
+    auto sendStatusKey = [this, lastStatusKey = std::wstring(ipc::L10N_RECOGNIZING)](
+                              const wchar_t* key, bool force = false) mutable {
+        if (!key || (!force && lastStatusKey == key)) return;
+        if (m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + key)) {
+            lastStatusKey = key;
+        } else {
+            FACELOGIN_WARN(L"Status update could not be delivered: key=%s", key);
+        }
+    };
+    const auto publishPoseStatus = [&sendStatusKey](const wchar_t* key) {
+        sendStatusKey(key);
+    };
+
+    HeadPoseStabilizer matchPoseStabilizer;
     dlib::matrix<dlib::rgb_pixel> frame;  // reused by the match loop below
     auto startTime = std::chrono::steady_clock::now();
     bool authSent = false;
+    bool acceptedPoseSeen = false;
+    bool poseRejectedSeen = false;
     int consecutiveMatches = 0;
+    std::wstring consensusAccountKey;
     // Consecutive frames where a face WAS detected (and its embedding was
     // computed) but no enrolled face matched. After kNoMatchFailFrames such
     // frames the auth stops immediately with a "人脸匹配失败" notice instead
@@ -1174,14 +1151,12 @@ bool FaceService::ProcessAuthRequest() {
     int consecutiveNoMatch = 0;
     static constexpr int kNoMatchFailFrames = 3;
     // Consensus: how many consecutive matched frames release credentials.
-    // 2 frames (was 3): the liveness phase AND the post-liveness final-match
-    // verify (below) still re-check the face on fresh frames before the
-    // credential is released, so dropping one consensus frame does not shrink
-    // the attack surface — it only removes one redundant full
-    // detect+landmark+embed+match pass (~100ms) from the happy path.
+    // Two consecutive frames of the SAME account establish identity before
+    // liveness starts.  Anti-spoof then binds its result to that account on
+    // the same frame, so no post-liveness re-match is needed.
     static constexpr int CONSENSUS_FRAMES = 2;
 
-    while (m_running) {
+    while (!m_stopRequested.load()) {
         // Abort early if the client (LogonUI) has gone away — e.g. the user
         // switched to password/fingerprint unlock. Otherwise we'd keep the
         // camera on until the timeout.
@@ -1193,20 +1168,19 @@ bool FaceService::ProcessAuthRequest() {
         auto elapsed = std::chrono::steady_clock::now() - startTime;
         if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= m_authTimeoutSeconds) {
             FACELOGIN_INFO(L"Authentication timed out");
-            m_pipeServer->WriteMessage(ipc::MSG_AUTH_TIMEOUT);
-            FlushFileBuffers(m_pipeServer->GetHandle());
-            m_pipeServer->DrainOutput(5000);
+            SendAuthTerminal(poseRejectedSeen && !acceptedPoseSeen
+                                 ? ipc::MSG_AUTH_POSE_TIMEOUT
+                                 : ipc::MSG_AUTH_TIMEOUT);
             return false;
         }
 
-        if (!grabFrame(frame)) {
-            if (!m_running) return false;
+        if (!GrabAuthFrame(frame)) {
+            if (m_stopRequested.load()) return false;
             // A stalled camera (e.g. after resume) self-shut-down in
             // GrabFrame. Rebuild it here so auth can continue instead of
             // spinning on a dead SourceReader until timeout.
             if (m_cameraPipeline == CameraPipeline::MF && m_webcamMF &&
                 !m_webcamMF->IsInitialized()) {
-                m_exposure.Reset();   // drop the stale camera's control handles
                 FACELOGIN_INFO(L"MF camera stalled — re-initializing");
                 m_webcamMF->Shutdown();
                 m_webcamMF.reset();
@@ -1219,10 +1193,8 @@ bool FaceService::ProcessAuthRequest() {
                     // the unlock — fall back to the DirectShow pipeline.
                     if (m_isServiceMode) EnsureCameraForAuth();
                 }
-                AttachExposureControl();   // re-attach to the fresh camera (or the DS fallback)
             } else if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS &&
                        !m_webcamDS->IsInitialized()) {
-                m_exposure.Reset();
                 FACELOGIN_INFO(L"DS camera stalled — re-initializing");
                 m_webcamDS->Shutdown();
                 m_webcamDS.reset();
@@ -1232,72 +1204,73 @@ bool FaceService::ProcessAuthRequest() {
                     m_webcamDS.reset();
                     m_cameraPipeline = CameraPipeline::None;
                 }
-                AttachExposureControl();
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
 
-        // Face detection + landmarks: SCRFD detects, 2d106det extracts the
-        // 106 points for alignment + blink.
+        // Detect and align directly from the camera frame.
         std::optional<CredentialStore::MatchResult> match;
         dlib::full_object_detection landmarks;
-        bool haveLandmarks = false;
-
-        auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
-        if (onnxDet) {
-            // SCRFD gives bbox — 2d106det extracts 106 landmarks.
-            dlib::rectangle dlibRect(static_cast<long>(onnxDet->x1),
-                                     static_cast<long>(onnxDet->y1),
-                                     static_cast<long>(onnxDet->x2),
-                                     static_cast<long>(onnxDet->y2));
-            haveLandmarks = m_detector->DetectLandmarks(frame, dlibRect, landmarks);
-        }
-
-        if (!haveLandmarks) {
+        dlib::rectangle faceRect;
+        HeadPoseStats pose;
+        if (!PrepareAuthFaceFrame(frame, faceRect, landmarks, &pose)) {
+            sendStatusKey(ipc::L10N_POSE_INVALID);
+            consecutiveMatches = 0;
+            consensusAccountKey.clear();
+            consecutiveNoMatch = 0;
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
         }
 
-        // Embedding + match: ONNX (the only recognizer). Light-robust
-        // fallback chain: if the ORIGINAL embedding misses, re-embed the same
-        // face under photometric corrections (white balance for color
-        // temperature shifts, brightness for exposure) and try again. This
-        // keeps recognition working when the ambient light changes between
-        // enrollment and unlock (dorm vs classroom) WITHOUT re-enrolling.
-        // Variant matches use a STRICTER threshold so the wider search space
-        // cannot loosen the stranger rejection.
-        constexpr float kVariantThreshold = 0.55f;
-        auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
-        std::vector<float> emb1, emb2;   // kept for failure diagnostics
-        const char* matchedVariant = nullptr;
+        const HeadPoseStabilityResult poseStability = matchPoseStabilizer.Update(pose);
+        pose = poseStability.pose;
+        const HeadPoseEvaluation poseEvaluation = poseStability.evaluation;
+        if (poseStability.pending) {
+            consecutiveMatches = 0;
+            consensusAccountKey.clear();
+            consecutiveNoMatch = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            continue;
+        }
+        if (!poseEvaluation.accepted) {
+            sendStatusKey(PoseStatusKey(pose, poseEvaluation));
+            poseRejectedSeen = true;
+            consecutiveMatches = 0;
+            consensusAccountKey.clear();
+            consecutiveNoMatch = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            continue;
+        }
+
+        acceptedPoseSeen = true;
+        sendStatusKey(PoseStatusKey(pose, poseEvaluation));
+
+        auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(
+            frame, landmarks);
         if (!onnxEmb.empty()) {
             match = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
-            if (match) matchedVariant = "orig";
-        }
-        if (!match) {
-            emb1 = m_onnxRecognizer->ComputeEmbedding(frame, landmarks,
-                                                      facelogin::LightVariant::WhiteBalance);
-            if (!emb1.empty()) {
-                match = m_store->FindBestMatch(emb1.data(), emb1.size(), kVariantThreshold);
-                if (match) matchedVariant = "wb";
-            }
-        }
-        if (!match) {
-            emb2 = m_onnxRecognizer->ComputeEmbedding(frame, landmarks,
-                                                      facelogin::LightVariant::Brightness);
-            if (!emb2.empty()) {
-                match = m_store->FindBestMatch(emb2.data(), emb2.size(), kVariantThreshold);
-                if (match) matchedVariant = "bright";
-            }
         }
 
         if (match) {
-            consecutiveMatches++;
+            if (consecutiveMatches == 0 || SameMatchedAccount(*match, consensusAccountKey)) {
+                ++consecutiveMatches;
+            } else {
+                // Do not combine consecutive matches from different enrolled
+                // accounts into one authentication consensus.
+                consecutiveMatches = 1;
+            }
+            consensusAccountKey = MatchAccountKey(*match);
             consecutiveNoMatch = 0;   // a match resets the no-match counter
-            FACELOGIN_INFO(L"Face matched: %s (distance=%.4f, variant=%hs) [%d/%d]",
-                          match->username.c_str(), match->distance,
-                          matchedVariant ? matchedVariant : "?",
+            FACELOGIN_DEBUG(L"Auth frame matched: distance=%.4f "
+                            L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
+                            L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f [%d/%d]",
+                           match->distance,
+                          static_cast<int>(pose.quality), static_cast<int>(pose.range),
+                          pose.yaw, pose.pitch,
+                          pose.roll, pose.inferenceMs, pose.faceWidth,
+                          pose.faceHeight, pose.faceAspect, pose.cropWidth,
+                          pose.cropHeight, pose.cropAspect,
                           consecutiveMatches, CONSENSUS_FRAMES);
 
             if (consecutiveMatches < CONSENSUS_FRAMES) {
@@ -1310,19 +1283,11 @@ bool FaceService::ProcessAuthRequest() {
             // face-less frames or embedding failures.
             if (!onnxEmb.empty()) {
                 if (++consecutiveNoMatch >= kNoMatchFailFrames) {
-                    // Diagnostics: how far was each light variant from the
-                    // nearest enrolled face? Distinguishes "edge drift"
-                    // (0.55–0.9 → tuning may help) from "total mismatch"
-                    // (>1.0 → photometric correction insufficient).
+                    // Diagnostics: report the nearest distance in the single
+                    // normalized input domain used by the recognizer.
                     float d0 = m_store->FindNearestDistance(onnxEmb.data(), onnxEmb.size());
-                    float d1 = emb1.empty() ? -1.0f
-                                            : m_store->FindNearestDistance(emb1.data(), emb1.size());
-                    float d2 = emb2.empty() ? -1.0f
-                                            : m_store->FindNearestDistance(emb2.data(), emb2.size());
-                    FACELOGIN_WARN(L"No match for %d frames — nearest distances: orig=%.3f wb=%.3f bright=%.3f",
-                                   consecutiveNoMatch, d0, d1, d2);
-                    FACELOGIN_INFO(L"No match for %d consecutive frames — reporting failure to CP",
-                                   consecutiveNoMatch);
+                    FACELOGIN_WARN(L"Auth failed: no match after %d face frames (nearest=%.3f)",
+                                   consecutiveNoMatch, d0);
                     // Opt-in unknown-face capture: save the failing frame +
                     // a JSONL event record (see SaveUnknownFace). Pass the
                     // original-image nearest distance — the variants were
@@ -1338,10 +1303,7 @@ bool FaceService::ProcessAuthRequest() {
                     // translates it.
                     m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) +
                         ipc::L10N_NO_MATCH);
-                    FlushFileBuffers(m_pipeServer->GetHandle());
-                    m_pipeServer->WriteMessage(ipc::MSG_AUTH_NO_MATCH);
-                    FlushFileBuffers(m_pipeServer->GetHandle());
-                    m_pipeServer->DrainOutput(5000);
+                    SendAuthTerminal(ipc::MSG_AUTH_NO_MATCH);
                     return false;
                 }
             }
@@ -1351,12 +1313,13 @@ bool FaceService::ProcessAuthRequest() {
             // a full 3-frame restart — the user's slightly moving face stays
             // matched and auth completes in ~1-2s instead of timing out.
             //
-            // Security is preserved: this only relaxes the frame-consensus;
-            // the blink liveness check AND the post-liveness final match verify
-            // still run before credentials are released.
+            // Security is preserved: this only relaxes frame consensus. Blink
+            // still performs its temporal liveness and fresh match check;
+            // anti-spoof binds both checks to the same accepted frame.
             if (consecutiveMatches > 0) {
                 consecutiveMatches--;
-                FACELOGIN_INFO(L"Match lost — counter decayed to %d", consecutiveMatches);
+                if (consecutiveMatches == 0) consensusAccountKey.clear();
+                FACELOGIN_DEBUG(L"Auth match consensus decayed to %d", consecutiveMatches);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
             continue;
@@ -1371,8 +1334,7 @@ bool FaceService::ProcessAuthRequest() {
             // LSA rejects at submission time and the user falls back to PIN.
             if (match->passwordless) {
                 match->password.clear();  // defensive; store already returns empty
-                FACELOGIN_INFO(L"Matched passwordless account '%s' — issuing blank-password unlock",
-                               match->username.c_str());
+                FACELOGIN_INFO(L"Matched passwordless account — issuing blank-password unlock");
             }
 
             std::wstring domain = L".";
@@ -1382,81 +1344,133 @@ bool FaceService::ProcessAuthRequest() {
                 domain = computerName;
             }
 
-            std::wstring msg = ipc::BuildAuthSuccessMessage(
-                match->sid, match->upn,
-                domain, match->username, match->password);
-
             // === Liveness check ===
             {
                 LivenessMethod method = m_livenessMethod;
 
                 // Determine status text
                 if (method == LivenessMethod::AntiSpoof) {
-                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_LIVENESS_CHECKING);
+                    sendStatusKey(ipc::L10N_LIVENESS_CHECKING);
                 } else if (method == LivenessMethod::Blink) {
-                    m_pipeServer->WriteMessage(std::wstring(ipc::MSG_STATUS_PREFIX) + ipc::L10N_BLINK_PROMPT);
-                }
-                if (method != LivenessMethod::None) {
-                    FlushFileBuffers(m_pipeServer->GetHandle());
+                    sendStatusKey(ipc::L10N_BLINK_PROMPT);
                 }
 
                 bool livenessPassed = false;
+                bool restartMatching = false;
+                bool livenessAcceptedPoseSeen = false;
+                bool livenessPoseRejected = false;
+                bool livenessPosePromptActive = false;
+                HeadPoseStabilizer livenessPoseStabilizer;
 
                 if (method == LivenessMethod::None) {
                     livenessPassed = true;
                 } else if (method == LivenessMethod::AntiSpoof) {
-                    // Anti-spoof consensus check with threshold-driven frame count:
-                    // low threshold (lenient) → fewer checks, high threshold (strict) → more.
-                    int totalChecks = AntiSpoofCheckCount(m_antiSpoofThreshold);
-                    int passRequired = AntiSpoofPassRequired(totalChecks);
-                    FACELOGIN_INFO(L"Anti-spoof: threshold=%.3f → %d checks, %d required",
-                                   m_antiSpoofThreshold, totalChecks, passRequired);
+                    // Bind every anti-spoof inference to a frame that still
+                    // matches the account confirmed above. The second consensus
+                    // frame itself is the first sample, avoiding a redundant
+                    // capture and the old post-liveness final-match pass.
+                    const std::wstring candidateAccountKey = consensusAccountKey;
+                    const int maxJointAttempts = AntiSpoofCheckCount(m_antiSpoofThreshold);
+                    const float effectiveThreshold = AntiSpoofEffectiveThreshold(
+                        m_antiSpoofThreshold, m_antiSpoof->IsFacenoxMode());
+                    FACELOGIN_INFO(L"Anti-spoof: candidate confirmed; threshold=%.3f max_attempts=%d",
+                                   m_antiSpoofThreshold, maxJointAttempts);
                     auto asStart = std::chrono::steady_clock::now();
-                    int passCount = 0, totalChecked = 0;
-                    while (m_running && totalChecked < totalChecks) {
+                    int totalChecked = 0;
+
+                    const auto evaluateJointFrame = [&](const dlib::matrix<dlib::rgb_pixel>& antiSpoofFrame,
+                                                        const dlib::full_object_detection& antiSpoofLandmarks,
+                                                        const CredentialStore::MatchResult& antiSpoofMatch) {
+                        const float score = m_antiSpoof->Predict(antiSpoofFrame, antiSpoofLandmarks);
+                        ++totalChecked;
+                        const bool passed = score >= effectiveThreshold;
+                        FACELOGIN_DEBUG(L"Anti-spoof joint attempt %d/%d: score=%.3f threshold=%.2f identity=confirmed passed=%d",
+                                        totalChecked, maxJointAttempts, score, effectiveThreshold,
+                                        passed ? 1 : 0);
+                        if (passed) {
+                            FACELOGIN_INFO(L"Anti-spoof joint verification passed: attempts=%d distance=%.4f",
+                                           totalChecked, antiSpoofMatch.distance);
+                        }
+                        return passed;
+                    };
+
+                    // This frame already passed SCRFD, landmarks, pose and the
+                    // second consecutive ArcFace match for the candidate.
+                    livenessAcceptedPoseSeen = true;
+                    livenessPassed = evaluateJointFrame(frame, landmarks, *match);
+
+                    while (!m_stopRequested.load() && !livenessPassed &&
+                           totalChecked < maxJointAttempts) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during anti-spoof — aborting");
-                            SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                             return false;
                         }
-                        auto elapsed = std::chrono::steady_clock::now() - asStart;
-                        if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= 5) break;
+                        auto antiSpoofElapsed = std::chrono::steady_clock::now() - asStart;
+                        if (std::chrono::duration_cast<std::chrono::seconds>(antiSpoofElapsed).count() >= 5) break;
 
                         dlib::matrix<dlib::rgb_pixel> asFrame;
-                        if (!grabFrame(asFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
-
-                        // Detect with SCRFD, extract 106-point landmarks.
                         dlib::full_object_detection asLandmarks;
-                        auto asDet = m_onnxDetector->DetectLargestFace(asFrame);
-                        asLandmarks = dlib::full_object_detection();  // reset for this frame
-                        if (asDet) {
-                            dlib::rectangle asRect(static_cast<long>(asDet->x1),
-                                                   static_cast<long>(asDet->y1),
-                                                   static_cast<long>(asDet->x2),
-                                                   static_cast<long>(asDet->y2));
-                            m_detector->DetectLandmarks(asFrame, asRect, asLandmarks);
+                        dlib::rectangle asRect;
+                        HeadPoseStats asPose;
+                        const AuthFrameResult frameResult = AcquireLegalPoseFrame(
+                            asFrame, asRect, asLandmarks, asPose,
+                            livenessPoseStabilizer, publishPoseStatus);
+                        if (frameResult == AuthFrameResult::NoFrame) {
+                            if (m_stopRequested.load()) break;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
                         }
-                        if (asLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
+                        if (frameResult == AuthFrameResult::Pending) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        if (frameResult != AuthFrameResult::Accepted) {
+                            livenessPosePromptActive = true;
+                            if (frameResult == AuthFrameResult::Rejected) {
+                                livenessPoseRejected = true;
+                            }
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
 
-                        float score = m_antiSpoof->Predict(asFrame, asLandmarks);
-                        totalChecked++;
-                        // facenox MiniFAS scores are real-spoof logit diffs (>=1
-                        // = clearly real, calibrated from real footage: real +1.3..+11,
-                        // most screen replays <0). DeepPixBiS/OULU scores are pixel-map
-                        // means (>=0.28 default). The config slider is mapped onto each
-                        // model's score scale via AntiSpoofEffectiveThreshold (the
-                        // facenox mapping anchors the 0.30 default at the historical 1.0).
-                        float effThr = AntiSpoofEffectiveThreshold(m_antiSpoofThreshold,
-                                                                  m_antiSpoof->IsFacenoxMode());
-                        if (score >= effThr) passCount++;
-                        FACELOGIN_INFO(L"Anti-spoof frame %d: score=%.3f thr=%.2f (pass=%d)", totalChecked, score, effThr, passCount);
+                        livenessAcceptedPoseSeen = true;
+                        const bool restoreLivenessStatus = livenessPosePromptActive;
+                        livenessPosePromptActive = false;
+                        sendStatusKey(ipc::L10N_LIVENESS_CHECKING, restoreLivenessStatus);
+                        if (restoreLivenessStatus) {
+                            FACELOGIN_INFO(L"Pose recovered — restoring anti-spoof status");
+                        }
 
+                        auto asEmbedding = m_onnxRecognizer->ComputeEmbedding(asFrame, asLandmarks);
+                        std::optional<CredentialStore::MatchResult> asMatch;
+                        if (!asEmbedding.empty()) {
+                            asMatch = m_store->FindBestMatch(
+                                asEmbedding.data(), asEmbedding.size(), m_matchThreshold);
+                        }
+                        if (!asMatch) {
+                            // A blurred or unmatchable frame is not valid
+                            // evidence for either identity or liveness.
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        if (!SameMatchedAccount(*asMatch, candidateAccountKey)) {
+                            FACELOGIN_INFO(L"Anti-spoof candidate changed — returning to matching");
+                            restartMatching = true;
+                            break;
+                        }
+
+                        livenessPassed = evaluateJointFrame(asFrame, asLandmarks, *asMatch);
+                        if (livenessPassed) {
+                            // The credential must come from the exact frame
+                            // whose identity and liveness jointly passed.
+                            match = std::move(asMatch);
+                            break;
+                        }
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     }
-                    livenessPassed = (totalChecked > 0 && passCount >= passRequired);
-                    if (!livenessPassed) {
-                        FACELOGIN_WARN(L"Anti-spoof check failed: %d/%d passed (need %d)",
-                                       passCount, totalChecked, passRequired);
+                    if (!livenessPassed && !restartMatching) {
+                        FACELOGIN_WARN(L"Anti-spoof joint verification failed: attempts=%d/%d",
+                                       totalChecked, maxJointAttempts);
                     }
                 } else if (method == LivenessMethod::Blink) {
                     LivenessDetector liveness;
@@ -1464,10 +1478,9 @@ bool FaceService::ProcessAuthRequest() {
                                        m_config.blink_glasses_mode);
                     auto livenessStart = std::chrono::steady_clock::now();
                     bool blinked = false;
-                    while (m_running) {
+                    while (!m_stopRequested.load()) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during blink check — aborting");
-                            SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                             return false;
                         }
                         auto livenessElapsed = std::chrono::steady_clock::now() - livenessStart;
@@ -1479,18 +1492,40 @@ bool FaceService::ProcessAuthRequest() {
                             break;
                         }
                         dlib::matrix<dlib::rgb_pixel> livenessFrame;
-                        if (!grabFrame(livenessFrame)) { if (!m_running) break; std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
-                        // Detect with SCRFD, extract 106-point landmarks for EAR.
                         dlib::full_object_detection livenessLandmarks;
-                        auto livenessDet = m_onnxDetector->DetectLargestFace(livenessFrame);
-                        if (livenessDet) {
-                            dlib::rectangle lRect(static_cast<long>(livenessDet->x1),
-                                                  static_cast<long>(livenessDet->y1),
-                                                  static_cast<long>(livenessDet->x2),
-                                                  static_cast<long>(livenessDet->y2));
-                            m_detector->DetectLandmarks(livenessFrame, lRect, livenessLandmarks);
+                        dlib::rectangle lRect;
+                        HeadPoseStats livenessPose;
+                        const AuthFrameResult frameResult = AcquireLegalPoseFrame(
+                            livenessFrame, lRect, livenessLandmarks,
+                            livenessPose, livenessPoseStabilizer,
+                            publishPoseStatus);
+                        if (frameResult == AuthFrameResult::NoFrame) {
+                            if (m_stopRequested.load()) break;
+                            liveness.ResetBlinkProgress();
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
                         }
-                        if (livenessLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(30)); continue; }
+                        if (frameResult == AuthFrameResult::Pending) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        if (frameResult != AuthFrameResult::Accepted) {
+                            livenessPosePromptActive = true;
+                            if (frameResult == AuthFrameResult::Rejected) {
+                                livenessPoseRejected = true;
+                            }
+                            liveness.ResetBlinkProgress();
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+
+                        livenessAcceptedPoseSeen = true;
+                        const bool restoreLivenessStatus = livenessPosePromptActive;
+                        livenessPosePromptActive = false;
+                        sendStatusKey(ipc::L10N_BLINK_PROMPT, restoreLivenessStatus);
+                        if (restoreLivenessStatus) {
+                            FACELOGIN_INFO(L"Pose recovered — restoring blink prompt");
+                        }
                         if (liveness.ProcessFrame(livenessLandmarks)) {
                             blinked = true;
                             FACELOGIN_INFO(L"Blink detected");
@@ -1501,21 +1536,29 @@ bool FaceService::ProcessAuthRequest() {
                     livenessPassed = blinked;
                 }
 
+                if (restartMatching) {
+                    consecutiveMatches = 0;
+                    consensusAccountKey.clear();
+                    consecutiveNoMatch = 0;
+                    sendStatusKey(ipc::L10N_RECOGNIZING);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                    continue;
+                }
+
                 if (!livenessPassed) {
                     FACELOGIN_WARN(L"Liveness check failed");
-                    m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
-                        method == LivenessMethod::AntiSpoof ?
-                        ipc::L10N_ANTI_SPOOF_FAILED :
-                        ipc::L10N_BLINK_FAILED));
-                    FlushFileBuffers(m_pipeServer->GetHandle());
-                    m_pipeServer->DrainOutput(5000);
-                    SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
+                    SendAuthTerminal(ipc::BuildAuthErrorMessage(
+                        livenessPoseRejected && !livenessAcceptedPoseSeen
+                            ? ipc::L10N_POSE_TIMEOUT
+                            : method == LivenessMethod::AntiSpoof
+                                ? ipc::L10N_ANTI_SPOOF_FAILED
+                                : ipc::L10N_BLINK_FAILED));
                     return false;
                 }
 
-                FACELOGIN_INFO(L"Liveness passed \u2014 verifying match");
-
-                // Final match verify (for blink/antispoof \u2014 prevents face-swap).
+                // Blink evidence is temporal, so it retains a fresh identity
+                // verification. Anti-spoof already passed on an identity-bound
+                // frame and therefore does not need a second match pass.
                 //
                 // Uses the SAME SCRFD detector as the recognition stage so the
                 // two stages agree on face position. Retries over a short window:
@@ -1523,66 +1566,82 @@ bool FaceService::ProcessAuthRequest() {
                 // box/embedding is noisy, so a single frame is unreliable. We
                 // keep grabbing until a frame both detects a face AND matches
                 // (or ~2s elapses).
-                if (method != LivenessMethod::None) {
+                if (method == LivenessMethod::Blink) {
+                    FACELOGIN_INFO(L"Blink liveness passed \u2014 verifying match");
+                    sendStatusKey(ipc::L10N_FINAL_VERIFYING);
                     auto verifyStart = std::chrono::steady_clock::now();
                     bool verifyOk = false;
-                    while (m_running && !verifyOk) {
+                    bool verifyAcceptedPoseSeen = false;
+                    bool verifyPoseRejected = false;
+                    bool verifyPosePromptActive = false;
+                    HeadPoseStabilizer verifyPoseStabilizer;
+                    while (!m_stopRequested.load() && !verifyOk) {
                         if (m_pipeServer->IsClientDisconnected()) {
                             FACELOGIN_INFO(L"Client disconnected during final verify — aborting");
-                            SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
                             return false;
                         }
                         auto vElapsed = std::chrono::steady_clock::now() - verifyStart;
                         if (std::chrono::duration_cast<std::chrono::seconds>(vElapsed).count() >= 2) break;
 
                         dlib::matrix<dlib::rgb_pixel> verifyFrame;
-                        if (!grabFrame(verifyFrame)) {
-                            if (!m_running) break;
+                        dlib::full_object_detection verifyLandmarks;
+                        dlib::rectangle verifyRect;
+                        HeadPoseStats verifyPose;
+                        const AuthFrameResult frameResult = AcquireLegalPoseFrame(
+                            verifyFrame, verifyRect, verifyLandmarks,
+                            verifyPose, verifyPoseStabilizer, publishPoseStatus);
+                        if (frameResult == AuthFrameResult::NoFrame) {
+                            if (m_stopRequested.load()) break;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        if (frameResult == AuthFrameResult::Pending) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            continue;
+                        }
+                        if (frameResult != AuthFrameResult::Accepted) {
+                            verifyPosePromptActive = true;
+                            if (frameResult == AuthFrameResult::Rejected) {
+                                verifyPoseRejected = true;
+                            }
                             std::this_thread::sleep_for(std::chrono::milliseconds(30));
                             continue;
                         }
 
-                        // Detect with SCRFD (primary), same as the recognition loop.
-                        dlib::full_object_detection verifyLandmarks;
-                        auto det = m_onnxDetector->DetectLargestFace(verifyFrame);
-                        if (det) {
-                            dlib::rectangle r(static_cast<long>(det->x1),
-                                              static_cast<long>(det->y1),
-                                              static_cast<long>(det->x2),
-                                              static_cast<long>(det->y2));
-                            m_detector->DetectLandmarks(verifyFrame, r, verifyLandmarks);
-                        }
-                        if (verifyLandmarks.num_parts() == 0) {
-                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                            continue;
+                        verifyAcceptedPoseSeen = true;
+                        // Liveness has already passed in this phase. Keep the
+                        // UI on final verification instead of regressing to the
+                        // initial recognition status when the pose is legal.
+                        const bool restoreFinalStatus = verifyPosePromptActive;
+                        verifyPosePromptActive = false;
+                        sendStatusKey(ipc::L10N_FINAL_VERIFYING, restoreFinalStatus);
+                        if (restoreFinalStatus) {
+                            FACELOGIN_INFO(L"Pose recovered — restoring final verification status");
                         }
 
                         std::optional<CredentialStore::MatchResult> verifyMatch;
-                        auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(verifyFrame, verifyLandmarks);
-                        if (!onnxEmb.empty()) {
-                            verifyMatch = m_store->FindBestMatch(onnxEmb.data(), onnxEmb.size(), m_matchThreshold);
-                        }
-                        // Same light-robust fallback chain as the recognition
-                        // loop (stricter threshold for variants).
-                        if (!verifyMatch) {
-                            auto e1 = m_onnxRecognizer->ComputeEmbedding(
-                                verifyFrame, verifyLandmarks, facelogin::LightVariant::WhiteBalance);
-                            if (!e1.empty()) {
-                                verifyMatch = m_store->FindBestMatch(e1.data(), e1.size(), kVariantThreshold);
-                            }
-                        }
-                        if (!verifyMatch) {
-                            auto e2 = m_onnxRecognizer->ComputeEmbedding(
-                                verifyFrame, verifyLandmarks, facelogin::LightVariant::Brightness);
-                            if (!e2.empty()) {
-                                verifyMatch = m_store->FindBestMatch(e2.data(), e2.size(), kVariantThreshold);
-                            }
+                        auto verifyEmbedding = m_onnxRecognizer->ComputeEmbedding(
+                            verifyFrame, verifyLandmarks);
+                        if (!verifyEmbedding.empty()) {
+                            verifyMatch = m_store->FindBestMatch(
+                                verifyEmbedding.data(), verifyEmbedding.size(), m_matchThreshold);
                         }
 
                         if (verifyMatch) {
                             verifyOk = true;
+                            FACELOGIN_INFO(L"Final match verified: distance=%.4f, "
+                                           L"pose=%d range=%d yaw=%.1f pitch=%.1f roll=%.1f pose_ms=%.1f "
+                                           L"face=%.0fx%.0f aspect=%.2f crop=%.0fx%.0f/%.2f",
+                                           verifyMatch->distance,
+                                           static_cast<int>(verifyPose.quality),
+                                           static_cast<int>(verifyPose.range),
+                                           verifyPose.yaw, verifyPose.pitch,
+                                           verifyPose.roll, verifyPose.inferenceMs,
+                                           verifyPose.faceWidth, verifyPose.faceHeight,
+                                           verifyPose.faceAspect, verifyPose.cropWidth,
+                                           verifyPose.cropHeight, verifyPose.cropAspect);
                             // Use the verified match for the credential (fresh, same identity).
-                            match = verifyMatch;
+                            match = std::move(verifyMatch);
                             break;
                         }
                         std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -1590,36 +1649,39 @@ bool FaceService::ProcessAuthRequest() {
 
                     if (!verifyOk) {
                         FACELOGIN_WARN(L"Final match verify failed \u2014 face swap detected");
-                        m_pipeServer->WriteMessage(ipc::BuildAuthErrorMessage(
-                            ipc::L10N_FINAL_MATCH_FAILED));
-                        FlushFileBuffers(m_pipeServer->GetHandle());
-                        m_pipeServer->DrainOutput(5000);
-                        SecureZeroMemory(match->password.data(), match->password.size() * sizeof(wchar_t));
+                        SendAuthTerminal(ipc::BuildAuthErrorMessage(
+                            verifyPoseRejected && !verifyAcceptedPoseSeen
+                                ? ipc::L10N_POSE_TIMEOUT
+                                : ipc::L10N_FINAL_MATCH_FAILED));
                         return false;
                     }
                 }
             }
 
-            m_pipeServer->WriteMessage(msg);
-            FlushFileBuffers(m_pipeServer->GetHandle());
+            // Build the sensitive success payload only after every recognition
+            // and liveness gate has passed, keep it alive for the shortest
+            // possible interval, and wipe it immediately after the pipe write.
+            std::wstring msg = ipc::BuildAuthSuccessMessage(
+                match->sid, match->upn,
+                domain, match->username, match->password);
+            const bool credentialsSent = SendAuthTerminal(msg);
+            if (!msg.empty()) {
+                SecureZeroMemory(msg.data(), msg.size() * sizeof(wchar_t));
+                msg.clear();
+            }
 
-            SecureZeroMemory(match->password.data(),
-                           match->password.size() * sizeof(wchar_t));
+            match->WipePassword();
+
+            if (!credentialsSent) {
+                FACELOGIN_WARN(L"Credentials could not be delivered to the credential provider");
+                return false;
+            }
 
             authSent = true;
-            FACELOGIN_INFO(L"Credentials sent for %s\\%s",
-                          domain.c_str(), match->username.c_str());
+            FACELOGIN_INFO(L"AuthTerminal: outcome=success delivered=1 accountKind=%s",
+                           match->upn.empty() ? L"local_or_domain" : L"online");
 
-            // Mark user as logged in IMMEDIATELY after sending credentials.
-            // This prevents a race condition: the user can lock (Win+L)
-            // before Windows fires WTS_SESSION_LOGON (which can take
-            // seconds), causing the CP to misdetect the unlock as a cold
-            // boot because UserLoggedIn is still 0.
-            WriteRegDword(REGVAL_USER_LOGGED_IN, 1);
-            FACELOGIN_INFO(L"UserLoggedIn=1 written after auth success");
-
-            // Stop the capture graph NOW (camera LED off) before the bounded
-            // pipe drain below. The graph keeps streaming during auth; pausing
+            // Stop the capture graph now. The graph keeps streaming during auth; pausing
             // it immediately after success frees the camera without waiting for
             // the full teardown.
             if (m_cameraPipeline == CameraPipeline::DS && m_webcamDS) {
@@ -1628,11 +1690,6 @@ bool FaceService::ProcessAuthRequest() {
                 m_webcamMF->Shutdown();
             }
 
-            // Bounded drain: wait briefly for the client to consume the
-            // AUTH_SUCCESS message, then return. The old code did an
-            // unbounded ReadFile(dummy) here — if the client closed the pipe
-            // or never read, the service blocked forever and SCM killed it.
-            m_pipeServer->DrainOutput(5000);
             break;
         }
 
@@ -1640,35 +1697,6 @@ bool FaceService::ProcessAuthRequest() {
     }
 
     return authSent;
-}
-
-std::wstring FaceService::GetModelsDir() {
-    {
-        std::wstring regData = ReadRegString(REGVAL_DATA_PATH, L"");
-        if (!regData.empty()) {
-            return regData + L"\\models";
-        }
-    }
-    wchar_t programData[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, programData))) {
-        return std::wstring(programData) + L"\\FaceLogin\\models";
-    }
-    return L"C:\\ProgramData\\FaceLogin\\models";
-}
-
-float FaceService::GetMatchThreshold() {
-    HKEY hKey;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\FaceLogin", 0,
-                      KEY_READ, &hKey) == ERROR_SUCCESS) {
-        DWORD val = 0, size = sizeof(val);
-        if (RegQueryValueExW(hKey, L"MatchThreshold", nullptr, nullptr,
-                             reinterpret_cast<LPBYTE>(&val), &size) == ERROR_SUCCESS) {
-            RegCloseKey(hKey);
-            return val / 100.0f;
-        }
-        RegCloseKey(hKey);
-    }
-    return 0.30f;
 }
 
 bool FaceService::Install(const std::wstring& exePath) {
@@ -1722,7 +1750,7 @@ bool FaceService::Install(const std::wstring& exePath) {
     CloseServiceHandle(hService);
     CloseServiceHandle(hSCManager);
 
-    FACELOGIN_INFO(L"Service installed: %s", exePath.c_str());
+    FACELOGIN_INFO(L"Service installed successfully");
     return true;
 }
 

@@ -1,7 +1,11 @@
 #pragma once
 
+#ifndef WINVER
 #define WINVER 0x0602
+#endif
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0602
+#endif
 
 #include <dlib/matrix.h>
 #include <dlib/pixel.h>
@@ -10,7 +14,6 @@
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <mfobjects.h>
-#include <dshow.h>      // IAMVideoProcAmp / IAMCameraControl (camera controls)
 #include <mutex>
 
 #include "camera_types.h"
@@ -43,12 +46,6 @@ public:
     bool IsFrameReady();
     void Shutdown();
 
-    // Camera control interfaces for the face-exposure controller (1.9.0).
-    // QI'd off the media source during Initialize; null when the device does
-    // not expose them. Borrowed pointers — valid until Shutdown().
-    IAMVideoProcAmp* GetVideoProcAmp() const { return m_vpa; }
-    IAMCameraControl* GetCameraControl() const { return m_cc; }
-
     static bool InitializeMF();
     static void ShutdownMF();
 
@@ -73,8 +70,6 @@ private:
     mutable std::mutex m_lifecycleMutex;
     IMFMediaSource* m_pSource = nullptr;
     IMFSourceReader* m_pReader = nullptr;
-    IAMVideoProcAmp* m_vpa = nullptr;    // camera controls, QI'd off the source
-    IAMCameraControl* m_cc = nullptr;
     int m_width = 1280;
     int m_height = 720;
     bool m_initialized = false;

@@ -2,8 +2,43 @@
 #include <cstdio>
 #include <cstdarg>
 #include <ctime>
+#include <cwctype>
+#include <iterator>
+#include <string_view>
+#include <vector>
 
 namespace facelogin {
+
+namespace {
+
+// Last-line defence for every logger sink. Call sites must still avoid passing
+// secrets, but this prevents an accidentally logged authentication payload from
+// reaching the file, debugger, or in-memory ring buffer.
+std::wstring SanitizeLogLine(std::wstring line) {
+    std::wstring folded = line;
+    for (wchar_t& ch : folded) ch = static_cast<wchar_t>(towlower(ch));
+
+    const wchar_t* markers[] = {
+        L"auth_success:",
+        L"password=",
+        L"password:",
+        L"\"password\":"
+    };
+    for (const wchar_t* marker : markers) {
+        const std::wstring foldedMarker(marker);
+        const size_t pos = folded.find(foldedMarker);
+        if (pos == std::wstring::npos) continue;
+
+        const size_t valueBegin = pos + foldedMarker.size();
+        size_t lineEnd = line.find_first_of(L"\r\n", valueBegin);
+        if (lineEnd == std::wstring::npos) lineEnd = line.size();
+        line.replace(valueBegin, lineEnd - valueBegin, L"<redacted>");
+        break;
+    }
+    return line;
+}
+
+} // namespace
 
 Logger& Logger::Instance() {
     static Logger s_instance;
@@ -30,26 +65,71 @@ void Logger::SetLogFile(const std::wstring& path) {
             CreateDirectoryW(dir.c_str(), nullptr);
         }
     }
+    if (m_hFile != INVALID_HANDLE_VALUE) {
+        CloseHandle(m_hFile);
+        m_hFile = INVALID_HANDLE_VALUE;
+    }
+    // Builds prior to 2.0.0 briefly logged the raw AUTH_SUCCESS pipe message,
+    // which includes the Windows password. Remove only logs that contain that
+    // marker before opening them for append; unaffected diagnostics survive.
+    PurgeUnsafeLegacyLog(path);
+
     m_logPath = path;
     // If an existing log already exceeds the cap (e.g. from a run before
     // rotation existed), rotate it now. CheckRotation works on the path,
     // independent of m_hFile, so it is safe to call before opening.
     CheckRotation();
-    if (m_hFile != INVALID_HANDLE_VALUE) {
-        CloseHandle(m_hFile);
-        m_hFile = INVALID_HANDLE_VALUE;
-    }
     m_hFile = CreateFileW(path.c_str(), FILE_APPEND_DATA,
                           FILE_SHARE_READ | FILE_SHARE_WRITE,
                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     LeaveCriticalSection(&m_cs);
 }
 
+void Logger::PurgeUnsafeLegacyLog(const std::wstring& path) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+
+    LARGE_INTEGER size = {};
+    constexpr LONGLONG kMaxInspectableBytes = 64LL * 1024LL * 1024LL;
+    bool unsafe = false;
+    if (GetFileSizeEx(file, &size) && size.QuadPart > 0 &&
+        size.QuadPart <= kMaxInspectableBytes &&
+        size.QuadPart % sizeof(wchar_t) == 0) {
+        std::vector<wchar_t> content(
+            static_cast<size_t>(size.QuadPart / sizeof(wchar_t)) + 1, L'\0');
+        DWORD bytesRead = 0;
+        SetFilePointer(file, 0, nullptr, FILE_BEGIN);
+        if (ReadFile(file, content.data(), static_cast<DWORD>(size.QuadPart),
+                     &bytesRead, nullptr)) {
+            const std::wstring_view view(content.data(), bytesRead / sizeof(wchar_t));
+            unsafe = view.find(L"AUTH_SUCCESS:") != std::wstring_view::npos;
+        }
+        if (!content.empty()) {
+            SecureZeroMemory(content.data(), content.size() * sizeof(wchar_t));
+        }
+    }
+
+    if (unsafe) {
+        SetFilePointer(file, 0, nullptr, FILE_BEGIN);
+        SetEndOfFile(file);
+        static constexpr wchar_t notice[] =
+            L"[SECURITY] Legacy log removed because it contained sensitive authentication data.\r\n";
+        DWORD written = 0;
+        WriteFile(file, notice, static_cast<DWORD>((std::size(notice) - 1) * sizeof(wchar_t)),
+                  &written, nullptr);
+        FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+}
+
 void Logger::SetMinLevel(LogLevel level) {
     m_minLevel = level;
 }
 
-void Logger::Log(LogLevel level, const wchar_t* format, ...) {
+void Logger::Log(LogLevel level, const wchar_t* source, const wchar_t* format, ...) {
     if (level < m_minLevel) return;
 
     va_list args;
@@ -71,23 +151,33 @@ void Logger::Log(LogLevel level, const wchar_t* format, ...) {
         case LogLevel::Error:   levelStr = L"ERROR"; break;
     }
 
-    _snwprintf_s(finalMsg, _TRUNCATE,
-                  L"[%04d-%02d-%02d %02d:%02d:%02d.%03d] [%s] [%lu] %s\r\n",
-                  st.wYear, st.wMonth, st.wDay,
-                  st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-                  levelStr, GetCurrentThreadId(), buffer);
+    if (level >= LogLevel::Warning && source && *source) {
+        _snwprintf_s(finalMsg, _TRUNCATE,
+                      L"[%04d-%02d-%02d %02d:%02d:%02d.%03d] [%s] [%lu] [%s] %s\r\n",
+                      st.wYear, st.wMonth, st.wDay,
+                      st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                      levelStr, GetCurrentThreadId(), source, buffer);
+    } else {
+        _snwprintf_s(finalMsg, _TRUNCATE,
+                      L"[%04d-%02d-%02d %02d:%02d:%02d.%03d] [%s] [%lu] %s\r\n",
+                      st.wYear, st.wMonth, st.wDay,
+                      st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                      levelStr, GetCurrentThreadId(), buffer);
+    }
+
+    const std::wstring safeMessage = SanitizeLogLine(finalMsg);
 
     // Output to debugger
     if (m_debugOutput) {
-        OutputDebugStringW(finalMsg);
+        OutputDebugStringW(safeMessage.c_str());
     }
 
     // Write to file
-    WriteToFile(finalMsg);
+    WriteToFile(safeMessage);
 
     // Ring buffer for UI — store WITHOUT trailing \r\n for cleaner display
     {
-        std::wstring clean = finalMsg;
+        std::wstring clean = safeMessage;
         while (!clean.empty() && (clean.back() == L'\r' || clean.back() == L'\n'))
             clean.pop_back();
         AppendToRingBuffer(clean);
@@ -100,7 +190,7 @@ void Logger::Debug(const wchar_t* format, ...) {
     wchar_t buffer[2048];
     _vsnwprintf_s(buffer, _TRUNCATE, format, args);
     va_end(args);
-    Log(LogLevel::Debug, L"%s", buffer);
+    Log(LogLevel::Debug, L"Logger::Debug", L"%s", buffer);
 }
 
 void Logger::Info(const wchar_t* format, ...) {
@@ -109,7 +199,7 @@ void Logger::Info(const wchar_t* format, ...) {
     wchar_t buffer[2048];
     _vsnwprintf_s(buffer, _TRUNCATE, format, args);
     va_end(args);
-    Log(LogLevel::Info, L"%s", buffer);
+    Log(LogLevel::Info, L"Logger::Info", L"%s", buffer);
 }
 
 void Logger::Warning(const wchar_t* format, ...) {
@@ -118,7 +208,7 @@ void Logger::Warning(const wchar_t* format, ...) {
     wchar_t buffer[2048];
     _vsnwprintf_s(buffer, _TRUNCATE, format, args);
     va_end(args);
-    Log(LogLevel::Warning, L"%s", buffer);
+    Log(LogLevel::Warning, L"Logger::Warning", L"%s", buffer);
 }
 
 void Logger::Error(const wchar_t* format, ...) {
@@ -127,7 +217,7 @@ void Logger::Error(const wchar_t* format, ...) {
     wchar_t buffer[2048];
     _vsnwprintf_s(buffer, _TRUNCATE, format, args);
     va_end(args);
-    Log(LogLevel::Error, L"%s", buffer);
+    Log(LogLevel::Error, L"Logger::Error", L"%s", buffer);
 }
 
 void Logger::WriteToFile(const std::wstring& line) {

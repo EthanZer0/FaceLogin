@@ -6,12 +6,20 @@
 #include <memory>
 #include <vector>
 
-#include "../common/secure_buffer.h"
 #include "../common/locale_util.h"
 #include "pipe_client.h"
+#include "status_overlay.h"
 
-// Forward declarations
-class FaceLoginProvider;
+struct CredentialContext {
+    CREDENTIAL_PROVIDER_USAGE_SCENARIO usageScenario = CPUS_LOGON;
+    bool loginEntry = false;
+    ULONGLONG loginEntryGeneration = 0;
+    DWORD loginEntrySessionId = 0xFFFFFFFF;
+
+    bool IsCredUI() const {
+        return usageScenario == CPUS_CREDUI || usageScenario == CPUS_PLAP;
+    }
+};
 
 // ============================================================================
 // FaceLoginCredential — ICredentialProviderCredential implementation
@@ -23,22 +31,26 @@ class FaceLoginProvider;
 //   4. Auto-logon two-pass pattern
 //
 // State machine:
-//   Waiting        — Initial state, trying to establish pipe connection
-//   Authenticating — Pipe connected, waiting for face recognition result
-//   Ready          — Credentials received, ready to serialize
-//   Failed         — Auth timed out or error
+//   Waiting        — Selected tile is waiting for a new input trigger
+//   Authenticating — Recognition is running for the current attempt
+//   Ready          — Credentials are ready to serialize
+//   Submitted      — Credentials have been handed to LogonUI once
+//   Failed/Error   — Attempt ended and requires a new input to retry
 // ============================================================================
 
 class FaceLoginCredential : public ICredentialProviderCredential {
 public:
     // Allow the input-detection thread to access private members
     friend unsigned __stdcall InputDetectionThreadProc(void* pParam);
+    friend unsigned __stdcall AuthConnectThreadProc(void* pParam);
 
     FaceLoginCredential();
     virtual ~FaceLoginCredential();
 
-    // Called by FaceLoginProvider after creation
-    void Initialize(FaceLoginProvider* pProvider);
+    // Called by FaceLoginProvider after creation. The immutable snapshot keeps
+    // worker threads independent from the provider object's lifetime.
+    void Initialize(const CredentialContext& context);
+    void ShutdownForContextChange();
 
     // Provider-level advise/unadvise (called by FaceLoginProvider::Advise/UnAdvise)
     void AdviseProvider(ICredentialProviderEvents* pEvents, UINT_PTR upAdviseContext);
@@ -77,6 +89,20 @@ public:
                               CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon) override;
 
 private:
+    using AuthAttemptId = unsigned long long;
+    using InputActivationId = unsigned long long;
+
+    enum class AuthTrigger {
+        LoginEntryAutomatic,
+        LoginEntryKeyPress,
+        UnlockKeyPress
+    };
+
+    enum class CredentialsChangedSource {
+        AuthSuccess,
+        SwitchToPassword
+    };
+
     // State enum
     enum class State {
         Waiting,
@@ -84,12 +110,8 @@ private:
         Ready,
         Submitted,  // credential packed & handed to LogonUI — no re-submit
         Failed,
-        Error,
-        Blocked  // Passwordless account: show notice, never submit creds
+        Error
     };
-
-    // Authentication package lookup
-    HRESULT GetAuthenticationPackage(ULONG* pulAuthPackage);
 
     // Switch to the password credential provider (fallback)
     HRESULT SwitchToPasswordProvider();
@@ -106,35 +128,66 @@ private:
     std::wstring LocalizeKey(const std::wstring& key) const;
 
     // Trigger re-enumeration of credentials (via CredentialsChanged)
-    void TriggerReEnumeration();
+    void TriggerReEnumeration(CredentialsChangedSource source);
 
-    // Start the authentication pipeline (connect pipe + send AUTH_REQUEST).
-    // Called from Advise() (cold boot) or input-detection thread (unlock).
-    void StartAuth();
+    State GetState() const;
+    bool TransitionState(State expected, State next);
+    bool IsAttemptActive(AuthAttemptId attemptId) const;
+    void SetStatusText(const std::wstring& text);
+    std::wstring VisibleStatusText() const;
+    facelogin::StatusOverlayPresentation CurrentStatusPresentation() const;
+    void PublishCurrentStatus();
+    void UpdateStatusField(const std::wstring& text, bool visible);
+    void NotifyCredentialsChanged(CredentialsChangedSource source);
+    bool EnsureStatusOverlay(
+        const facelogin::StatusOverlayPresentation& presentation,
+        const wchar_t* reason);
+    void ClearCredentialFieldsLocked();
+    void ClearCredentials();
+    void CancelActiveAttempt(bool resetToWaiting);
+    AuthTrigger InputAuthTrigger() const;
+
+    // Start the authentication pipeline without blocking the LogonUI or input
+    // thread. The connection worker owns a COM reference until it exits.
+    bool StartAuthAsync(AuthTrigger trigger,
+                        InputActivationId expectedInputActivationId = 0);
+    void FailAuthStart(const std::wstring& status);
+    void JoinAuthConnectThread();
+    bool IsInputActivationValid(InputActivationId activationId) const;
 
     // Start / stop the background input-detection thread (unlock scenario).
     void StartInputDetectionThread();
     void StopInputDetectionThread();
 
     // Pipe callbacks — called from background read thread
-    void OnPipeResponse(bool success, const std::wstring& message);
-    void OnPipeStatus(const std::wstring& message);
+    void OnPipeResponse(AuthAttemptId attemptId,
+                        facelogin::PipeTerminalTransport transport,
+                        const std::wstring& message);
+    void OnPipeStatus(AuthAttemptId attemptId, const std::wstring& message);
 
     LONG m_refCount = 1;
-    FaceLoginProvider* m_pProvider = nullptr;
-    ICredentialProviderCredentialEvents* m_pCredentialEvents = nullptr;
+    CredentialContext m_context;
+    // FaceLogin supports Windows 8 and later only. Retain Events2
+    // exclusively: status updates stay inside the active tile instead of
+    // falling back to the legacy re-enumeration-prone event API.
+    ICredentialProviderCredentialEvents2* m_pCredentialEvents2 = nullptr;
     ICredentialProviderEvents* m_pProviderEvents = nullptr;
     UINT_PTR m_upAdviseContext = 0;
+    facelogin::StatusOverlay m_statusOverlay;
 
     State m_state = State::Waiting;
-    // Set when the service reported AUTH_NO_MATCH (face seen, no enrolled
-    // face matched). The Failed-state status text then shows "人脸匹配失败"
-    // instead of the generic timeout wording. Cleared at each StartAuth.
-    bool m_noMatchFailed = false;
-    std::unique_ptr<facelogin::PipeClient> m_pipeClient;
+    std::shared_ptr<facelogin::PipeClient> m_pipeClient;
+    AuthAttemptId m_nextAttemptId = 0;
+    AuthAttemptId m_activeAttemptId = 0;
+    AuthTrigger m_authTrigger = AuthTrigger::UnlockKeyPress;
+    bool m_autoStartConsumed = false;
+    bool m_statusOverlayAllowed = false;
+    bool m_statusOverlayUnavailable = false;
+    bool m_statusFieldFallbackVisible = false;
+    facelogin::StatusOverlayTone m_statusOverlayTone =
+        facelogin::StatusOverlayTone::Neutral;
 
     // Received credentials (zeroed after serialization)
-    facelogin::SecureBuffer m_authData;
     std::wstring m_sid;
     std::wstring m_upn;
     std::wstring m_domain;
@@ -145,21 +198,25 @@ private:
     std::wstring m_statusText;
     facelogin::LocaleCatalog m_locale;
 
-    // Auth timeout tracking (so we don't block LogonUI forever)
-    LONGLONG m_authStartTime = 0;  // 100ns units, 0 = not yet started
+    // Auth timeout tracking uses the monotonic tick count so a system clock
+    // adjustment cannot extend or prematurely end an authentication attempt.
+    ULONGLONG m_authDeadlineTick = 0;
 
-    // On unlock: baseline tick recorded in Advise(). A background thread
-    // polls GetLastInputInfo() and calls StartAuth() when NEW input arrives
-    // (keyboard or mouse). The first keypress that dismissed the lock-screen
-    // wallpaper happened BEFORE our DLL was loaded, so any tick <= baseline
-    // is ignored.
-    DWORD m_waitingStartTick = 0;
+    // On unlock: a background thread snapshots virtual-key states when it
+    // starts, then reacts only to rising edges on keyboard keys or mouse
+    // buttons. Mouse movement alone is intentionally ignored.
     HANDLE m_hInputThread = nullptr;   // background input-detection thread
+    DWORD m_inputThreadId = 0;
     HANDLE m_hInputStop = nullptr;     // event: signal to stop the thread
     bool m_inputThreadRunning = false;
+    InputActivationId m_inputActivationId = 0;
+    bool m_inputDetectionEnabled = false;
+
+    HANDLE m_hAuthThread = nullptr;
+    HANDLE m_hAuthStop = nullptr;
+    bool m_authConnectThreadRunning = false;
+    bool m_deselected = false;
 
     // Synchronization
-    HANDLE m_hCredsReady = nullptr;  // Set when auth result received
-    CRITICAL_SECTION m_cs;
-    bool m_csInitialized = false;
+    mutable CRITICAL_SECTION m_cs;
 };

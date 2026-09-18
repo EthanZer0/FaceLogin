@@ -56,18 +56,17 @@ func EnsureConfigDefaults(configPath string, uiLanguage string) error {
 		// No config yet — start from a full default so the app loads sane
 		// values on first run (the app's own defaults mirror these).
 		cfg = map[string]any{
-			"ui_language":             "auto",
-			"recognition_model":       "onnx",
-			"detector":                "scrfd",
-			"liveness_method":         "none",
-			"match_threshold":         0.75,
-			"anti_spoof_threshold":    0.30,
-			"blink_glasses_mode":      false,
-			"low_light_enhance":       false,
+			"ui_language":              "auto",
+			"recognition_model":        "onnx",
+			"detector":                 "scrfd",
+			"liveness_method":          "none",
+			"match_threshold":          0.75,
+			"anti_spoof_threshold":     0.30,
+			"blink_glasses_mode":       false,
 			"unload_models_after_auth": false,
-			"camera_rotation":         0,
-			"capture_unknown_faces":   false,
-			"cold_boot_key_trigger":   false,
+			"camera_rotation":          0,
+			"capture_unknown_faces":    false,
+			"cold_boot_key_trigger":    false,
 		}
 	}
 
@@ -92,4 +91,3 @@ func EnsureConfigDefaults(configPath string, uiLanguage string) error {
 	}
 	return nil
 }
-

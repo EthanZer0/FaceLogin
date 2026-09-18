@@ -21,6 +21,7 @@
 #include <fstream>
 #include <algorithm>
 #include <chrono>
+#include <locale>
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "windowscodecs.lib")
@@ -60,131 +61,7 @@ static std::wstring GetSessionUpn() {
     return upn;
 }
 
-// ---------------------------------------------------------------------------
-// System hardware info dump (卡90% 排查)
-//
-// "卡90%进程未响应"是否复现与硬件强相关——弱 CPU、低内存、软件渲染的 GPU
-// 会直接拖慢 WebView2 渲染 + ONNX 推理 + JPEG 编码。Console 启动时把这些
-// 信息打一行 enrollment.log，方便按机器对照"这台为什么慢"。全部读取不涉及
-// 外部服务，一次完成，失败静默跳过。
-// ---------------------------------------------------------------------------
-static void LogSystemInfo() {
-    // --- OS version (RtlGetVersion — GetVersionEx is shimmed on Win8.1+) ---
-    std::wstring osDesc = L"unknown";
-    RTL_OSVERSIONINFOW osInfo = {};
-    osInfo.dwOSVersionInfoSize = sizeof(osInfo);
-    using PFN_RtlGetVersion = LONG(WINAPI*)(RTL_OSVERSIONINFOW*);
-    auto pfnRtlGetVersion = reinterpret_cast<PFN_RtlGetVersion>(
-        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
-    if (pfnRtlGetVersion && pfnRtlGetVersion(&osInfo) == 0) {
-        wchar_t buf[128];
-        swprintf(buf, 128, L"%lu.%lu.%lu (build %lu)",
-                 osInfo.dwMajorVersion, osInfo.dwMinorVersion,
-                 osInfo.dwBuildNumber, osInfo.dwBuildNumber);
-        osDesc = buf;
-        // Product name ("Windows 11 Pro" etc.) — only readable on the
-        // interactive session, which the console runs in.
-        HKEY hK = nullptr;
-        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-                          L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
-                          0, KEY_READ, &hK) == ERROR_SUCCESS) {
-            wchar_t prod[128] = {};
-            DWORD sz = sizeof(prod), type = 0;
-            if (RegQueryValueExW(hK, L"ProductName", nullptr, &type,
-                                 reinterpret_cast<LPBYTE>(prod), &sz) == ERROR_SUCCESS && type == REG_SZ) {
-                osDesc += L" | " + std::wstring(prod);
-            }
-            RegCloseKey(hK);
-        }
-    }
-
-    // --- CPU: friendly name + logical cores ---
-    std::wstring cpu = L"unknown";
-    HKEY hCpu = nullptr;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-                      0, KEY_READ, &hCpu) == ERROR_SUCCESS) {
-        wchar_t name[256] = {};
-        DWORD sz = sizeof(name), type = 0;
-        if (RegQueryValueExW(hCpu, L"ProcessorNameString", nullptr, &type,
-                             reinterpret_cast<LPBYTE>(name), &sz) == ERROR_SUCCESS && type == REG_SZ) {
-            cpu = name;
-        }
-        RegCloseKey(hCpu);
-    }
-    SYSTEM_INFO si = {};
-    GetSystemInfo(&si);
-    wchar_t cpuBuf[320];
-    swprintf(cpuBuf, 320, L"%ls (%u logical cores)",
-             cpu.c_str(), static_cast<unsigned>(si.dwNumberOfProcessors));
-
-    // --- RAM: total + currently available (usable by this process) ---
-    MEMORYSTATUSEX ms = {};
-    ms.dwLength = sizeof(ms);
-    GlobalMemoryStatusEx(&ms);
-    wchar_t memBuf[192];
-    swprintf(memBuf, 192, L"%llu MB total, %llu MB available",
-             ms.ullTotalPhys / (1024 * 1024), ms.ullAvailPhys / (1024 * 1024));
-
-    // --- GPU list: video adapters via registry (fast, offline) ---
-    // Walks HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-...}
-    // subkeys; each Description is one adapter.
-    std::wstring gpus;
-    HKEY hGpu = nullptr;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-                      L"SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}",
-                      0, KEY_READ, &hGpu) == ERROR_SUCCESS) {
-        for (DWORD i = 0; ; i++) {
-            wchar_t sub[64] = {};
-            DWORD subSz = sizeof(sub);
-            if (RegEnumKeyExW(hGpu, i, sub, &subSz, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                break;
-            if (wcsncmp(sub, L"0", 1) != 0)   // only numbered (0000, 0001...) adapters
-                continue;
-            HKEY hSub = nullptr;
-            if (RegOpenKeyExW(hGpu, sub, 0, KEY_READ, &hSub) == ERROR_SUCCESS) {
-                wchar_t desc[256] = {};
-                DWORD sz = sizeof(desc), type = 0;
-                if (RegQueryValueExW(hSub, L"DriverDesc", nullptr, &type,
-                                     reinterpret_cast<LPBYTE>(desc), &sz) == ERROR_SUCCESS && type == REG_SZ && desc[0]) {
-                    if (!gpus.empty()) gpus += L", ";
-                    gpus += desc;
-                }
-                RegCloseKey(hSub);
-            }
-        }
-        RegCloseKey(hGpu);
-    }
-    if (gpus.empty()) gpus = L"(none enumerated)";
-
-    // --- this process's working set (how much RAM the console itself holds) ---
-    // Declared manually to avoid pulling psapi headers just for one field.
-    typedef BOOL(WINAPI* PFN_GetProcessMemoryInfo)(HANDLE, void*, DWORD);
-    ULONGLONG wsBytes = 0;
-    auto pfnGetProcessMemoryInfo = reinterpret_cast<PFN_GetProcessMemoryInfo>(
-        GetProcAddress(GetModuleHandleW(L"psapi.dll"), "GetProcessMemoryInfo"));
-    if (pfnGetProcessMemoryInfo) {
-        struct PROC_MEM_COUNTERS { DWORD cb; DWORD reserved[2]; SIZE_T WorkingSetSize; };
-        PROC_MEM_COUNTERS pmc = {};
-        pmc.cb = sizeof(pmc);
-        if (pfnGetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
-            wsBytes = static_cast<ULONGLONG>(pmc.WorkingSetSize);
-    }
-
-    FACELOGIN_INFO(L"[SYSINFO] OS=%ls", osDesc.c_str());
-    FACELOGIN_INFO(L"[SYSINFO] CPU=%ls", cpuBuf);
-    FACELOGIN_INFO(L"[SYSINFO] RAM=%ls", memBuf);
-    if (!gpus.empty())
-        FACELOGIN_INFO(L"[SYSINFO] GPU=%ls", gpus.c_str());
-    if (wsBytes > 0)
-        FACELOGIN_INFO(L"[SYSINFO] console working set=%llu KB",
-                       wsBytes / 1024);
-}
-
 EnrollmentWizard::EnrollmentWizard() {
-    // Diagnostics (卡90% 排查): total constructor wall-time. If model/config/
-    // SID lookups on the UI thread take long on a cold start, that's visible
-    // as "console not responding" BEFORE the window even appears.
-    auto ctorT0 = std::chrono::steady_clock::now();
     std::wstring regData = ReadRegString(REGVAL_DATA_PATH, L"");
     if (!regData.empty()) {
         m_dataDir = regData;
@@ -204,10 +81,6 @@ EnrollmentWizard::EnrollmentWizard() {
     Logger::Instance().SetEnableDebugOutput(true);
 
     FACELOGIN_INFO(L"=== Enrollment Wizard started ===");
-
-    // Hardware dump: helps attribute "卡90%未响应" reproducibility to the
-    // machine (weak CPU / low RAM / software GPU all slow the UI + ONNX).
-    LogSystemInfo();
 
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                      IID_PPV_ARGS(&m_wicFactory));
@@ -301,15 +174,6 @@ EnrollmentWizard::EnrollmentWizard() {
     m_config = LoadConfig(m_dataDir);
     m_livenessMethod = m_config.liveness_method;
     m_antiSpoofThreshold = m_config.anti_spoof_threshold;
-
-    auto ctorUs = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - ctorT0).count();
-    FACELOGIN_INFO(L"EnrollmentWizard ctor done in %lldus (account=%hs)", ctorUs,
-                   m_accountType.c_str());
-    if (ctorUs > 200000) {
-        FACELOGIN_WARN(L"EnrollmentWizard ctor SLOW: %lldus (>200ms) — console shows unresponsive on cold start",
-                       ctorUs);
-    }
 }
 
 EnrollmentWizard::~EnrollmentWizard() {
@@ -336,15 +200,8 @@ bool EnrollmentWizard::StartPreview() {
     // with the device busy. A couple of short retries absorb that window.
     constexpr int kInitRetries = 5;
     bool webcamOk = false;
-    auto spT0 = std::chrono::steady_clock::now();
     for (int attempt = 0; attempt < kInitRetries && !webcamOk; attempt++) {
-        auto attemptT0 = std::chrono::steady_clock::now();
         webcamOk = m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device));
-        auto attemptUs = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - attemptT0).count();
-        if (attemptUs > 50000) {
-            FACELOGIN_WARN(L"Webcam Initialize attempt %d SLOW: %lldus", attempt + 1, attemptUs);
-        }
         if (!webcamOk && attempt + 1 < kInitRetries) {
             FACELOGIN_WARN(L"Webcam init attempt %d failed — camera may still be releasing, retrying", attempt + 1);
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -355,31 +212,11 @@ bool EnrollmentWizard::StartPreview() {
                         m_config.camera_device.empty() ? L"" : L" (configured device)");
         return false;
     }
-    auto spInitUs = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - spT0).count();
-    FACELOGIN_INFO(L"Webcam initialized in %lldus", spInitUs);
+    FACELOGIN_INFO(L"Webcam initialized");
 
     m_previewRunning = true;
     m_frameRunning = true;
     m_frameReinitCount = 0;
-    m_exposureIter = 0;
-
-    // Face-exposure auto-control (1.9.0, config-gated): attach to this
-    // camera. The frame thread steers toward the target and applies the
-    // session gain to every cached frame, so preview/capture/anti-spoof all
-    // see one normalized brightness domain — matching the service side at
-    // unlock time.
-    m_exposure.Attach(m_webcam->GetVideoProcAmp(), m_webcam->GetCameraControl());
-    m_exposure.Configure(m_config.face_exposure_control, m_config.face_exposure_target,
-                         m_config.face_exposure_band);
-    // Persistent "poisoned camera" flag (see REGVAL_EXPOSURE_HW_BROKEN): the
-    // service persisted it after a severe-overexposure demotion. Skip the
-    // hardware channel here too — the digital gain alone normalizes luma.
-    if (ReadRegDword(REGVAL_EXPOSURE_HW_BROKEN, 0) == 1) {
-        m_exposure.ForceDigitalOnly();
-        FACELOGIN_WARN(L"Face exposure control: camera marked broken "
-                       L"(ExposureHardwareBroken=1) — hardware channel disabled, digital gain only");
-    }
 
     // Single background thread: load models (if needed) → GrabFrame → JPEG
     // encode → detect → update caches. The UI thread stays completely free;
@@ -390,6 +227,8 @@ bool EnrollmentWizard::StartPreview() {
     // running alongside the next StartPreview's fresh thread.
     int myGen = ++m_frameGeneration;
     m_frameThread = std::thread([this, myGen]() {
+        bool poseDisplayInitialized = false;
+        HeadPoseStats poseDisplay;
         if (!EnsureModelsLoaded()) {
             FACELOGIN_ERROR(L"Model loading failed — no frames will be produced");
             return;
@@ -408,7 +247,6 @@ bool EnrollmentWizard::StartPreview() {
             // facenox MiniFAS depends on — on-demand grabbing made frames
             // fluctuate and anti-spoof scores collapse.
             if (m_capturing && m_phase2Active) {
-                bool deliver = false;
                 {
                     std::unique_lock<std::mutex> lock(m_frameCacheMutex);
                     if (!m_sampleCv.wait_for(lock, std::chrono::milliseconds(100),
@@ -421,17 +259,11 @@ bool EnrollmentWizard::StartPreview() {
                         continue;   // nothing requested yet
                     }
                     if (!m_frameRunning || !m_phase2Active || m_frameGeneration != myGen) break;
-                    deliver = true;
                 }
                 dlib::matrix<dlib::rgb_pixel> frame;
                 bool ok = m_webcam->GrabFrame(frame);
                 if (ok) {
                     RotateFrame(frame, m_config.camera_rotation);
-                    // Keep the exposure session gain (converged during
-                    // preview) on captured samples — same brightness domain
-                    // as every preview/unlock frame. Gain is constant during
-                    // capture; re-steering here would make samples fluctuate.
-                    m_exposure.ApplySessionGain(frame);
                 }
                 {
                     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
@@ -449,7 +281,6 @@ bool EnrollmentWizard::StartPreview() {
             }
 
             // ---- Push mode (preview) ---------------------------------------
-            auto itT0 = std::chrono::steady_clock::now();
             dlib::matrix<dlib::rgb_pixel> frame;
             if (!m_webcam->GrabFrame(frame)) {
                 // GrabFrame self-shuts-down after repeated failures (e.g. the
@@ -465,16 +296,10 @@ bool EnrollmentWizard::StartPreview() {
                         break;
                     }
                     FACELOGIN_WARN(L"Preview camera stalled — re-initializing (%d/3)", m_frameReinitCount);
-                    m_exposure.Reset();   // drop the stale camera's control handles
                     m_webcam->Shutdown();
                     if (m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
                         FACELOGIN_INFO(L"Preview camera re-initialized");
                         m_frameReinitCount = 0;   // a successful re-init resets the budget
-                        m_exposure.Attach(m_webcam->GetVideoProcAmp(),
-                                          m_webcam->GetCameraControl());
-                        m_exposure.Configure(m_config.face_exposure_control,
-                                             m_config.face_exposure_target,
-                                             m_config.face_exposure_band);
                     } else {
                         FACELOGIN_ERROR(L"Preview camera re-init failed — giving up until next start");
                         break;   // exit frame loop; next StartPreview retries
@@ -485,81 +310,87 @@ bool EnrollmentWizard::StartPreview() {
             }
 
             RotateFrame(frame, m_config.camera_rotation);
-            auto tGrab = std::chrono::steady_clock::now();
 
-            std::string b64 = EncodeJPEGBase64(frame);
-            auto tJpeg = std::chrono::steady_clock::now();
-            // Preview overlay: detect the face with SCRFD and show its box.
+            // Preview detection runs before the frame is encoded for the UI.
             std::string faceJson = "[]";
             if (m_onnxDetector) {
-                auto det = m_onnxDetector->DetectLargestFace(frame);
-                auto tDet = std::chrono::steady_clock::now();
-                if (det) {
-                    std::vector<facelogin::FaceWithLandmarks> faces;
-                    FaceWithLandmarks fwl;
-                    fwl.rect = dlib::rectangle(static_cast<long>(det->x1),
-                                               static_cast<long>(det->y1),
-                                               static_cast<long>(det->x2),
-                                               static_cast<long>(det->y2));
-                    m_detector->DetectLandmarks(frame, fwl.rect, fwl.landmarks);
-                    auto tLand = std::chrono::steady_clock::now();
-                    // Face-exposure control (1.9.0): steer toward the target —
-                    // camera first, digital gain tops up, and this frame gets
-                    // the gain applied in place so preview + cache stay in the
-                    // normalized domain. Logs only on actual corrections.
-                    m_exposure.SteerFrame(frame, fwl.rect, ++m_exposureIter);
+                std::vector<facelogin::FaceWithLandmarks> faces;
+                FaceWithLandmarks fwl;
+                HeadPoseStats pose;
+                const bool prepared = PrepareFaceFrame(
+                    frame, fwl.rect, fwl.landmarks, &pose);
+                if (prepared) {
+                    // Smooth only the preview overlay. Recognition, liveness
+                    // and service logs keep the raw model result unchanged.
+                    static constexpr float kPoseDisplayAlpha = 0.35f;
+                    if (pose.range == HeadPoseRange::Invalid) {
+                        poseDisplay = pose;
+                        poseDisplayInitialized = false;
+                    } else if (!poseDisplayInitialized) {
+                        poseDisplay = pose;
+                        poseDisplayInitialized = true;
+                    } else {
+                        poseDisplay.yaw += kPoseDisplayAlpha *
+                                           (pose.yaw - poseDisplay.yaw);
+                        poseDisplay.pitch += kPoseDisplayAlpha *
+                                             (pose.pitch - poseDisplay.pitch);
+                        poseDisplay.roll += kPoseDisplayAlpha *
+                                            (pose.roll - poseDisplay.roll);
+                        poseDisplay.inferenceMs = pose.inferenceMs;
+                        poseDisplay.faceWidth = pose.faceWidth;
+                        poseDisplay.faceHeight = pose.faceHeight;
+                        poseDisplay.faceAspect = pose.faceAspect;
+                        poseDisplay.cropWidth = pose.cropWidth;
+                        poseDisplay.cropHeight = pose.cropHeight;
+                        poseDisplay.cropAspect = pose.cropAspect;
+                        poseDisplay.valid = pose.valid;
+                        poseDisplay.quality = pose.quality;
+                        poseDisplay.range = pose.range;
+                    }
                     faces.push_back(std::move(fwl));
-                    faceJson = FacesToJson(faces);
-                    // Diagnostics: frame-thread pipeline stage timing. Each
-                    // stage runs on the frame thread, so a slow stage here
-                    // does NOT directly freeze the UI — but if the FRAME
-                    // thread lags, capture waits for fresh frames and the
-                    // lock gets held longer (frame write contends with the
-                    // UI reader). Log only when slow.
-                    long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tJpeg).count();
-                    long long landUs = std::chrono::duration_cast<std::chrono::microseconds>(tLand - tDet).count();
-                    long long grabUs = std::chrono::duration_cast<std::chrono::microseconds>(tGrab - itT0).count();
-                    long long jpegUs = std::chrono::duration_cast<std::chrono::microseconds>(tJpeg - tGrab).count();
-                    if (grabUs > 50000 || jpegUs > 50000 || detUs > 50000 || landUs > 50000) {
-                        FACELOGIN_WARN(L"Frame thread SLOW: grab=%lldus jpeg=%lldus detect=%lldus landmarks=%lldus",
-                                       grabUs, jpegUs, detUs, landUs);
-                    }
-                } else {
-                    // No face this frame — keep the session gain applied so
-                    // the cached frame stays in the same brightness domain.
-                    m_exposure.ApplySessionGain(frame);
-                    long long detUs = std::chrono::duration_cast<std::chrono::microseconds>(tDet - tJpeg).count();
-                    long long grabUs = std::chrono::duration_cast<std::chrono::microseconds>(tGrab - itT0).count();
-                    long long jpegUs = std::chrono::duration_cast<std::chrono::microseconds>(tJpeg - tGrab).count();
-                    if (grabUs > 50000 || jpegUs > 50000 || detUs > 50000) {
-                        FACELOGIN_WARN(L"Frame thread SLOW (no face): grab=%lldus jpeg=%lldus detect=%lldus",
-                                       grabUs, jpegUs, detUs);
-                    }
+                    faceJson = FacesToJson(faces, &poseDisplay);
                 }
             }
+            std::string b64 = EncodeJPEGBase64(frame);
 
             {
-                auto wt0 = std::chrono::steady_clock::now();
                 std::lock_guard<std::mutex> lock(m_frameCacheMutex);
-                auto wtLocked = std::chrono::steady_clock::now();
                 m_latestFrameB64  = std::move(b64);
                 m_latestFacesJson = std::move(faceJson);
                 m_latestFrame     = frame;
-                // The 2.7MB frame copy happens under the lock; if it's slow it
-                // blocks the capture thread and the UI thread's
-                // GetLatestFrameAndFaces. Split wait (someone else held it)
-                // from the in-lock copy, and log EITHER over its budget.
-                auto wt1 = std::chrono::steady_clock::now();
-                long long wWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(wtLocked - wt0).count();
-                long long wCopyUs = std::chrono::duration_cast<std::chrono::microseconds>(wt1 - wtLocked).count();
-                if (wWaitUs > 20000 || wCopyUs > 50000) {
-                    FACELOGIN_WARN(L"Frame cache write SLOW: wait=%lldus copy=%lldus total=%lldus (frame %ldx%ld)",
-                                   wWaitUs, wCopyUs, wWaitUs + wCopyUs, frame.nr(), frame.nc());
-                }
             }
         }
     });
 
+    return true;
+}
+
+bool EnrollmentWizard::PrepareFaceFrame(
+    dlib::matrix<dlib::rgb_pixel>& frame,
+    dlib::rectangle& rect,
+    dlib::full_object_detection& landmarks,
+    HeadPoseStats* outPose) {
+    if (outPose) *outPose = {};
+    if (frame.size() == 0 || !m_onnxDetector || !m_detector) return false;
+    rect = dlib::rectangle();
+    landmarks = dlib::full_object_detection();
+
+    auto detect = [this, &rect, &landmarks](
+                      const dlib::matrix<dlib::rgb_pixel>& candidate) -> bool {
+        auto det = m_onnxDetector->DetectLargestFace(candidate);
+        if (!det) return false;
+        rect = dlib::rectangle(static_cast<long>(det->x1),
+                               static_cast<long>(det->y1),
+                               static_cast<long>(det->x2),
+                               static_cast<long>(det->y2));
+        landmarks = dlib::full_object_detection();
+        return !rect.is_empty() && m_detector->DetectLandmarks(candidate, rect, landmarks);
+    };
+
+    if (!detect(frame)) return false;
+    if (outPose && m_headPose && m_headPose->IsInitialized()) {
+        *outPose = m_headPose->Estimate(frame, rect);
+    }
     return true;
 }
 
@@ -587,6 +418,17 @@ bool EnrollmentWizard::EnsureModelsLoaded() {
         }
     }
 
+    // Pose is optional and observer-only. A missing/incompatible model must
+    // never make face enrollment or recognition unavailable.
+    std::wstring posePath = modelsDir + L"\\head_pose_mobilenetv2.onnx";
+    if (!m_headPose) {
+        m_headPose = std::make_unique<OnnxHeadPose>();
+        if (!m_headPose->Initialize(posePath)) {
+            FACELOGIN_WARN(L"MobileNetV2 head-pose model not available; pose HUD disabled");
+            m_headPose.reset();
+        }
+    }
+
     // Load InsightFace ONNX recognizer (the only recognizer).
     std::wstring onnxPath = modelsDir + L"\\w600k_mbf.onnx";
     if (!m_onnxRecognizer) {
@@ -609,9 +451,6 @@ bool EnrollmentWizard::EnsureModelsLoaded() {
     }
 
     // Apply runtime settings to freshly-loaded models.
-    m_onnxRecognizer->SetLowLightEnhance(m_config.low_light_enhance);
-    if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(m_config.low_light_enhance);
-
     // dlib recognizer/detector were removed — pure ONNX. recognition_model
     // and detector config values are ignored.
 
@@ -666,17 +505,7 @@ void EnrollmentWizard::StopPreview() {
     // touching the (possibly re-initialized) camera next to the fresh thread.
     ++m_frameGeneration;
 
-    // Restore the camera's auto controls FIRST — the borrowed control
-    // interfaces must be touched while the capture object is still alive.
-    m_exposure.Reset();
-    // Persist the "poisoned camera" flag the same way the service does.
-    if (m_exposure.WasSevereOverexposure()) {
-        WriteRegDword(REGVAL_EXPOSURE_HW_BROKEN, 1);
-        FACELOGIN_WARN(L"Face exposure control: camera poisoned by manual exposure — "
-                       L"persisted ExposureHardwareBroken=1");
-    }
-
-    // Shut down the camera FIRST so a synchronous ReadSample that is blocked
+    // Now shut down the camera so a synchronous ReadSample that is blocked
     // (camera taken over by the credential provider at lock) returns an error.
     // Shutdown() itself is bounded (see WebcamCapture::Shutdown) so a wedged
     // driver can no longer freeze the UI thread.
@@ -716,26 +545,10 @@ std::string EnrollmentWizard::GetLatestFacesJson() {
 // overlay could come from a newer frame than the displayed image, causing the
 // face box/landmarks to drift from the visible face.
 std::string EnrollmentWizard::GetLatestFrameAndFaces() {
-    // Runs on the UI thread every 33ms via JS renderFrame(). A stall here
-    // blocks the JS main thread (progress bar freezes). Split the timing:
-    //   - WAIT = time blocked on m_frameCacheMutex before acquiring it
-    //     (frame/capture thread holding it too long)
-    //   - COPY = time under the lock (string copy of ~300KB base64 + json) —
-    //     if slow, something unrelated (WebView2/COM) wedged this thread.
-    auto t0 = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(m_frameCacheMutex);
-    auto tLocked = std::chrono::steady_clock::now();
     std::string result = m_latestFrameB64;
     result += "\x1E";  // record separator
     result += m_latestFacesJson;
-    auto t1 = std::chrono::steady_clock::now();
-    long long waitUs = std::chrono::duration_cast<std::chrono::microseconds>(tLocked - t0).count();
-    long long copyUs = std::chrono::duration_cast<std::chrono::microseconds>(t1 - tLocked).count();
-    if (waitUs > 20000 || copyUs > 50000) {
-        FACELOGIN_WARN(L"GetLatestFrameAndFaces SLOW: wait=%lldus copy=%lldus total=%lldus (b64=%zuB json=%zuB)",
-                       waitUs, copyUs, waitUs + copyUs,
-                       m_latestFrameB64.size(), m_latestFacesJson.size());
-    }
     return result;
 }
 
@@ -848,8 +661,10 @@ std::string EnrollmentWizard::EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixe
 // ============================================================================
 
 std::string EnrollmentWizard::FacesToJson(
-    const std::vector<facelogin::FaceWithLandmarks>& faces) {
+    const std::vector<facelogin::FaceWithLandmarks>& faces,
+    const HeadPoseStats* pose) {
     std::ostringstream js;
+    js.imbue(std::locale::classic());
     js << "[";
     for (size_t fi = 0; fi < faces.size(); fi++) {
         if (fi > 0) js << ",";
@@ -865,7 +680,30 @@ std::string EnrollmentWizard::FacesToJson(
             js << static_cast<int>(f.landmarks.part(i).x()) << ","
                << static_cast<int>(f.landmarks.part(i).y());
         }
-        js << "]}";
+        js << "],\"pose\":";
+        if (pose) {
+            js << "{\"valid\":" << (pose->valid ? "true" : "false")
+               << std::fixed << std::setprecision(1)
+               << ",\"yaw\":" << pose->yaw
+               << ",\"pitch\":" << pose->pitch
+               << ",\"roll\":" << pose->roll
+               << std::setprecision(2)
+               << ",\"inferenceMs\":" << pose->inferenceMs
+               << ",\"faceWidth\":" << pose->faceWidth
+               << ",\"faceHeight\":" << pose->faceHeight
+               << ",\"faceAspect\":" << pose->faceAspect
+               << ",\"cropWidth\":" << pose->cropWidth
+               << ",\"cropHeight\":" << pose->cropHeight
+               << ",\"cropAspect\":" << pose->cropAspect
+               << ",\"range\":\""
+               << (pose->range == HeadPoseRange::Normal ? "normal" :
+                   pose->range == HeadPoseRange::Wide ? "wide" : "invalid")
+               << "\""
+               << "}";
+        } else {
+            js << "null";
+        }
+        js << "}";
     }
     js << "]";
     return js.str();
@@ -874,50 +712,6 @@ std::string EnrollmentWizard::FacesToJson(
 // ============================================================================
 // Pull-model frame delivery (capture/liveness → frame thread)
 // ============================================================================
-
-void EnrollmentWizard::SaveAntiSpoofFailFrame(const dlib::matrix<dlib::rgb_pixel>& frame,
-                                              float score) {
-    static int s_diagSeq = 0;
-    if (s_diagSeq >= 10) return;   // diagnostic sink: keep at most 10 files
-    if (frame.size() == 0) return;
-
-    std::wstring dir = m_dataDir + L"\\diag";
-    CreateDirectoryW(dir.c_str(), nullptr);
-    wchar_t name[64];
-    swprintf(name, 64, L"\\aspoof_fail_%d_%+.1f.bmp", ++s_diagSeq, score);
-    std::wstring path = dir + name;
-
-    int w = static_cast<int>(frame.nc());
-    int h = static_cast<int>(frame.nr());
-    uint32_t rowSize = (static_cast<uint32_t>(w) * 3 + 3) & ~3u;
-    uint32_t pixelBytes = rowSize * static_cast<uint32_t>(h);
-    uint32_t fileSize = 54 + pixelBytes;
-
-    std::ofstream f(path, std::ios::binary);
-    if (!f) return;
-    uint8_t hdr[54] = {};
-    hdr[0] = 'B'; hdr[1] = 'M';
-    memcpy(hdr + 2, &fileSize, 4);
-    uint32_t off = 54;        memcpy(hdr + 10, &off, 4);
-    uint32_t hdrSize = 40;    memcpy(hdr + 14, &hdrSize, 4);
-    int32_t w32 = w;          memcpy(hdr + 18, &w32, 4);
-    int32_t h32 = h;          memcpy(hdr + 22, &h32, 4);
-    uint16_t planes = 1;      memcpy(hdr + 26, &planes, 2);
-    uint16_t bpp = 24;        memcpy(hdr + 28, &bpp, 2);
-    f.write(reinterpret_cast<const char*>(hdr), 54);
-
-    std::vector<uint8_t> row(rowSize);
-    for (int y = h - 1; y >= 0; y--) {   // BMP is bottom-up
-        for (int x = 0; x < w; x++) {
-            const auto& p = frame(y, x);
-            row[x * 3 + 0] = p.blue;
-            row[x * 3 + 1] = p.green;
-            row[x * 3 + 2] = p.red;
-        }
-        f.write(reinterpret_cast<const char*>(row.data()), rowSize);
-    }
-    FACELOGIN_INFO(L"Saved anti-spoof fail frame: %s (score=%.2f)", path.c_str(), score);
-}
 
 bool EnrollmentWizard::RequestFreshFrame(dlib::matrix<dlib::rgb_pixel>& outFrame,
                                          DWORD budgetMs) {
@@ -1011,28 +805,6 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 if (asLandmarks.num_parts() == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(33)); continue; }
 
                 float score = m_antiSpoof->Predict(frame, asLandmarks);
-                // Diagnostics: log the anti-spoof input geometry + frame
-                // brightness. A collapsed score (normally ≈ +3..+6, spoof-
-                // classified ≈ -1..-4) can then be attributed to a bad crop
-                // (bbox tiny / off-center → upscaled blur, or margin
-                // overflowing the frame edge → black border) vs a bad frame
-                // (dark / blown-out / frozen).
-                {
-                    dlib::rectangle r = asLandmarks.get_rect();
-                    long long lumSum = 0;
-                    long lumSamples = 0;
-                    for (long y = 0; y < frame.nr(); y += 32) {
-                        for (long x = 0; x < frame.nc(); x += 32) {
-                            const auto& p = frame(y, x);
-                            lumSum += (p.red + p.green + p.blue) / 3;
-                            lumSamples++;
-                        }
-                    }
-                    FACELOGIN_INFO(L"Anti-spoof input: bbox=%ldx%ld@(%ld,%ld) frame=%ldx%ld lum=%.1f",
-                                   r.width(), r.height(), r.left(), r.top(),
-                                   frame.nc(), frame.nr(),
-                                   lumSamples ? static_cast<double>(lumSum) / lumSamples : 0.0);
-                }
                 totalChecked++;
                 // Map the config slider onto the current model's score scale
                 // (facenox logit-diff vs OULU pixel-mean) — see
@@ -1040,12 +812,6 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                 float effThr = AntiSpoofEffectiveThreshold(m_antiSpoofThreshold,
                                                            m_antiSpoof->IsFacenoxMode());
                 if (score >= effThr) passCount++; // model-mapped threshold
-                if (score < effThr) {
-                    // Diagnostics: keep the exact failing frame for inspection.
-                    SaveAntiSpoofFailFrame(frame, score);
-                }
-                FACELOGIN_INFO(L"Enrollment anti-spoof frame %d: score=%.3f thr=%.2f (pass=%d)",
-                              totalChecked, score, effThr, passCount);
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
             }
             livenessPassed = (totalChecked > 0 && passCount >= passRequired);
@@ -1106,10 +872,6 @@ bool EnrollmentWizard::CaptureFaceSamples() {
 
         // Phase 2: Collect face samples
         int failCount = 0;
-        // Diagnostics (卡90% 排查): log when we wait for the first frame, so we
-        // can distinguish "frame thread dead (m_latestFrame empty forever)" from
-        // "frames exist but detection/embedding keeps failing".
-        long frameWaitCount = 0;
         // Hard cap on Phase 2 wall time. A normal capture of 10 samples takes
         // ~2.5s (150ms sleep + ~100ms inference each); 8s gives >3x headroom
         // while guaranteeing the loop ALWAYS terminates — so even if the frame
@@ -1130,21 +892,12 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             // frame on demand (pull mode) instead of streaming 30fps, so no
             // redundant full-frame conversion/copy runs during capture.
             dlib::matrix<dlib::rgb_pixel> frame;
-            bool haveFrame = RequestFreshFrame(frame);
+            bool haveFrame = RequestFreshFrame(frame, 1500);
             if (!haveFrame) {
-                if ((frameWaitCount++ % 30) == 0) {
-                    // Sparse (≈1/s): distinguishes "frame thread dead (no frame
-                    // delivered)" from "frames exist but detection/embedding
-                    // keeps failing".
-                    FACELOGIN_INFO(L"Enrollment sample %d: waiting for frame (count=%ld)",
-                                   i + 1, frameWaitCount);
-                }
                 std::this_thread::sleep_for(std::chrono::milliseconds(33));
                 continue;
             }
-
             // Detect with SCRFD (the only detector), extract 106-point landmarks.
-            auto tSample = std::chrono::steady_clock::now();
             dlib::full_object_detection landmarks;
             auto onnxDet = m_onnxDetector->DetectLargestFace(frame);
             if (onnxDet) {
@@ -1154,12 +907,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
                                      static_cast<long>(onnxDet->y2));
                 m_detector->DetectLandmarks(frame, rect, landmarks);
             }
-            auto tDet = std::chrono::steady_clock::now();
             if (landmarks.num_parts() == 0) {
-                // Diagnostics: no face landmarks this iteration (sparse log).
-                if ((failCount % 50) == 0) {
-                    FACELOGIN_INFO(L"Enrollment sample %d: no landmarks (failCount=%d)", i + 1, failCount);
-                }
                 // 80 × 100ms ≈ 8s of consecutive detection failures — the
                 // Phase-2 total timeout already bounds the whole loop, so this
                 // is a belt-and-suspenders early exit.
@@ -1171,12 +919,7 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             // Compute the embedding with InsightFace ONNX (the only recognizer).
             // Store the FULL 512-D embedding (no truncation).
             auto onnxEmb = m_onnxRecognizer->ComputeEmbedding(frame, landmarks);
-            auto tEmb = std::chrono::steady_clock::now();
             if (onnxEmb.empty()) {
-                // Diagnostics: embedding returned empty (sparse log).
-                if ((failCount % 50) == 0) {
-                    FACELOGIN_INFO(L"Enrollment sample %d: embedding empty (failCount=%d)", i + 1, failCount);
-                }
                 if (++failCount > 80) { m_capturing = false; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
@@ -1189,20 +932,6 @@ bool EnrollmentWizard::CaptureFaceSamples() {
             failCount = 0;
             m_embeddings.push_back(std::move(emb));
             m_samplesCollected = ++i;
-            // Diagnostics (卡90% 排查): per-sample phase timing. A single slow
-            // ONNX run is ~20-40ms; if ANY phase blows past 150ms on the user's
-            // machine, that's the sample loop stalling (and with it the UI
-            // starving on lock-wait + render). Sparse (only when slow), so no
-            // log spam on healthy runs.
-            {
-                long long detUs  = std::chrono::duration_cast<std::chrono::microseconds>(tDet  - tSample).count();
-                long long embUs  = std::chrono::duration_cast<std::chrono::microseconds>(tEmb  - tDet).count();
-                long long totalUs = std::chrono::duration_cast<std::chrono::microseconds>(tEmb - tSample).count();
-                if (detUs > 150000 || embUs > 150000 || totalUs > 150000) {
-                    FACELOGIN_WARN(L"Enrollment sample %d SLOW: detect=%lldus embed=%lldus total=%lldus",
-                                   i, detUs, embUs, totalUs);
-                }
-            }
             FACELOGIN_INFO(L"Enrollment sample collected: %d/%d", i, TARGET_SAMPLES);
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
         }
@@ -1298,12 +1027,11 @@ bool EnrollmentWizard::ValidatePassword(const std::wstring& password) {
                              LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &hToken);
         if (ok && hToken) {
             CloseHandle(hToken);
-            FACELOGIN_INFO(L"ValidatePassword: MSA online validation OK (%s)", sessionUpn.c_str());
+            FACELOGIN_INFO(L"ValidatePassword: MSA online validation succeeded");
             return true;
         }
         DWORD err = GetLastError();
-        FACELOGIN_WARN(L"ValidatePassword: MSA interactive logon failed for %s (err=%lu)",
-                       sessionUpn.c_str(), err);
+        FACELOGIN_WARN(L"ValidatePassword: MSA interactive logon failed (err=%lu)", err);
         return false;
     }
 
@@ -1315,8 +1043,7 @@ bool EnrollmentWizard::ValidatePassword(const std::wstring& password) {
         CloseHandle(hToken);
         return true;
     }
-    FACELOGIN_WARN(L"ValidatePassword: local logon failed for %s (err=%lu)",
-                   m_username.c_str(), GetLastError());
+    FACELOGIN_WARN(L"ValidatePassword: local logon failed (err=%lu)", GetLastError());
     return false;
 }
 
@@ -1330,12 +1057,10 @@ bool EnrollmentWizard::SaveEnrollmentNoPassword(const std::wstring& label) {
     // save — the user must be the logged-on owner of this account.
     std::wstring tokenSid = GetCurrentProcessUserSid();
     if (tokenSid.empty() || tokenSid != m_sid) {
-        FACELOGIN_ERROR(L"Passwordless enrollment refused: token SID %s != enrolled SID %s",
-                        tokenSid.c_str(), m_sid.c_str());
+        FACELOGIN_ERROR(L"Passwordless enrollment refused: session identity mismatch");
         return false;
     }
-    FACELOGIN_INFO(L"Passwordless enrollment confirmed for %s (session identity match)",
-                   m_username.c_str());
+    FACELOGIN_INFO(L"Passwordless enrollment confirmed by session identity");
     return SaveEnrollmentImpl(L"", /*passwordless=*/true, label);
 }
 
@@ -1376,8 +1101,7 @@ int EnrollmentWizard::GetPasswordlessState() const {
     // 1) Session identity must be the account being enrolled.
     std::wstring tokenSid = GetCurrentProcessUserSid();
     if (tokenSid.empty() || tokenSid != m_sid) {
-        FACELOGIN_WARN(L"GetPasswordlessState: identity mismatch — tokenSid='%s' vs m_sid='%s' (upn='%s' acct='%s') → state=0",
-                       tokenSid.c_str(), m_sid.c_str(), m_upn.c_str(), m_accountType.c_str());
+        FACELOGIN_WARN(L"GetPasswordlessState: session identity mismatch → state=0");
         return 0;
     }
 
@@ -1386,8 +1110,7 @@ int EnrollmentWizard::GetPasswordlessState() const {
     // online password), so a SAM probe can falsely report "no password" for an
     // MSA account whose local cache was never written. Ask the user instead.
     if (m_accountType == "msa") {
-        FACELOGIN_INFO(L"GetPasswordlessState: MSA account (upn='%s') → state=2 (user confirm)",
-                       m_upn.c_str());
+        FACELOGIN_INFO(L"GetPasswordlessState: MSA account → state=2 (user confirm)");
         return 2;
     }
 
@@ -1422,8 +1145,6 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
     // Same-person distances are typically well below 0.80 (the ONNX boundary);
     // different people exceed it.
     //
-    // The cap is calibrated via EmbeddingThresholdForDim: 512-D InsightFace
-    // ONNX uses 0.80 (measured same-person boundary, see credential_store.h).
     {
         double totalDist = 0.0;
         int pairs = 0;
@@ -1439,11 +1160,9 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
             }
         }
         double avgPairDist = (pairs > 0) ? totalDist / pairs : 0.0;
-        // All samples share one dimensionality (enrollment uses one recognizer).
-        size_t dim = m_embeddings.empty() ? 0 : static_cast<size_t>(m_embeddings[0].size());
-        float maxAllowed = EmbeddingThresholdForDim(0.45f, dim);
-        FACELOGIN_INFO(L"Enrollment consistency: avg pairwise dist=%.4f (max=%.3f, %d pairs, %zu-D)",
-                      avgPairDist, maxAllowed, pairs, dim);
+        const float maxAllowed = 0.45f;
+        FACELOGIN_INFO(L"Enrollment consistency: avg pairwise dist=%.4f (max=%.3f, %d pairs)",
+                      avgPairDist, maxAllowed, pairs);
         if (avgPairDist > maxAllowed) {
             FACELOGIN_ERROR(L"Embedding consistency check failed: avg pairwise dist %.4f > %.3f. "
                            L"Samples may be from different faces.", avgPairDist, maxAllowed);
@@ -1462,6 +1181,15 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
             avgEmbedding += emb;
         }
         avgEmbedding /= static_cast<float>(m_embeddings.size());
+
+        // The recognizer returns unit vectors, but averaging several samples
+        // shortens the resultant vector. Re-normalize so V5 templates keep
+        // the same Euclidean geometry as a single 512-D inference.
+        float avgNorm = 0.0f;
+        for (long i = 0; i < avgEmbedding.size(); ++i)
+            avgNorm += avgEmbedding(i) * avgEmbedding(i);
+        avgNorm = std::sqrt(avgNorm);
+        if (avgNorm > 1e-8f) avgEmbedding /= avgNorm;
     }
 
     m_store.LoadDatabase();
@@ -1483,8 +1211,7 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
         std::vector<uint8_t> protectedPassword;
         if (passwordless) {
             protectedPassword = { facelogin::kPasswordlessSentinelByte };
-            FACELOGIN_INFO(L"Storing passwordless enrollment (sentinel) for %s",
-                           m_username.c_str());
+            FACELOGIN_INFO(L"Storing passwordless enrollment sentinel");
         } else {
             protectedPassword = DpapiUtil::Protect(
                 reinterpret_cast<const uint8_t*>(password.c_str()),
@@ -1492,27 +1219,27 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
             if (protectedPassword.empty()) { FACELOGIN_ERROR(L"DPAPI encryption failed"); return false; }
         }
         if (!m_store.AddFace(m_username, m_upn, m_sid, protectedPassword, ef, label, &newFaceId)) {
-            FACELOGIN_ERROR(L"Failed to create enrollment for %s", m_username.c_str());
+            FACELOGIN_ERROR(L"Failed to create enrollment record");
             return false;
         }
     } else {
         // Append a face to an existing account. AddFace ignores the password
         // argument here, so the stored password/sentinel is preserved.
         if (m_store.GetUsers()[idx].faces.size() >= facelogin::kMaxFacesPerUser) {
-            FACELOGIN_ERROR(L"Cannot append: %s already has %zu faces (max %zu)",
-                            m_username.c_str(), m_store.GetUsers()[idx].faces.size(),
+            FACELOGIN_ERROR(L"Cannot append: account already has %zu faces (max %zu)",
+                            m_store.GetUsers()[idx].faces.size(),
                             facelogin::kMaxFacesPerUser);
             return false;
         }
         if (!m_store.AddFace(m_username, m_upn, m_sid, {}, ef, label, &newFaceId)) {
-            FACELOGIN_ERROR(L"Failed to append face for %s", m_username.c_str());
+            FACELOGIN_ERROR(L"Failed to append face to enrollment record");
             return false;
         }
     }
     if (!m_store.SaveDatabase()) { FACELOGIN_ERROR(L"Failed to save database"); return false; }
 
-    FACELOGIN_INFO(L"Enrollment saved for: %s (face #%u, emb=%zu-D%s)",
-                   m_username.c_str(), newFaceId, ef.size(),
+    FACELOGIN_INFO(L"Enrollment saved (face #%u, emb=%zu-D%s)",
+                   newFaceId, ef.size(),
                    passwordless ? L", passwordless" : L"");
 
     // Notify service to reload database
@@ -1568,8 +1295,7 @@ bool EnrollmentWizard::SaveEnrollmentAppend(const std::wstring& label) {
     // passwordless flow). No password is required for an append.
     std::wstring tokenSid = GetCurrentProcessUserSid();
     if (tokenSid.empty() || tokenSid != m_sid) {
-        FACELOGIN_ERROR(L"Face append refused: token SID %s != enrolled SID %s",
-                        tokenSid.c_str(), m_sid.c_str());
+        FACELOGIN_ERROR(L"Face append refused: session identity mismatch");
         return false;
     }
     return SaveEnrollmentImpl(L"", /*passwordless=*/false, label);
@@ -1630,8 +1356,8 @@ int EnrollmentWizard::GetAccountTypeChanged() {
     if (!sessionIsMsa) {
         // Current account is local. Flag if the record still carries an MSA email.
         if (rec.upn.find(L'@') != std::wstring::npos) {
-            FACELOGIN_INFO(L"GetAccountTypeChanged: stale MSA→local record for %s (UPN=%s, faces=%zu)",
-                           rec.username.c_str(), rec.upn.c_str(), rec.faces.size());
+            FACELOGIN_INFO(L"GetAccountTypeChanged: stale MSA→local record (faces=%zu)",
+                           rec.faces.size());
             return 1;
         }
         return 0;
@@ -1640,9 +1366,8 @@ int EnrollmentWizard::GetAccountTypeChanged() {
     // Current account is MSA. Flag if the record UPN is empty (local-era) or a
     // different email than the current session's MSA identity.
     if (rec.upn.empty() || rec.upn != curUpn) {
-        FACELOGIN_INFO(L"GetAccountTypeChanged: stale local→MSA record for %s (stored UPN=%s, current=%s, faces=%zu)",
-                       rec.username.c_str(), rec.upn.empty() ? L"<empty>" : rec.upn.c_str(),
-                       curUpn.c_str(), rec.faces.size());
+        FACELOGIN_INFO(L"GetAccountTypeChanged: stale local→MSA record (storedUpn=%d, faces=%zu)",
+                       rec.upn.empty() ? 0 : 1, rec.faces.size());
         return 2;
     }
     return 0;
@@ -1721,10 +1446,8 @@ bool EnrollmentWizard::RefreshAccountIdentity(const std::wstring& password) {
     }
 
     NotifyServiceReload();
-    FACELOGIN_INFO(L"RefreshAccountIdentity: refreshed identity of %s (UPN=%s%s, faces preserved)",
-                   m_username.c_str(),
-                   newUpn.empty() ? L"<cleared>" : newUpn.c_str(),
-                   state == 2 ? L", MSA" : L", local");
+    FACELOGIN_INFO(L"RefreshAccountIdentity: identity refreshed (upnPresent=%d accountKind=%s, faces preserved)",
+                   newUpn.empty() ? 0 : 1, state == 2 ? L"online" : L"local");
     return true;
 }
 
@@ -1779,8 +1502,8 @@ bool EnrollmentWizard::ClearStaleAccountUpn() {
     }
 
     NotifyServiceReload();
-    FACELOGIN_INFO(L"ClearStaleAccountUpn: cleared stale MSA UPN for %s (faces=%zu, password untouched)",
-                   rec.username.c_str(), rec.faces.size());
+    FACELOGIN_INFO(L"ClearStaleAccountUpn: cleared stale MSA UPN (faces=%zu, password untouched)",
+                   rec.faces.size());
     return true;
 }
 
@@ -1818,7 +1541,7 @@ std::string EnrollmentWizard::GetCameraList() {
 
 // Console version — bump with each release. Used to decide whether to show the
 // About-card star hint again (it reappears on every new version).
-static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"1.9.0";
+static const wchar_t FACELOGIN_CONSOLE_VERSION[] = L"2.0.0";
 // Registry value holding the version the user last saw the About card at.
 static const wchar_t REGVAL_ABOUT_SEEN_VERSION[] = L"AboutSeenVersion";
 
@@ -1849,7 +1572,7 @@ void EnrollmentWizard::SetAboutSeen(bool seen) {
 }
 
 std::string EnrollmentWizard::GetConsoleVersion() const {
-    // Version string is ASCII ("1.6.0"); narrow conversion is lossless.
+    // Version string is ASCII; narrow conversion is lossless.
     std::wstring wv = FACELOGIN_CONSOLE_VERSION;
     return std::string(wv.begin(), wv.end());
 }
@@ -1885,10 +1608,6 @@ bool EnrollmentWizard::SetConfig(const std::string& json) {
         FACELOGIN_WARN(L"SetConfig: runtime fallback to blink (anti-spoof model unavailable)");
         m_livenessMethod = LivenessMethod::Blink;
     }
-
-    // Propagate the low-light enhancement toggle to the models (hot reload).
-    if (m_onnxRecognizer) m_onnxRecognizer->SetLowLightEnhance(newConfig.low_light_enhance);
-    if (m_antiSpoof) m_antiSpoof->SetLowLightEnhance(newConfig.low_light_enhance);
 
     // Notify service to reload config
     HANDLE hPipe = CreateFileW(ipc::PIPE_NAME, GENERIC_WRITE, 0, nullptr,
@@ -1947,13 +1666,6 @@ std::string EnrollmentWizard::GetLogLines() {
     }
     ss << "]";
     return ss.str();
-}
-
-void EnrollmentWizard::LogDiagnostic(const std::string& message) {
-    // Frontend→log bridge: write the JS-provided message into enrollment.log.
-    // Used to record frontend-side timing/stall events (卡90% 排查) that the
-    // C++ logger otherwise can't see.
-    FACELOGIN_INFO(L"[JS-DIAG] %hs", message.c_str());
 }
 
 // Minimal JSONL field extractor for the unknown-face events file (fields are

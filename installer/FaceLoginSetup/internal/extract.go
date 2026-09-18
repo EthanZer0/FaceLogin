@@ -131,6 +131,10 @@ func ExtractAll(destDir string, progressFn func(step, total int, name string)) e
 // enrolled face database) and log/ (logs) subdirectories — i.e. a full purge.
 // When false, only program files are removed and user data is preserved.
 func RemoveInstalledFiles(destDir string, removeUserData bool) (int, error) {
+	if EmbeddedFS == nil {
+		return removeKnownInstalledFiles(destDir, removeUserData)
+	}
+
 	removed := 0
 	var firstErr error
 	recordErr := func(err error) {
@@ -149,9 +153,10 @@ func RemoveInstalledFiles(destDir string, removeUserData bool) (int, error) {
 			"FaceLoginService.exe",
 			"FaceLoginCredentialProvider.dll",
 			"FaceLoginConsole.exe",
+			"Uninstall.exe",
 		} {
 			p := filepath.Join(destDir, name)
-			if FileExists(p) {
+			if FileExists(p) && !isCurrentExecutable(p) {
 				if err := os.Remove(p); err != nil {
 					recordErr(err)
 				} else {
@@ -175,12 +180,23 @@ func RemoveInstalledFiles(destDir string, removeUserData bool) (int, error) {
 		} else {
 			dstPath = filepath.Join(destDir, name)
 		}
-		if FileExists(dstPath) {
+		if FileExists(dstPath) && !isCurrentExecutable(dstPath) {
 			if err := os.Remove(dstPath); err != nil {
 				recordErr(err)
 			} else {
 				removed++
 			}
+		}
+	}
+	// Uninstall.exe is deployed from the running Setup executable,
+	// rather than the embedded resources tree. A standalone uninstaller skips
+	// itself here and lets its temporary cleanup worker remove it after exit.
+	uninstallerPath := filepath.Join(destDir, "Uninstall.exe")
+	if FileExists(uninstallerPath) && !isCurrentExecutable(uninstallerPath) {
+		if err := os.Remove(uninstallerPath); err != nil {
+			recordErr(err)
+		} else {
+			removed++
 		}
 	}
 	for _, entry := range modelEntries {
@@ -235,6 +251,90 @@ func RemoveInstalledFiles(destDir string, removeUserData bool) (int, error) {
 	}
 
 	return removed, firstErr
+}
+
+// removeKnownInstalledFiles is used by the lightweight standalone
+// uninstaller. Keeping only names and directory conventions here avoids
+// embedding the install payload merely to discover which files to remove.
+func removeKnownInstalledFiles(destDir string, removeUserData bool) (int, error) {
+	removed := 0
+	var firstErr error
+	recordErr := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	removeFile := func(path string) {
+		if !FileExists(path) || isCurrentExecutable(path) {
+			return
+		}
+		if err := os.Remove(path); err != nil {
+			recordErr(err)
+			return
+		}
+		removed++
+	}
+
+	for _, name := range []string{
+		"FaceLoginConsole.exe",
+		"FaceLoginCredentialProvider.dll",
+		"FaceLoginService.exe",
+		"abseil_dll.dll",
+		"libgcc_s_seh-1.dll",
+		"libgfortran-5.dll",
+		"liblapack.dll",
+		"libprotobuf.dll",
+		"libprotobuf-lite.dll",
+		"libquadmath-0.dll",
+		"libwinpthread-1.dll",
+		"onnxruntime.dll",
+		"onnxruntime_providers_shared.dll",
+		"openblas.dll",
+		"re2.dll",
+		"Uninstall.exe",
+	} {
+		removeFile(filepath.Join(destDir, name))
+	}
+
+	for _, dirName := range []string{"models", "locales"} {
+		dir := filepath.Join(destDir, dirName)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				removeFile(filepath.Join(dir, entry.Name()))
+			}
+		}
+		if remaining, err := os.ReadDir(dir); err == nil && len(remaining) == 0 {
+			recordErr(os.Remove(dir))
+		}
+	}
+
+	if removeUserData {
+		for _, sub := range []string{"data", "log"} {
+			dir := filepath.Join(destDir, sub)
+			if !DirExists(dir) {
+				continue
+			}
+			if err := os.RemoveAll(dir); err != nil {
+				recordErr(err)
+			} else {
+				removed++
+			}
+		}
+	}
+
+	return removed, firstErr
+}
+
+func isCurrentExecutable(path string) bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(exe), filepath.Clean(path))
 }
 
 // RemoveInstalledDir removes the install directory itself, but ONLY if it is

@@ -1,9 +1,12 @@
+//go:build !uninstaller
+
 package main
 
 import (
-	"embed"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"FaceLoginSetup/internal"
 
@@ -12,20 +15,13 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
-//go:embed all:frontend/dist
-var assets embed.FS
-
-//go:embed all:resources
-var resources embed.FS
-
-const SERVICE_NAME = "FaceLoginService"
-
-// Registry paths
-const REG_KEY = `SOFTWARE\FaceLogin`
-const REGVAL_DATA_PATH = "DataPath"
-const REGVAL_INSTALL_PATH = "InstallPath"
-
 func main() {
+	// Handle the cleanup worker before elevation/Wails startup so it never opens
+	// a UI or a console window.
+	if internal.RunUninstallCleanup(os.Args[1:]) {
+		return
+	}
+
 	// Check administrator — if not elevated, relaunch as admin
 	if !internal.IsAdmin() {
 		err := internal.Elevate()
@@ -86,19 +82,19 @@ func main() {
 	// separated list rendered as plain bullets (see notice-zh/en.json).
 	// =========================================================================
 	internal.NoticeEnabled = true
-	internal.NoticeVersion = "1.9.0"
+	internal.NoticeVersion = "2.0.0"
 	internal.NoticeTitle = "installer.notice.title"
 	internal.NoticeBody = "installer.notice.body"
-	// Initialize the embedded resource filesystem in the internal package
-	internal.EmbeddedFS = resources
+	// Initialize the embedded resource filesystem in the internal package.
+	installEmbeddedResources()
 
-	app := NewApp()
+	app := NewApp(strings.EqualFold(filepath.Base(os.Args[0]), "Uninstall.exe"))
 
 	err := wails.Run(&options.App{
-		Title:        "FaceLogin Setup",
-		Width:        640,
-		Height:       520,
-		DisableResize: true, // fixed-size window — no edge resize, no maximize
+		Title:            "FaceLogin Setup",
+		Width:            640,
+		Height:           520,
+		DisableResize:    true, // fixed-size window — no edge resize, no maximize
 		WindowStartState: options.Normal,
 		AssetServer: &assetserver.Options{
 			Assets: assets,

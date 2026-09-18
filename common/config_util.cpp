@@ -125,10 +125,6 @@ std::string ConfigToJson(const AppConfig& cfg) {
     ss << "  "; jsonWriteString(ss, "match_threshold"); ss << ": " << cfg.match_threshold << ",\n";
     ss << "  "; jsonWriteString(ss, "anti_spoof_threshold"); ss << ": " << cfg.anti_spoof_threshold << ",\n";
     ss << "  "; jsonWriteString(ss, "blink_glasses_mode"); ss << ": " << (cfg.blink_glasses_mode ? "true" : "false") << ",\n";
-    ss << "  "; jsonWriteString(ss, "low_light_enhance"); ss << ": " << (cfg.low_light_enhance ? "true" : "false") << ",\n";
-    ss << "  "; jsonWriteString(ss, "face_exposure_control"); ss << ": " << (cfg.face_exposure_control ? "true" : "false") << ",\n";
-    ss << "  "; jsonWriteString(ss, "face_exposure_target"); ss << ": " << cfg.face_exposure_target << ",\n";
-    ss << "  "; jsonWriteString(ss, "face_exposure_band"); ss << ": " << cfg.face_exposure_band << ",\n";
     ss << "  "; jsonWriteString(ss, "unload_models_after_auth"); ss << ": " << (cfg.unload_models_after_auth ? "true" : "false") << ",\n";
     ss << "  "; jsonWriteString(ss, "camera_rotation"); ss << ": " << cfg.camera_rotation << ",\n";
     ss << "  "; jsonWriteString(ss, "capture_unknown_faces"); ss << ": " << (cfg.capture_unknown_faces ? "true" : "false") << ",\n";
@@ -152,11 +148,7 @@ AppConfig ConfigFromJson(const std::string& json) {
     cfg.match_threshold = jsonGetFloat(json, "match_threshold", 0.75f);
     cfg.anti_spoof_threshold = jsonGetFloat(json, "anti_spoof_threshold", 0.30f);
     cfg.blink_glasses_mode = (JsonGetString(json, "blink_glasses_mode") == "true");
-    cfg.low_light_enhance = (JsonGetString(json, "low_light_enhance") == "true");
     cfg.unload_models_after_auth = (JsonGetString(json, "unload_models_after_auth") == "true");
-    cfg.face_exposure_control = (JsonGetString(json, "face_exposure_control") == "true");
-    cfg.face_exposure_target = jsonGetFloat(json, "face_exposure_target", 110.0f);
-    cfg.face_exposure_band = jsonGetFloat(json, "face_exposure_band", 15.0f);
 
     int rotation = jsonGetInt(json, "camera_rotation", 0);
     // Only accept 0/90/180/270; anything else silently does nothing in
@@ -226,7 +218,7 @@ bool SaveConfig(const std::wstring& dataDir, const AppConfig& cfg) {
     std::string content = ConfigToJson(cfg);
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file.is_open()) {
-        FACELOGIN_ERROR(L"Failed to write config.json: %s", path.c_str());
+        FACELOGIN_ERROR(L"Failed to write config.json");
         return false;
     }
     file.write(content.c_str(), content.size());

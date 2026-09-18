@@ -115,6 +115,7 @@ public:
 private:
     static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT HandleMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
+    void ApplyDpiChange(HWND hWnd, const RECT& suggestedRect);
 };
 
 class HostObject : public IDispatch {

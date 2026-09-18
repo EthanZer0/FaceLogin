@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FaceLogin VERSION 1.6.0 LANGUAGES CXX)
+project(FaceLogin VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,12 +7,25 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(FACELOGIN_BUILD_VISION_COMPONENTS
        "Build the face service and enrollment console (requires dlib/ONNX Runtime)"
        ON)
-
-# dlib and ONNX Runtime are only needed by the vision components. Keeping the
-# credential provider independently buildable makes native locale changes
-# quick to validate and enables a lightweight CI job.
 if(FACELOGIN_BUILD_VISION_COMPONENTS)
     find_package(dlib CONFIG REQUIRED)
+
+    # The shipped applications operate on camera buffers and ONNX tensors; they do
+    # not use dlib's file-image loaders.  The vcpkg dlib target advertises JPEG,
+    # PNG, and zlib as unconditional transitive link items, which makes
+    # z-applocal copy their DLLs even though the final binaries do not import them.
+    # Keep only the numerical BLAS/LAPACK and Windows system dependencies needed by
+    # this application in dlib's link interface.
+    get_target_property(FACELOGIN_DLIB_LINK_LIBRARIES
+        dlib::dlib INTERFACE_LINK_LIBRARIES)
+    if(FACELOGIN_DLIB_LINK_LIBRARIES)
+        list(FILTER FACELOGIN_DLIB_LINK_LIBRARIES INCLUDE
+             REGEX "BLAS::BLAS|LAPACK::LAPACK|ws2_32|winmm")
+        set_property(TARGET dlib::dlib PROPERTY
+            INTERFACE_LINK_LIBRARIES "${FACELOGIN_DLIB_LINK_LIBRARIES}")
+    endif()
+    unset(FACELOGIN_DLIB_LINK_LIBRARIES)
+
     find_package(onnxruntime CONFIG REQUIRED)
 endif()
 

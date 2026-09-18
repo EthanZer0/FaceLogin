@@ -93,12 +93,6 @@ bool WebcamCapture::Initialize(int preferredWidth, int preferredHeight,
         return false;
     }
 
-    // Camera control interfaces for face-exposure auto-tuning (1.9.0): QI the
-    // legacy UVC control interfaces off the media source. Best effort — null
-    // just means the exposure loop runs on digital gain alone.
-    m_pSource->QueryInterface(IID_IAMVideoProcAmp, reinterpret_cast<void**>(&m_vpa));
-    m_pSource->QueryInterface(IID_IAMCameraControl, reinterpret_cast<void**>(&m_cc));
-
     m_initialized = true;
     FACELOGIN_INFO(L"Webcam initialized: %dx%d  format=%s",
                    m_width, m_height, m_isNV12 ? L"NV12" : L"YUY2");
@@ -260,7 +254,7 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
     for (DWORD i = 0; ; ++i) {
         IMFMediaType* pNative = nullptr;
         hr = m_pReader->GetNativeMediaType(
-            MF_SOURCE_READER_FIRST_VIDEO_STREAM, i, &pNative);
+            static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), i, &pNative);
         if (FAILED(hr)) break;   // MF_E_NO_MORE_TYPES ends the list
 
         GUID subtype = GUID_NULL;
@@ -303,7 +297,7 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
             pYuy2->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2);
             MFSetAttributeSize(pYuy2, MF_MT_FRAME_SIZE, mjpgW, mjpgH);
             hr = m_pReader->SetCurrentMediaType(
-                MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, pYuy2);
+                static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), nullptr, pYuy2);
             pYuy2->Release();
         }
         if (SUCCEEDED(hr)) {
@@ -318,7 +312,7 @@ bool WebcamCapture::ConfigureReader(int width, int height) {
 
     if (pBestNative) {
         hr = m_pReader->SetCurrentMediaType(
-            MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, pBestNative);
+            static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), nullptr, pBestNative);
         if (SUCCEEDED(hr)) {
             m_isNV12 = bestIsNV12;
             m_width = static_cast<int>(bestW);
@@ -395,7 +389,7 @@ bool WebcamCapture::IsFrameReady() {
     IMFSample* pSample = nullptr;
 
     HRESULT hr = m_pReader->ReadSample(
-        MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0,
+        static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0,
         &streamIndex, &flags, &timestamp, &pSample);
 
     if (pSample) pSample->Release();
@@ -568,27 +562,17 @@ void WebcamCapture::Shutdown() {
     // would double-Release them in two teardown workers (crash).
     IMFMediaSource* src = nullptr;
     IMFSourceReader* rdr = nullptr;
-    IAMVideoProcAmp* vpa = nullptr;
-    IAMCameraControl* cc = nullptr;
     {
         std::lock_guard<std::mutex> lock(m_lifecycleMutex);
         src = m_pSource;
         rdr = m_pReader;
-        vpa = m_vpa;
-        cc = m_cc;
         m_pSource = nullptr;
         m_pReader = nullptr;
-        m_vpa = nullptr;
-        m_cc = nullptr;
         m_initialized = false;
         m_consecutiveFailures = 0;
     }
 
     if (!src) return;
-    // Camera-control interfaces are independent refs — release them now (they
-    // must not be touched by the exposure controller past this point).
-    if (vpa) vpa->Release();
-    if (cc) cc->Release();
 
     auto done = std::make_shared<std::atomic<bool>>(false);
     std::thread worker([src, rdr, done]() {

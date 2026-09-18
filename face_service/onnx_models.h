@@ -10,20 +10,9 @@
 #include <optional>
 #include <mutex>
 #include "liveness_types.h"
+#include "../common/head_pose_types.h"
 
 namespace facelogin {
-
-// In-place low-light enhancement for a face chip. Detects darkness (mean
-// luma below kLowLightMeanThreshold) and stretches brightness so the mean
-// lands at a reference level, clamped to [0,255]. No-op for chips at normal
-// brightness. Called on the RESIZED chip before the model's own normalization
-// loop, so both InsightFace (recognizer) and DeepPixBiS (anti-spoof) see
-// brightness-normalized input in dark scenes.
-//
-// Safe by construction: only affects genuinely dark chips; a normal-brightness
-// chip is returned unchanged, so the match threshold and photo-rejection
-// boundary are untouched.
-void ApplyLowLightEnhance(dlib::matrix<dlib::rgb_pixel>& chip);
 
 // Alignment anchor selection for the 5-point arcface similarity transform.
 // OuterEye (default): uses the eye OUTER corners (landmarks 39/93) as the eye
@@ -36,19 +25,10 @@ void ApplyLowLightEnhance(dlib::matrix<dlib::rgb_pixel>& chip);
 //   with EyeCenter must be re-enrolled under the same mode.
 enum class AlignMode { OuterEye, EyeCenter };
 
-// Photometric variants tried when the original embedding fails to match.
-// They re-embed the SAME aligned chip after a light correction, expanding the
-// search space across illumination changes (warm dorm light vs cool classroom
-// light) without re-enrolling. Enrollment always stores the ORIGINAL variant.
-enum class LightVariant {
-    Original,      // untouched chip (baseline, enrolled templates live here)
-    WhiteBalance,  // Gray-World: scale R/G/B means to be equal (color temperature)
-    Brightness     // map mean luma to a reference (exposure)
-};
-
 // ONNX-based face recognition using InsightFace buffalo_s (w600k_mbf).
 // Replaces dlib ResNet-34 with the more accurate MobileFaceNet @ WebFace600K.
-// Embedding dimension: 128 (compatible with existing users.dat storage).
+// Embedding dimension: 512. The users.dat V5 record stores the vector length
+// dynamically, so existing 512-D templates remain directly compatible.
 class OnnxRecognizer {
 public:
     OnnxRecognizer() = default;
@@ -56,7 +36,8 @@ public:
 
     bool Initialize(const std::wstring& modelPath);
 
-    // Compute 128-D embedding from a face chip (already aligned, 112x112 RGB).
+    // Compute the model's 512-D embedding from a face chip (already aligned,
+    // 112x112 RGB).
     // Returns empty vector on failure.
     std::vector<float> ComputeEmbedding(const dlib::matrix<dlib::rgb_pixel>& faceChip);
 
@@ -74,30 +55,22 @@ public:
         const dlib::full_object_detection& landmarks,
         AlignMode mode);
 
-    // Photometric-variant overload: aligns the face, applies the light
-    // correction (WhiteBalance / Brightness), then embeds. Used by the
-    // recognition fallback chain when the ORIGINAL embedding fails to match —
-    // see LightVariant in onnx_models.h.
-    std::vector<float> ComputeEmbedding(
-        const dlib::matrix<dlib::rgb_pixel>& image,
-        const dlib::full_object_detection& landmarks,
-        LightVariant variant);
-
     // Euclidean distance between two embeddings.
     static float Distance(const std::vector<float>& a, const std::vector<float>& b);
     static float Distance(const std::vector<float>& a, const float* b);
 
     bool IsInitialized() const { return m_initialized; }
 
-    // Enable/disable low-light brightness normalization for dark face chips.
-    void SetLowLightEnhance(bool enable) { m_lowLightEnhance = enable; }
-
 private:
+    std::vector<float> ComputeEmbeddingAligned(
+        const dlib::matrix<dlib::rgb_pixel>& image,
+        const dlib::full_object_detection& landmarks,
+        AlignMode mode);
+
     std::unique_ptr<Ort::Env> m_env;
     std::unique_ptr<Ort::Session> m_session;
     std::unique_ptr<Ort::MemoryInfo> m_memoryInfo;
     bool m_initialized = false;
-    bool m_lowLightEnhance = false;
 
     // Input/output names (cached after session creation)
     std::string m_inputName;
@@ -174,6 +147,34 @@ private:
                                     float& outScaleX, float& outScaleY);
 };
 
+// Lightweight image-based head-pose estimator derived from 6DRepNet with a
+// MobileNetV2 backbone. It consumes an expanded crop from the original SCRFD
+// face box (never the frontalized ArcFace chip), returns a 3x3 rotation matrix,
+// and converts it to Tait-Bryan pitch/yaw/roll angles in degrees.
+class OnnxHeadPose {
+public:
+    OnnxHeadPose() = default;
+    ~OnnxHeadPose();
+
+    bool Initialize(const std::wstring& modelPath);
+    HeadPoseStats Estimate(const dlib::matrix<dlib::rgb_pixel>& image,
+                           const dlib::rectangle& faceRect);
+    bool IsInitialized() const { return m_initialized; }
+
+private:
+    static constexpr int kInputSize = 224;
+
+    std::unique_ptr<Ort::Env> m_env;
+    std::unique_ptr<Ort::Session> m_session;
+    std::unique_ptr<Ort::MemoryInfo> m_memoryInfo;
+    bool m_initialized = false;
+    std::string m_inputName;
+    std::string m_outputName;
+    std::mutex m_runMutex;
+    dlib::matrix<dlib::rgb_pixel> m_faceChip;
+    std::vector<float> m_input;
+};
+
 // Silent anti-spoofing detection.
 // Rejects printed photos, screen replays, and 3D masks. Two supported models:
 //   - facenox MiniFAS (default, 1.6.0): input 128×128 RGB, output [1,2] logits
@@ -205,15 +206,11 @@ public:
     // True when running the facenox MiniFAS model (logit-diff scoring).
     bool IsFacenoxMode() const { return m_facenoxMode; }
 
-    // Enable/disable low-light brightness normalization for dark face chips.
-    void SetLowLightEnhance(bool enable) { m_lowLightEnhance = enable; }
-
 private:
     std::unique_ptr<Ort::Env> m_env;
     std::unique_ptr<Ort::Session> m_session;
     std::unique_ptr<Ort::MemoryInfo> m_memoryInfo;
     bool m_initialized = false;
-    bool m_lowLightEnhance = false;
     bool m_facenoxMode = false;   // [1,2] logit output (MiniFAS) vs pixel-map (DeepPixBiS)
 
     std::string m_inputName;

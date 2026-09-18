@@ -2,7 +2,6 @@ package internal
 
 import (
 	"fmt"
-	"os/exec"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -41,7 +40,7 @@ func ServiceExists(name string) (bool, error) {
 // ERROR_SERVICE_MARKED_FOR_DELETE (1072), which wedges the service until
 // reboot — the bug this code fixes.
 func stopService(s *mgr.Service) error {
-	exec.Command("taskkill", "/f", "/im", "FaceLoginService.exe").Run()
+	hiddenCommand("taskkill", "/f", "/im", "FaceLoginService.exe").Run()
 
 	// Poll until the SCM reports STOPPED (the killed process's exit propagates
 	// to SCM within a moment). Give it up to ~5s.

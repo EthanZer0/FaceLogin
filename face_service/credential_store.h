@@ -1,33 +1,16 @@
 #pragma once
 
+#include <windows.h>
 #include <dlib/matrix.h>
 #include <string>
 #include <vector>
 #include <optional>
 #include <cstdint>
 #include <cmath>
+#include <utility>
+#include "../common/secure_string.h"
 
 namespace facelogin {
-
-// Map a base "strictness" threshold to the embedding dimensionality actually
-// in use.
-//
-// The system now uses InsightFace ONNX (512-D) embeddings exclusively (the dlib
-// recognizer was removed). L2-normalized embeddings have Euclidean distance
-// bounded by sqrt(2) ≈ 1.414 regardless of dimension, so sqrt(dim/128) scaling
-// is invalid.
-//
-// For 512-D ONNX the user's match_threshold (from the strictness slider) is
-// used directly — no fixed override. Calibrated on real data (1.6.0):
-//   same-person (12 live frames): 0.34–0.45
-//   other-person photos:          1.24–1.40
-// The slider maps strictness 20–90 → threshold 1.15–0.45, all comfortably
-// inside the 0.45→1.24 safety gap, so the setting is effective and safe.
-// Any other (legacy) dimension falls back to the base threshold.
-inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
-    if (dim >= 256) return baseThreshold;         // ONNX 512-D: user setting applies
-    return baseThreshold;                         // dlib 128-D and unknown: caller base
-}
 
 // Stores and retrieves encrypted user credentials and face embeddings.
 //
@@ -69,7 +52,7 @@ inline float EmbeddingThresholdForDim(float baseThreshold, size_t dim) {
 
 // Maximum faces one account may enroll. Prevents abuse; AddFace rejects when
 // the account already has this many faces.
-inline constexpr size_t kMaxFacesPerUser = 5;
+inline constexpr size_t kMaxFacesPerUser = 10;
 
 // Passwordless account: the encryptedPassword field holds a single sentinel
 // byte instead of a DPAPI blob. (An empty vector is also treated as
@@ -211,10 +194,47 @@ public:
         std::wstring upn;
         std::wstring sid;
         std::wstring password;  // Decrypted — zero after use!
-        bool         passwordless = false;  // true: no password stored, must NOT submit LSA creds
-        float distance;
+        bool         passwordless = false;  // true: submit an empty password and let LSA apply policy
+        float distance = 0.0f;
         uint32_t     matchedFaceId = 0;     // V4: id of the closest face in the matched account
         size_t       accountFaceCount = 0;  // V4: total faces of the matched account
+
+        MatchResult() = default;
+        ~MatchResult() { WipePassword(); }
+        MatchResult(const MatchResult&) = delete;
+        MatchResult& operator=(const MatchResult&) = delete;
+
+        MatchResult(MatchResult&& other) noexcept
+            : username(std::move(other.username)),
+              upn(std::move(other.upn)),
+              sid(std::move(other.sid)),
+              password(std::move(other.password)),
+              passwordless(other.passwordless),
+              distance(other.distance),
+              matchedFaceId(other.matchedFaceId),
+              accountFaceCount(other.accountFaceCount) {
+            other.WipePassword();
+        }
+
+        MatchResult& operator=(MatchResult&& other) noexcept {
+            if (this != &other) {
+                WipePassword();
+                username = std::move(other.username);
+                upn = std::move(other.upn);
+                sid = std::move(other.sid);
+                password = std::move(other.password);
+                passwordless = other.passwordless;
+                distance = other.distance;
+                matchedFaceId = other.matchedFaceId;
+                accountFaceCount = other.accountFaceCount;
+                other.WipePassword();
+            }
+            return *this;
+        }
+
+        void WipePassword() noexcept {
+            SecureErase(password);
+        }
     };
     // probeDim is the number of floats in probeEmbedding (128 for dlib,
     // 512 for InsightFace ONNX). Only stored embeddings of the same

@@ -70,7 +70,7 @@ std::wstring QueryUserNamePrincipal() {
                 // INFO (not DEBUG) — this is a real decision point in the
                 // MSA detection; the next step (token shadow SID scan) depends
                 // on it.
-                FACELOGIN_INFO(L"QueryUserNamePrincipal: no UPN (err=%lu)", err);
+            FACELOGIN_DEBUG(L"QueryUserNamePrincipal: no UPN (err=%lu)", err);
             }
         } else {
             upn = upnBuf.data();
@@ -108,8 +108,7 @@ std::wstring TranslateMicrosoftAccountSid(PSID pSid) {
     if (email.empty()) return L"";
     if (email.find(L'@') == std::wstring::npos) {
         // Not an email-shaped name — reject rather than mislabel.
-        FACELOGIN_WARN(L"TranslateMicrosoftAccountSid: translated name not an email: '%s'",
-                       email.c_str());
+        FACELOGIN_WARN(L"TranslateMicrosoftAccountSid: translated identity is not an email address");
         return L"";
     }
     return email;
@@ -131,14 +130,13 @@ std::wstring FindMsaShadowSidInToken() {
         std::vector<BYTE> buf(sz);
         if (GetTokenInformation(hToken, TokenGroups, buf.data(), sz, &sz)) {
             auto* groups = reinterpret_cast<TOKEN_GROUPS*>(buf.data());
-            FACELOGIN_INFO(L"FindMsaShadowSidInToken: token has %lu group SID(s)",
+            FACELOGIN_DEBUG(L"FindMsaShadowSidInToken: token has %lu group SID(s)",
                            groups->GroupCount);
             for (DWORD i = 0; i < groups->GroupCount && email.empty(); i++) {
                 if (IsMicrosoftAccountSid(groups->Groups[i].Sid)) {
                     email = TranslateMicrosoftAccountSid(groups->Groups[i].Sid);
                     if (!email.empty()) {
-                        FACELOGIN_INFO(L"FindMsaShadowSidInToken: MSA shadow SID -> email '%s'",
-                                       email.c_str());
+                        FACELOGIN_DEBUG(L"FindMsaShadowSidInToken: resolved MSA shadow identity");
                     } else {
                         FACELOGIN_WARN(L"FindMsaShadowSidInToken: MSA shadow SID present but "
                                        L"could not translate to an email");
@@ -163,22 +161,22 @@ bool GetLinkedAccountUpn(std::wstring& outUpn) {
     std::wstring upn = QueryUserNamePrincipal();
     if (!upn.empty()) {
         outUpn = upn;
-        FACELOGIN_INFO(L"GetLinkedAccountUpn: direct UPN '%s'", outUpn.c_str());
+        FACELOGIN_DEBUG(L"GetLinkedAccountUpn: resolved direct UPN");
         return true;
     }
 
     // 2) Linked MSA: the token's group list carries a MicrosoftAccount shadow
     //    SID (S-1-11-96-...). Translate it back to the email.
-    FACELOGIN_INFO(L"GetLinkedAccountUpn: direct UPN empty — scanning token group SIDs for MSA shadow");
+    FACELOGIN_DEBUG(L"GetLinkedAccountUpn: direct UPN empty — scanning token group SIDs for MSA shadow");
     std::wstring shadowEmail = FindMsaShadowSidInToken();
     if (!shadowEmail.empty()) {
         outUpn = shadowEmail;
-        FACELOGIN_INFO(L"GetLinkedAccountUpn: linked MSA email '%s'", outUpn.c_str());
+        FACELOGIN_DEBUG(L"GetLinkedAccountUpn: resolved linked MSA identity");
         return true;
     }
 
     // 3) Plain local account.
-    FACELOGIN_INFO(L"GetLinkedAccountUpn: no MSA identity in session — local account");
+    FACELOGIN_DEBUG(L"GetLinkedAccountUpn: no MSA identity in session — local account");
     return false;
 }
 

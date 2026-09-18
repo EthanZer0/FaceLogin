@@ -1,7 +1,7 @@
 <script lang="ts" setup>
-import { ref, computed, onMounted } from 'vue'
-import { GetDefaultPaths, Install, Uninstall, PickDirectory, IsInstalled, GetUpgradeNotice } from '../wailsjs/go/main/App'
-import { EventsOn, EventsOff } from '../wailsjs/runtime'
+import { ref, computed, nextTick, onMounted } from 'vue'
+import { GetDefaultPaths, Install, Uninstall, PickDirectory, IsInstalled, GetUpgradeNotice, IsStandaloneUninstaller, FinalizeStandaloneUninstall, CreateDesktopShortcut } from '../wailsjs/go/main/App'
+import { EventsOn, EventsOff, WindowSetTitle } from '../wailsjs/runtime'
 import { activeLocale, availableLocales, localePreference, setLocale, t, noticeT } from './i18n'
 
 const installDir = ref('')
@@ -15,6 +15,10 @@ const resultMessage = ref('')
 const resultSuccess = ref(false)
 const showResult = ref(false)
 const alreadyInstalled = ref(false)
+const standaloneUninstaller = ref(false)
+const createDesktopShortcut = ref(true)
+const showUninstallConfirm = ref(false)
+const uninstallConfirmButton = ref<HTMLButtonElement | null>(null)
 
 // Upgrade notice ("what's new") popup state
 const notice = ref<any>(null)
@@ -73,15 +77,28 @@ const noticeSections = computed<NoticeSection[]>(() => {
 })
 
 onMounted(async () => {
+	standaloneUninstaller.value = await IsStandaloneUninstaller()
   const paths = await GetDefaultPaths()
   installDir.value = paths.installDir
   alreadyInstalled.value = await IsInstalled()
+  if (standaloneUninstaller.value) {
+    showInstall.value = false
+    const title = t('installer.uninstaller.windowTitle')
+    document.title = title
+    WindowSetTitle(title)
+  }
 })
 
 async function doPickDirectory() {
   const dir = await PickDirectory(t('installer.selectInstallDirectory'))
   if (dir) {
-    installDir.value = dir
+    // The folder picker selects the parent directory. Keep the product's
+    // conventional final folder explicit, while avoiding FaceLogin\FaceLogin
+    // when the user selected an existing product directory.
+    const parent = dir.replace(/[\\/]+$/, '')
+    installDir.value = /(?:^|[\\/])FaceLogin$/i.test(parent)
+      ? parent
+      : `${parent}\\FaceLogin`
   }
 }
 
@@ -111,6 +128,12 @@ async function doInstall() {
   const result = await Install(installDir.value, localePreference.value)
   resultMessage.value = localizeBackendMessage(result.message)
   resultSuccess.value = result.success
+  if (result.success && createDesktopShortcut.value && !standaloneUninstaller.value) {
+    const shortcutResult = await CreateDesktopShortcut(installDir.value)
+    if (!shortcutResult.success) {
+      resultMessage.value += '\n\n' + localizeBackendMessage(shortcutResult.message)
+    }
+  }
   showResult.value = true
   running.value = false
 
@@ -125,9 +148,21 @@ async function doInstall() {
   }
 }
 
-async function doUninstall() {
-  if (!confirm(t('installer.uninstallConfirm'))) return
+function openUninstallConfirm() {
+  showUninstallConfirm.value = true
+  void nextTick(() => uninstallConfirmButton.value?.focus())
+}
 
+function closeUninstallConfirm() {
+  showUninstallConfirm.value = false
+}
+
+function doUninstall() {
+  openUninstallConfirm()
+}
+
+async function confirmUninstall() {
+  closeUninstallConfirm()
   running.value = true
   showResult.value = false
   progressPercent.value = 0
@@ -149,6 +184,11 @@ async function doUninstall() {
   resultSuccess.value = result.success
   showResult.value = true
   running.value = false
+  if (result.success && standaloneUninstaller.value) {
+    // The dedicated uninstaller closes after reporting success; its temporary
+    // helper then deletes the running executable and empty install folder.
+    window.setTimeout(() => { void FinalizeStandaloneUninstall() }, 900)
+  }
 }
 </script>
 
@@ -158,7 +198,7 @@ async function doUninstall() {
     <div class="px-8 pt-8 pb-2 flex items-start justify-between gap-4">
       <div>
         <h1 class="text-2xl font-light tracking-tight text-gray-900">FaceLogin</h1>
-        <p class="text-sm text-gray-400 font-light">{{ t('installer.subtitle') }}</p>
+        <p class="text-sm text-gray-400 font-light">{{ standaloneUninstaller ? t('installer.uninstaller.subtitle') : t('installer.subtitle') }}</p>
       </div>
       <label class="flex flex-col gap-1 text-xs text-gray-400">
         <span>{{ t('installer.language') }}</span>
@@ -175,7 +215,7 @@ async function doUninstall() {
     </div>
 
     <!-- Mode Tabs -->
-    <div class="px-8 mt-4 flex gap-6 border-b border-gray-100">
+    <div v-if="!standaloneUninstaller" class="px-8 mt-4 flex gap-6 border-b border-gray-100">
       <button
         :class="['pb-2 text-sm font-medium transition-colors',
                  showInstall ? 'text-gray-900 border-b-2 border-gray-900' : 'text-gray-400 hover:text-gray-600']"
@@ -214,6 +254,15 @@ async function doUninstall() {
           </button>
         </div>
         <p class="mt-1 text-xs text-gray-400">{{ t('installer.modelsHint') }}</p>
+
+        <label class="mt-4 flex items-center gap-2 text-sm text-gray-600">
+          <input
+            v-model="createDesktopShortcut"
+            type="checkbox"
+            class="h-4 w-4 accent-gray-800"
+          />
+          <span>{{ t('installer.createDesktopShortcut') }}</span>
+        </label>
 
         <button
           class="mt-6 w-full py-2.5 text-sm font-medium bg-gray-900 text-white
@@ -338,6 +387,50 @@ async function doUninstall() {
       </div>
     </div>
   </Transition>
+
+  <!-- Uninstall confirmation popup — custom UI matching the installer language -->
+  <Transition name="notice">
+    <div
+      v-if="showUninstallConfirm"
+      class="confirm-overlay fixed inset-0 flex items-center justify-center p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="uninstall-confirm-title"
+      aria-describedby="uninstall-confirm-description"
+      tabindex="-1"
+      @click.self="closeUninstallConfirm"
+      @keydown.esc="closeUninstallConfirm"
+    >
+      <div class="confirm-card w-[90%] max-w-md">
+        <div class="px-6 pt-6 pb-4 border-b border-gray-100 flex items-start gap-3">
+          <div class="flex-1 min-w-0">
+            <h2 id="uninstall-confirm-title" class="text-lg font-medium tracking-tight text-gray-900 leading-snug">
+              {{ t('installer.uninstallConfirmTitle') }}
+            </h2>
+            <p id="uninstall-confirm-description" class="mt-3 text-sm text-gray-600 leading-6">
+              {{ t('installer.uninstallConfirmDescription') }}
+            </p>
+            <p class="confirm-warning mt-4 px-3 py-2.5 text-sm leading-6">
+              {{ t('installer.uninstallConfirmWarning') }}
+            </p>
+          </div>
+        </div>
+        <div class="px-6 py-4 flex gap-3 justify-end">
+          <button
+            type="button"
+            class="confirm-cancel px-5 py-2 text-sm font-medium"
+            @click="closeUninstallConfirm"
+          >{{ t('installer.cancel') }}</button>
+          <button
+            ref="uninstallConfirmButton"
+            type="button"
+            class="confirm-danger px-5 py-2 text-sm font-medium text-white"
+            @click="confirmUninstall"
+          >{{ t('installer.uninstallButton') }}</button>
+        </div>
+      </div>
+    </div>
+  </Transition>
 </template>
 
 <style scoped>
@@ -355,6 +448,46 @@ async function doUninstall() {
   -webkit-backdrop-filter: blur(4px);
   backdrop-filter: blur(4px);
 }
+
+.confirm-overlay {
+  z-index: 60;
+  background:
+    radial-gradient(ellipse at 50% 42%, rgba(208, 42, 46, 0.08), transparent 62%),
+    rgba(17, 24, 39, 0.46);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.confirm-card {
+  background: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 24px 60px -14px rgba(0, 0, 0, 0.30),
+              0 4px 14px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.confirm-warning {
+  color: #9B2C2F;
+  background: #FFF7F7;
+  border-left: 2px solid #D02A2E;
+  border-radius: 2px;
+}
+
+.confirm-cancel {
+  color: #374151;
+  border: 1px solid #D1D5DB;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.confirm-cancel:hover { background: #F3F4F6; border-color: #9CA3AF; }
+
+.confirm-danger {
+  background: #D02A2E;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+.confirm-danger:hover { background: #B52226; }
+.confirm-danger:active { transform: translateY(1px); }
 
 .notice-card {
   background: #ffffff;

@@ -3,7 +3,6 @@ package internal
 import (
 	"fmt"
 	"os"
-	"os/exec"
 )
 
 // RegisterCOMDLL registers a COM DLL via regsvr32.
@@ -11,7 +10,7 @@ func RegisterCOMDLL(dllPath string) error {
 	if !FileExists(dllPath) {
 		return fmt.Errorf("DLL not found: %s", dllPath)
 	}
-	cmd := exec.Command("regsvr32", "/s", dllPath)
+	cmd := hiddenCommand("regsvr32", "/s", dllPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("regsvr32 failed: %w\n%s", err, string(out))
@@ -23,7 +22,7 @@ func RegisterCOMDLL(dllPath string) error {
 // If the DLL file is already gone, cleans registry directly.
 func UnregisterCOMDLL(dllPath string) error {
 	if FileExists(dllPath) {
-		cmd := exec.Command("regsvr32", "/s", "/u", dllPath)
+		cmd := hiddenCommand("regsvr32", "/s", "/u", dllPath)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("regsvr32 /u failed: %w\n%s", err, string(out))
@@ -37,8 +36,8 @@ func UnregisterCOMDLL(dllPath string) error {
 		`SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\%s`,
 		clsid,
 	)
-	exec.Command("reg", "delete", fmt.Sprintf(`HKLM\%s`, cpKey), "/f").Run()
-	exec.Command("reg", "delete", fmt.Sprintf(`HKCR\CLSID\%s`, clsid), "/f").Run()
+	hiddenCommand("reg", "delete", fmt.Sprintf(`HKLM\%s`, cpKey), "/f").Run()
+	hiddenCommand("reg", "delete", fmt.Sprintf(`HKCR\CLSID\%s`, clsid), "/f").Run()
 	return nil
 }
 
@@ -47,7 +46,7 @@ func SetDirectoryACL(dirPath string) error {
 	if !DirExists(dirPath) {
 		return os.MkdirAll(dirPath, 0755)
 	}
-	cmd := exec.Command("icacls", dirPath,
+	cmd := hiddenCommand("icacls", dirPath,
 		"/inheritance:r",
 		"/grant", "SYSTEM:(OI)(CI)F",
 		"/grant", "BUILTIN\\Administrators:(OI)(CI)F",

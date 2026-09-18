@@ -14,8 +14,8 @@ class FaceLoginCredential;
 // one credential tile that supports auto-logon.
 //
 // Field layout (no tile image):
-//   0: CPFT_LARGE_TEXT — "Face Login"
-//   1: CPFT_SMALL_TEXT — Status message
+//   0: CPFT_LARGE_TEXT — Hidden title retained for layout compatibility
+//   1: CPFT_SMALL_TEXT — Hidden status fallback if the overlay is unavailable
 //   2: CPFT_SUBMIT_BUTTON — Submit (hidden, auto-logon)
 //   3: CPFT_COMMAND_LINK — "Switch to password login"
 // ============================================================================
@@ -60,13 +60,6 @@ public:
         DWORD dwIndex,
         ICredentialProviderCredential** ppcpc) override;
 
-    // Accessors for our credential
-    CREDENTIAL_PROVIDER_USAGE_SCENARIO GetUsageScenario() const { return m_cpus; }
-    ICredentialProviderEvents* GetEvents() const { return m_pEvents; }
-    UINT_PTR GetAdviseContext() const { return m_upAdviseContext; }
-    bool IsColdBoot() const { return m_isColdBoot; }
-    bool IsCredUI() const { return m_cpus == CPUS_CREDUI || m_cpus == CPUS_PLAP; }
-
 private:
     LONG m_refCount = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus = CPUS_LOGON;
@@ -79,10 +72,11 @@ private:
     // Our credential object (one instance)
     FaceLoginCredential* m_pCredential = nullptr;
 
-    // True = cold boot / first logon (no active user session)
-    // False = unlock / switch user (existing user session)
-    bool m_isColdBoot = true;
+    // True for an initial/after-logoff console entry with no interactive user.
+    // Ordinary lock/unlock remains key-triggered.
+    bool m_isLoginEntry = false;
+    ULONGLONG m_loginEntryGeneration = 0;
+    DWORD m_loginEntrySessionId = 0xFFFFFFFF;
 
-    // Check if we're in a domain-joined environment
-    bool IsDomainJoined() const;
+    void ReleaseCredential(bool contextChange);
 };
