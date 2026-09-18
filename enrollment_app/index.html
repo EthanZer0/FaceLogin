@@ -453,7 +453,7 @@ button{font-family:inherit}
 .face-item.legacy:hover{background:var(--lite)}
 .face-item.legacy .face-name{color:#6B7280;text-decoration:line-through}
 .face-item .legacy-tag{font-size:10px;color:#9AA1AC;background:var(--lite);border:1px solid var(--hair);border-radius:999px;padding:1px 8px;flex-shrink:0}
-.face-node{border:1px solid var(--hair);border-radius:var(--radius);background:var(--face);overflow:hidden}
+.face-node{flex-shrink:0;border:1px solid var(--hair);border-radius:var(--radius);background:var(--face);overflow:hidden}
 .face-node .face-item{border:0;border-radius:0}
 .face-expand{position:relative;width:100%;display:flex;align-items:center;min-height:34px;padding:8px 40px 8px 14px;border:0;border-top:1px solid var(--hair);background:var(--face);color:#687181;font-size:11px;line-height:1.45;cursor:pointer;text-align:left}
 .face-expand:hover{background:var(--lite)}
@@ -465,9 +465,18 @@ button{font-family:inherit}
 .learning-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
 .learning-actions .btn{width:auto;padding:5px 10px;margin:0;font-size:11px}
 .learning-samples{display:grid;grid-template-columns:repeat(auto-fill,minmax(54px,1fr));gap:6px;margin-top:10px}
-.learning-sample{aspect-ratio:1;border-radius:5px;overflow:hidden;border:1px solid var(--hair);background:#E9EDF2}
+.learning-sample{position:relative;aspect-ratio:1;border-radius:5px;overflow:hidden;border:1px solid var(--hair);background:#E9EDF2}
+.learning-sample-state{position:absolute;bottom:0;left:0;right:0;background:rgba(32,38,47,.78);color:#fff;font-size:11px;text-align:center;line-height:1.5;padding:3px}
+.learning-group{margin-top:14px;padding:12px;border:1px solid var(--hair);border-radius:6px}
+.learning-group-title{font-weight:600;font-size:13px;line-height:1.6}
+.learning-analysis-note,.learning-group-status{font-size:12px;color:var(--fog);line-height:1.6;margin-top:4px}
+.learning-group .learning-samples{grid-template-columns:repeat(auto-fill,minmax(90px,1fr))}
+.learning-representative{position:absolute;top:4px;left:4px;background:rgba(32,38,47,.78);color:#fff;font-size:11px;padding:2px 5px;border-radius:3px}
+.learning-group details{margin-top:10px;font-size:12px;color:var(--fog);line-height:1.8}
+.learning-group summary{cursor:pointer}
+.learning-distance-row{display:flex;justify-content:space-between;gap:12px}
 .learning-sample img{width:100%;height:100%;object-fit:cover;display:block}
-.learning-empty{padding:12px 0 2px;font-size:11px;color:#8A919E}
+.learning-empty{display:flex;align-items:center;min-height:44px;padding:0;font-size:11px;line-height:1.4;color:#8A919E}
 .faces-actions{display:flex;gap:8px;flex-shrink:0}
 .faces-actions .btn{margin-top:0;flex:1}
 .face-empty{text-align:center;color:var(--fog);font-size:13px;padding:40px 0;flex:1}
@@ -547,6 +556,8 @@ button{font-family:inherit}
 }
 .rename-card p.dim{font-size:11px;color:#8A919E;line-height:1.6;margin-bottom:18px}
 .learning-target-label{display:block;font-size:11px;color:#687181;letter-spacing:.08em;margin:0 0 6px}
+.learning-claim-error{display:none;margin:-8px 0 12px;font-size:11px;line-height:1.5;color:var(--err)}
+.learning-claim-error.show{display:block}
 .rename-card input{
   box-sizing:border-box;width:100%;border:1px solid var(--hair);border-radius:var(--radius);
   padding:9px 12px;font-size:13px;outline:none;background:var(--face);color:var(--ink);
@@ -1232,6 +1243,7 @@ button{font-family:inherit}
   <div class="rename-card" role="dialog" aria-modal="true" aria-labelledby="learning-claim-title" aria-describedby="learning-claim-description">
     <h2 id="learning-claim-title"></h2>
     <p class="dim" id="learning-claim-description"></p>
+    <p class="learning-claim-error" id="learning-claim-error"></p>
     <label class="learning-target-label" id="learning-claim-label" for="learning-claim-face"></label>
     <select id="learning-claim-face"></select>
     <div class="rename-actions">
@@ -2229,25 +2241,22 @@ function loadLearningArchive(id) {
     var sampleCount = archive ? Number(archive.sampleCount || 0) : 0;
     var prototypeCount = archive ? Number(archive.prototypeCount || 0) : 0;
     var enabled = !!(archive && archive.enabled);
-    var summary = sampleCount === 0 ? t('console.learning.noSamples')
-      : t('console.learning.samples', { count: sampleCount }) + ' · '
+    var html = '';
+    if (sampleCount > 0) {
+      var summary = t('console.learning.samples', { count: sampleCount }) + ' · '
         + (prototypeCount > 0 ? (enabled ? t('console.learning.active') : t('console.learning.paused'))
           : t('console.learning.pending', { count: sampleCount }));
-    var html = '<div class="learning-summary">' + escapeHtml(summary) + '</div>';
-    html += '<div class="learning-actions">';
-    if (sampleCount >= 5) html += '<button class="btn btn-primary" onclick="onRebuildAdaptiveArchive(' + id + ')">' + t('console.learning.update') + '</button>';
-    if (prototypeCount > 0) html += '<button class="btn btn-secondary" onclick="onToggleAdaptiveArchive(' + id + ',' + (enabled ? 'false' : 'true') + ')">' + t(enabled ? 'console.learning.pause' : 'console.learning.resume') + '</button>';
-    if (sampleCount > 0) html += '<button class="btn btn-secondary" onclick="openDeleteDialog(' + id + ',\'learning\')">' + t('console.learning.clear') + '</button>';
-    html += '</div>';
-    if (sampleCount > 0) {
-      html += '<div class="learning-samples">';
-      var samples = archive.samples || [];
-      for (var j = 0; j < samples.length; j++) {
-        var file = String(samples[j].file || '');
-        if (!/^[A-Za-z0-9._-]+$/.test(file)) continue;
-        html += '<div class="learning-sample"><img src="' + LEARNING_BASE + encodeURIComponent(file) + '" loading="lazy" alt="' + escapeHtml(t('console.learning.archive')) + '"></div>';
-      }
+      summary += ' · ' + t('console.learning.usage', {
+        used: Number(archive.usedSampleCount || 0),
+        remaining: sampleCount - Number(archive.usedSampleCount || 0)
+      });
+      html += '<div class="learning-summary">' + escapeHtml(summary) + '</div>';
+      html += '<div class="learning-actions">';
+      html += '<button class="btn btn-primary" id="learning-update-' + id + '" onclick="onRebuildAdaptiveArchive(' + id + ')">' + t('console.learning.update') + '</button>';
+      if (prototypeCount > 0) html += '<button class="btn btn-secondary" onclick="onToggleAdaptiveArchive(' + id + ',' + (enabled ? 'false' : 'true') + ')">' + t(enabled ? 'console.learning.pause' : 'console.learning.resume') + '</button>';
+      html += '<button class="btn btn-secondary" onclick="openDeleteDialog(' + id + ',\'learning\')">' + t('console.learning.clear') + '</button>';
       html += '</div>';
+      html += renderLearningAnalysis(archive);
     } else {
       html += '<div class="learning-empty">' + t('console.learning.noSamples') + '</div>';
     }
@@ -2257,13 +2266,101 @@ function loadLearningArchive(id) {
   }
 }
 
+function renderLearningAnalysis(archive) {
+  var analysis = archive.analysis;
+  var samples = archive.samples || [];
+  var byId = {};
+  samples.forEach(function(sample) { byId[String(sample.id)] = sample; });
+  var html = '<div class="learning-analysis-note">' + escapeHtml(t('console.learning.analysisNote')) + '</div>';
+  var isolated = [];
+  var number = 0;
+  analysis.groups.forEach(function(group) {
+    if (group.members.length === 1) { isolated.push(group.members[0]); return; }
+    number++;
+    var count = group.members.length;
+    var status = count < analysis.minimumSamples
+      ? t('console.learning.groupMissing', { count: analysis.minimumSamples - count })
+      : t(group.selected ? 'console.learning.groupReady' : 'console.learning.groupNotSelected');
+    html += '<section class="learning-group"><div class="learning-group-title">'
+      + escapeHtml(t('console.learning.groupTitle', { number: number, count: count }))
+      + '</div><div class="learning-group-status">' + escapeHtml(status) + '</div><div class="learning-samples">';
+    group.members.forEach(function(member) {
+      html += renderLearningSample(byId[String(member.id)], member.id === group.representativeSampleId);
+    });
+    html += '</div><details><summary>' + escapeHtml(t('console.learning.groupDetails')) + '</summary>'
+      + '<div>' + escapeHtml(t('console.learning.distanceLimits', {
+        representative: Number(analysis.representativeLimit).toFixed(3),
+        pair: Number(analysis.pairLimit).toFixed(3)
+      })) + '</div><div>' + escapeHtml(t('console.learning.maxPair', {
+        distance: Number(group.maxPairDistance).toFixed(3)
+      })) + '</div>';
+    group.members.forEach(function(member) {
+      html += '<div class="learning-distance-row"><span>' + escapeHtml(t('console.learning.sampleId', { id: member.id }))
+        + '</span><span>' + escapeHtml(t('console.learning.distanceToRepresentative', {
+          distance: Number(member.distance).toFixed(3)
+        })) + '</span></div>';
+    });
+    html += '<div>' + escapeHtml(t('console.learning.distanceNote')) + '</div></details></section>';
+  });
+  if (isolated.length) {
+    html += '<section class="learning-group"><div class="learning-group-title">'
+      + escapeHtml(t('console.learning.ungrouped', { count: isolated.length }))
+      + '</div><div class="learning-group-status">' + escapeHtml(t('console.learning.noSimilarSamples'))
+      + '</div><div class="learning-samples">';
+    isolated.forEach(function(member) { html += renderLearningSample(byId[String(member.id)], false); });
+    html += '</div><details><summary>' + escapeHtml(t('console.learning.groupDetails')) + '</summary>'
+      + '<div>' + escapeHtml(t('console.learning.distanceLimits', {
+        representative: Number(analysis.representativeLimit).toFixed(3),
+        pair: Number(analysis.pairLimit).toFixed(3)
+      })) + '</div>';
+    isolated.forEach(function(member) {
+      if (member.nearestSampleId === undefined) return;
+      html += '<div>' + escapeHtml(t('console.learning.nearestSample', {
+        id: member.id, nearest: member.nearestSampleId,
+        distance: Number(member.nearestDistance).toFixed(3)
+      })) + '</div>';
+    });
+    html += '<div>' + escapeHtml(t('console.learning.distanceNote')) + '</div></details></section>';
+  }
+  return html;
+}
+
+function renderLearningSample(sample, representative) {
+  var file = String(sample.file || '');
+  if (!/^[A-Za-z0-9._-]+$/.test(file)) return '';
+  var stateKey = sample.state === 'used' ? 'used' : sample.state === 'unused' ? 'unused' : 'pendingSample';
+  return '<div class="learning-sample"><img src="' + LEARNING_BASE + encodeURIComponent(file)
+    + '" loading="lazy" alt="' + escapeHtml(t('console.learning.sampleId', { id: sample.id })) + '">'
+    + (representative ? '<span class="learning-representative">' + escapeHtml(t('console.learning.representative')) + '</span>' : '')
+    + '<span class="learning-sample-state">' + escapeHtml(t('console.learning.sampleId', { id: sample.id }))
+    + ' · ' + escapeHtml(t('console.learning.' + stateKey)) + '</span></div>';
+}
+
 function onRebuildAdaptiveArchive(id) {
-  try {
-    if (!H.RebuildAdaptiveArchive(id)) throw new Error('rebuild');
-    showBanner('faces', t('console.learning.rebuilt'), 'ok');
-    loadFaces();
-    setTimeout(function() { toggleLearningArchive(id); }, 0);
-  } catch (e) { showBanner('faces', t('console.learning.rebuildFailed'), 'error'); }
+  var button = document.getElementById('learning-update-' + id);
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  setTimeout(function() {
+    try {
+      var result = JSON.parse(H.RebuildAdaptiveArchive(id));
+      if (result.status === 'success') {
+        showBanner('faces', t('console.learning.rebuilt', {
+          used: result.usedSamples, unused: result.unusedSamples
+        }), 'ok');
+        loadFaces();
+        toggleLearningArchive(id);
+      } else {
+        var keys = {
+          notEnoughSamples: 'notEnoughSamples', noConsistentGroup: 'noConsistentGroup',
+          archiveNotFound: 'archiveNotFound', saveFailed: 'saveFailed'
+        };
+        showBanner('faces', t('console.learning.' + (keys[result.status] || 'rebuildFailed'),
+          { count: result.totalSamples }), 'error');
+        loadLearningArchive(id);
+      }
+    } catch (e) { showBanner('faces', t('console.learning.rebuildFailed'), 'error'); }
+    finally { button.disabled = false; }
+  }, 0);
 }
 
 function onToggleAdaptiveArchive(id, enabled) {
@@ -2342,6 +2439,9 @@ function openLearningClaimDialog(file) {
     options += '<option value="' + face.id + '">' + escapeHtml(face.label) + ' #' + face.id + '</option>';
   }
   select.innerHTML = options;
+  var error = document.getElementById('learning-claim-error');
+  error.textContent = '';
+  error.classList.remove('show');
   document.getElementById('learning-claim-title').textContent = t('console.learning.claimTitle');
   document.getElementById('learning-claim-description').textContent = t('console.learning.claimDescription');
   document.getElementById('learning-claim-label').textContent = t('console.learning.targetFace');
@@ -2372,10 +2472,14 @@ function onLearningClaimConfirm() {
     if (!H.ClaimUnknownFaceForLearning(file, faceId)) throw new Error('claim');
     closeLearningClaimDialog();
     renderUnknownFaces();
-    showBanner('faces', t('console.learning.claimed'), 'ok', 7000);
+    switchTab('faces');
     loadFaces();
+    showBanner('faces', t('console.learning.claimed'), 'ok', 7000);
+    setTimeout(function() { toggleLearningArchive(faceId); }, 0);
   } catch (e) {
-    showBanner('faces', t('console.learning.claimFailed'), 'error');
+    var error = document.getElementById('learning-claim-error');
+    error.textContent = t('console.learning.claimFailed');
+    error.classList.add('show');
   } finally {
     confirm.disabled = false;
   }
