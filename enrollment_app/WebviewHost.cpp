@@ -465,6 +465,7 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"RebuildAdaptiveArchive") *ids = 49;
     else if (n == L"SetAdaptiveArchiveEnabled") *ids = 50;
     else if (n == L"DeleteAdaptiveArchive") *ids = 51;
+    else if (n == L"GetPreviewStatus")    *ids = 52;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -588,6 +589,7 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
         case 19: if (res) *res = MakeStr(m_wizard->GetAccountType()); break;
         case 20: if (res) *res = MakeStr(m_wizard->GetLatestFrameAndFaces()); break;
         case 21: if (res) *res = MakeStr(m_wizard->GetCameraList()); break;
+        case 52: if (res) *res = MakeStr(m_wizard->GetPreviewStatus()); break;
         case 22: if (res) *res = MakeInt(m_wizard->GetPasswordlessState()); break;
         case 23: {
             std::wstring label = OptionalArg(p, 0);  // first JS arg: face label

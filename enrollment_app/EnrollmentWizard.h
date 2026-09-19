@@ -8,6 +8,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 #include <dlib/matrix.h>
 #include <dlib/pixel.h>
 
@@ -35,6 +36,7 @@ public:
 
     bool StartPreview();
     void StopPreview();
+    std::string GetPreviewStatus();
     int  GetSampleCount() const { return m_samplesCollected; }
     std::string GetUsername() const;
     std::string GetUserSid() const;
@@ -154,7 +156,7 @@ public:
     // Atomically returns "<frame base64>\x1E<faces json>" from the SAME frame.
     std::string GetLatestFrameAndFaces();
 
-    bool IsPreviewRunning() const { return m_previewRunning; }
+    bool IsPreviewRunning() const { return m_previewRunning.load(); }
     std::wstring GetDataDir() const { return m_dataDir; }
 
     // About-card "star seen once" flag for the CURRENT version, persisted in
@@ -169,6 +171,12 @@ public:
     std::string GetConsoleVersion() const;
 
 private:
+    enum class PreviewState {
+        Idle, StartingCamera, LoadingModels, WaitingFirstFrame,
+        Running, Failed, Stopping
+    };
+    void SetPreviewState(PreviewState state, const char* errorCode = nullptr);
+    void RefreshCameraList();
     // Encode the frame as a base64 JPEG data URL (full resolution).
     std::string EncodeJPEGBase64(const dlib::matrix<dlib::rgb_pixel>& frame);
     // Serialize detected faces to JSON (coordinates in full-frame space).
@@ -213,13 +221,10 @@ private:
 
     // Frame-grab thread (runs off UI thread — GrabFrame + JPEG encode + detection)
     std::thread m_frameThread;
-    bool m_frameRunning = false;
-    // Generation counter for the frame thread. StopPreview() bumps it so a
-    // detached zombie thread (wedged in a driver call that later recovers)
-    // observes a mismatch and exits instead of continuing next to a freshly
-    // spawned thread. Incremented in StartPreview and captured by value at
-    // spawn; any thread whose captured generation != current exits its loop.
-    int m_frameGeneration = 0;
+    std::atomic<bool> m_frameRunning{false};
+    // Generation counter invalidates an older preview loop before a new camera
+    // session starts. Workers are joined; no worker may outlive this object.
+    std::atomic<int> m_frameGeneration{0};
     // Consecutive camera re-inits inside the frame thread (stalled SourceReader
     // after the credential provider took the camera). Bounded so a truly-dead
     // device doesn't cause an infinite re-init loop; reset on success or start.
@@ -253,7 +258,12 @@ private:
     uint64_t m_sampleDelivered = 0;
 
     // Preview state
-    bool m_previewRunning = false;
+    std::atomic<bool> m_previewRunning{false};
+    std::mutex m_previewStateMutex;
+    PreviewState m_previewState = PreviewState::Idle;
+    std::string m_previewErrorCode;
+    std::mutex m_cameraListMutex;
+    std::string m_cameraListJson = "[]";
 
     // Enrollment state
     std::vector<dlib::matrix<float, 0, 1>> m_embeddings;

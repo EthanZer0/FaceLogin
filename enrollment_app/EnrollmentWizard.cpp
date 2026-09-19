@@ -150,9 +150,6 @@ EnrollmentWizard::EnrollmentWizard() {
 
     FACELOGIN_INFO(L"=== Enrollment Wizard started ===");
 
-    CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                     IID_PPV_ARGS(&m_wicFactory));
-
     // --- Gather user identity ---
     {
         wchar_t username[256] = {};
@@ -260,51 +257,80 @@ EnrollmentWizard::~EnrollmentWizard() {
 // ============================================================================
 
 bool EnrollmentWizard::StartPreview() {
-    if (m_previewRunning) return true;
+    if (m_previewRunning.exchange(true)) return true;
+    if (m_frameThread.joinable()) m_frameThread.join();
 
-    // Only the camera is opened on the UI thread — it's fast and we need its
-    // success to gate the background work. Model loading (2d106det + ONNX
-    // sessions) is deferred to the frame thread so a cold start never
-    // blocks the UI and the user can switch tabs while "starting camera".
-    //
-    // Retry briefly: right after unlock the credential-provider service may
-    // still be releasing the camera it used for auth, so a first init can fail
-    // with the device busy. A couple of short retries absorb that window.
-    constexpr int kInitRetries = 5;
-    bool webcamOk = false;
-    for (int attempt = 0; attempt < kInitRetries && !webcamOk; attempt++) {
-        webcamOk = m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device));
-        if (!webcamOk && attempt + 1 < kInitRetries) {
-            FACELOGIN_WARN(L"Webcam init attempt %d failed — camera may still be releasing, retrying", attempt + 1);
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        }
-    }
-    if (!webcamOk) {
-        FACELOGIN_ERROR(L"Failed to initialize webcam%s",
-                        m_config.camera_device.empty() ? L"" : L" (configured device)");
-        return false;
-    }
-    FACELOGIN_INFO(L"Webcam initialized");
-
-    m_previewRunning = true;
     m_frameRunning = true;
     m_frameReinitCount = 0;
+    SetPreviewState(PreviewState::StartingCamera);
 
-    // Single background thread: load models (if needed) → GrabFrame → JPEG
-    // encode → detect → update caches. The UI thread stays completely free;
-    // JS polls the caches via GetLatest*(). On a cold start the models are
-    // loaded first here, off the UI thread. The generation is captured by
-    // value: StopPreview() bumps it, so any zombie thread (detached after a
-    // driver wedge, then recovered) sees the mismatch and exits instead of
-    // running alongside the next StartPreview's fresh thread.
+    // One MTA owner thread performs camera enumeration, activation, frame
+    // reads, model work and normal teardown. WebView2's STA never calls the
+    // camera driver directly.
     int myGen = ++m_frameGeneration;
     m_frameThread = std::thread([this, myGen]() {
+        const HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        if (FAILED(coHr)) {
+            FACELOGIN_ERROR(L"PreviewSession: MTA initialization failed hr=0x%08X", coHr);
+            SetPreviewState(PreviewState::Failed, "com_initialization_failed");
+            m_frameRunning = false;
+            m_previewRunning = false;
+            return;
+        }
+        FACELOGIN_INFO(L"PreviewSession: camera worker started apartment=MTA");
+
+        RefreshCameraList();
+        if (!m_frameRunning || m_frameGeneration != myGen) {
+            SetPreviewState(PreviewState::Idle);
+            m_previewRunning = false;
+            CoUninitialize();
+            return;
+        }
+        if (!m_webcam->Initialize(1280, 720, Utf8ToWstr(m_config.camera_device))) {
+            FACELOGIN_ERROR(L"PreviewSession: camera initialization failed");
+            SetPreviewState(PreviewState::Failed, "camera_open_failed");
+            m_frameRunning = false;
+            m_previewRunning = false;
+            CoUninitialize();
+            return;
+        }
+        if (!m_frameRunning || m_frameGeneration != myGen) {
+            m_webcam->Shutdown();
+            SetPreviewState(PreviewState::Idle);
+            m_previewRunning = false;
+            CoUninitialize();
+            return;
+        }
+
+        const HRESULT wicHr = CoCreateInstance(
+            CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&m_wicFactory));
+        if (FAILED(wicHr)) {
+            FACELOGIN_ERROR(L"PreviewSession: WIC initialization failed hr=0x%08X", wicHr);
+            m_webcam->Shutdown();
+            SetPreviewState(PreviewState::Failed, "image_encoder_failed");
+            m_frameRunning = false;
+            m_previewRunning = false;
+            CoUninitialize();
+            return;
+        }
+
+        SetPreviewState(PreviewState::LoadingModels);
         bool poseDisplayInitialized = false;
         HeadPoseStats poseDisplay;
         if (!EnsureModelsLoaded()) {
             FACELOGIN_ERROR(L"Model loading failed — no frames will be produced");
+            m_webcam->Shutdown();
+            m_wicFactory->Release();
+            m_wicFactory = nullptr;
+            SetPreviewState(PreviewState::Failed, "model_load_failed");
+            m_frameRunning = false;
+            m_previewRunning = false;
+            CoUninitialize();
             return;
         }
+        SetPreviewState(PreviewState::WaitingFirstFrame);
+        bool firstFrame = true;
         while (m_frameRunning && m_frameGeneration == myGen) {
             // ---- Pull mode (during the SAMPLING phase only) ---------------
             // The capture thread requests ONE fresh frame per sample; we
@@ -431,10 +457,55 @@ bool EnrollmentWizard::StartPreview() {
                 m_latestFacesJson = std::move(faceJson);
                 m_latestFrame     = frame;
             }
+            if (firstFrame) {
+                firstFrame = false;
+                SetPreviewState(PreviewState::Running);
+                FACELOGIN_INFO(L"PreviewSession: first frame ready");
+            }
         }
+
+        m_webcam->Shutdown();
+        if (m_wicFactory) {
+            m_wicFactory->Release();
+            m_wicFactory = nullptr;
+        }
+        if (m_previewRunning && m_frameGeneration == myGen) {
+            SetPreviewState(PreviewState::Failed, "camera_stream_failed");
+            m_previewRunning = false;
+        } else {
+            SetPreviewState(PreviewState::Idle);
+        }
+        m_frameRunning = false;
+        CoUninitialize();
+        FACELOGIN_INFO(L"PreviewSession: camera worker stopped");
     });
 
     return true;
+}
+
+void EnrollmentWizard::SetPreviewState(PreviewState state, const char* errorCode) {
+    std::lock_guard<std::mutex> lock(m_previewStateMutex);
+    m_previewState = state;
+    m_previewErrorCode = errorCode ? errorCode : "";
+}
+
+std::string EnrollmentWizard::GetPreviewStatus() {
+    PreviewState state;
+    std::string error;
+    {
+        std::lock_guard<std::mutex> lock(m_previewStateMutex);
+        state = m_previewState;
+        error = m_previewErrorCode;
+    }
+    static const char* names[] = {
+        "idle", "starting_camera", "loading_models", "waiting_first_frame",
+        "running", "failed", "stopping"
+    };
+    std::ostringstream json;
+    json << "{\"state\":\"" << names[static_cast<int>(state)] << "\"";
+    if (!error.empty()) json << ",\"errorCode\":\"" << error << "\"";
+    json << "}";
+    return json.str();
 }
 
 bool EnrollmentWizard::PrepareFaceFrame(
@@ -545,42 +616,19 @@ bool EnrollmentWizard::EnsureModelsLoaded() {
     return true;
 }
 
-// Bounded thread join for StopPreview. Wait up to timeoutMs for the thread to
-// exit, then detach it if it's still running (wedged in a driver call). A
-// detach means the thread may outlive the wizard in the pathological
-// driver-hang case — far better than freezing the UI thread forever
-// (卡90%无响应). Only the frame thread can hit this: the capture thread always
-// terminates within its bounded loops.
-static void JoinBounded(std::thread& t, const wchar_t* name,
-                        DWORD timeoutMs = 1500) {
+// Preview workers capture this EnrollmentWizard, so they must be joined before
+// the object can be destroyed. Detaching here would permit use-after-free.
+static void JoinPreviewThread(std::thread& t) {
     if (!t.joinable()) return;
-    HANDLE h = t.native_handle();
-    DWORD wait = WaitForSingleObject(h, timeoutMs);
-    if (wait == WAIT_OBJECT_0) {
-        t.join();   // thread already finished — join returns immediately
-        return;
-    }
-    if (wait == WAIT_FAILED) {
-        FACELOGIN_WARN(L"StopPreview: WaitForSingleObject on %s thread failed (%lu) — detaching",
-                       name, GetLastError());
-        t.detach();
-        return;
-    }
-    // WAIT_TIMEOUT: the thread is stuck (likely inside a driver call that
-    // Shutdown() above could not wake). Detach it so the UI thread moves on;
-    // the stuck thread ends whenever the driver recovers or the process exits.
-    FACELOGIN_WARN(L"StopPreview: %s thread did not exit within %lu ms — detaching (driver may be wedged)",
-                   name, timeoutMs);
-    t.detach();
+    t.join();
 }
 
 void EnrollmentWizard::StopPreview() {
+    SetPreviewState(PreviewState::Stopping);
     m_previewRunning = false;
     m_frameRunning = false;
     m_capturing = false;
-    // Bump the generation: a detached zombie frame thread that later wakes up
-    // from a wedged driver call sees the mismatch and exits instead of
-    // touching the (possibly re-initialized) camera next to the fresh thread.
+    // Invalidate the active loop before waking the source reader.
     ++m_frameGeneration;
 
     // Now shut down the camera so a synchronous ReadSample that is blocked
@@ -590,16 +638,15 @@ void EnrollmentWizard::StopPreview() {
     if (m_webcam)
         m_webcam->Shutdown();
 
-    // Join background threads with a budget. The capture thread exits fast;
-    // the frame thread may be blocked in ReadSample until the shutdown above
-    // wakes it. If either is still running after the budget, detach instead of
-    // blocking the UI thread forever.
-    JoinBounded(m_captureThread, L"capture");
-    JoinBounded(m_frameThread, L"frame");
+    // Shutdown wakes an in-flight ReadSample; both workers are then joined so
+    // neither can retain this EnrollmentWizard past destruction.
+    JoinPreviewThread(m_captureThread);
+    JoinPreviewThread(m_frameThread);
 
     // Normal-path completion marker: lets log triage confirm a teardown went
     // through cleanly (any timeout above would emit its own WARN instead).
     FACELOGIN_INFO(L"Preview stopped (camera released, threads joined)");
+    SetPreviewState(PreviewState::Idle);
 }
 
 // ============================================================================
@@ -1713,6 +1760,11 @@ bool EnrollmentWizard::ClearStaleAccountUpn() {
 // ============================================================================
 
 std::string EnrollmentWizard::GetCameraList() {
+    std::lock_guard<std::mutex> lock(m_cameraListMutex);
+    return m_cameraListJson;
+}
+
+void EnrollmentWizard::RefreshCameraList() {
     auto devices = WebcamCapture::ListCameras();
     std::ostringstream js;
     js << "[";
@@ -1733,7 +1785,8 @@ std::string EnrollmentWizard::GetCameraList() {
            << "\",\"name\":\"" << esc(devices[i].friendlyName) << "\"}";
     }
     js << "]";
-    return js.str();
+    std::lock_guard<std::mutex> lock(m_cameraListMutex);
+    m_cameraListJson = js.str();
 }
 
 // ============================================================================

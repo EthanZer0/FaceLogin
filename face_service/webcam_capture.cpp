@@ -31,9 +31,13 @@ WebcamCapture::~WebcamCapture() {
 
 bool WebcamCapture::InitializeMF() {
     if (!s_mfInitialized) {
+        FACELOGIN_INFO(L"CameraStage: mf_startup begin");
         HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
         if (SUCCEEDED(hr)) {
             s_mfInitialized = true;
+            FACELOGIN_INFO(L"CameraStage: mf_startup result=0x%08X", hr);
+        } else {
+            FACELOGIN_ERROR(L"CameraStage: mf_startup result=0x%08X", hr);
         }
     }
     if (s_mfInitialized) {
@@ -158,16 +162,19 @@ bool WebcamCapture::FindCamera(const std::wstring& devicePath,
     IMFActivate** ppDevices = nullptr;
     UINT32 count = 0;
 
+    FACELOGIN_INFO(L"CameraStage: enumerate begin");
     hr = MFEnumDeviceSources(pAttributes, &ppDevices, &count);
     pAttributes->Release();
 
     if (FAILED(hr) || count == 0) {
-        FACELOGIN_WARN(L"No video capture devices found");
+        FACELOGIN_WARN(L"CameraStage: enumerate result=0x%08X count=%u", hr, count);
         return false;
     }
 
-    FACELOGIN_INFO(L"Found %u video device(s), looking for %s",
-                   count, devicePath.empty() ? L"first" : devicePath.c_str());
+    FACELOGIN_INFO(L"CameraStage: enumerate result=0x%08X count=%u", hr, count);
+
+    FACELOGIN_INFO(L"Found %u video device(s), selection=%s",
+                   count, devicePath.empty() ? L"default" : L"configured");
 
     // First pass: match the configured device by symbolic link.
     int selected = -1;
@@ -191,19 +198,17 @@ bool WebcamCapture::FindCamera(const std::wstring& devicePath,
 
     hr = ppDevices[selected]->ActivateObject(IID_PPV_ARGS(ppSource));
 
-    // Diagnostics: log which camera was actually selected (friendly name +
-    // symbolic link). Helps identify a mis-picked / virtual camera when
-    // enrollment or the lock-screen behaves oddly (卡90% 排查).
+    // The friendly name identifies the selected camera class without exposing
+    // the symbolic link, which may contain a hardware instance identifier.
     {
         LPWSTR selPath = nullptr, selName = nullptr;
         if (SUCCEEDED(ppDevices[selected]->GetAllocatedString(
                 MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, &selPath, nullptr))) {
             if (SUCCEEDED(ppDevices[selected]->GetAllocatedString(
                     MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &selName, nullptr))) {
-                FACELOGIN_INFO(L"Selected camera: %s (%s)",
-                               selName, selPath);
+                FACELOGIN_INFO(L"Selected camera: %s", selName);
             } else {
-                FACELOGIN_INFO(L"Selected camera: %s", selPath);
+                FACELOGIN_INFO(L"Selected camera: friendly name unavailable");
             }
             CoTaskMemFree(selPath);
             if (selName) CoTaskMemFree(selName);

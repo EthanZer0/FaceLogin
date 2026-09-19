@@ -216,6 +216,8 @@ button{font-family:inherit}
 }
 .loading-overlay.fade{opacity:0;pointer-events:none}
 .loading-text{font-size:11px;color:#5C6370;letter-spacing:.12em;font-family:var(--font-data)}
+.loading-retry{display:none;border:1px solid var(--line);background:#fff;color:var(--ink);
+  padding:8px 16px;border-radius:4px;font-size:12px;cursor:pointer}
 
 /* ================================================================
    Password / append / settings forms
@@ -772,7 +774,8 @@ button{font-family:inherit}
       <i class="br br-tl"></i><i class="br br-tr"></i><i class="br br-bl"></i><i class="br br-br"></i>
       <div class="loading-overlay" id="cam-loading">
         <div class="spinner-dark"></div>
-        <span class="loading-text">正在启动摄像头...</span>
+        <span class="loading-text" id="cam-loading-text">正在启动摄像头...</span>
+        <button class="loading-retry" id="cam-retry" type="button" onclick="retryPreview()">重新尝试</button>
       </div>
       <canvas id="bg-canvas"></canvas>
       <canvas id="face-canvas"></canvas>
@@ -1492,6 +1495,7 @@ var H = (function() {
 })();
 var viewing = true, lastB64 = '', lastFacesJson = '', timer = 0, faceImg = new Image();
 var camReady = false, currentTab = 'cam';
+var previewStatusTimer = 0;
 // Debounce handle for preview teardown on tab departure: quick there-and-back
 // tab switching (well under 1.2s) must NOT repeatedly open/close the camera —
 // some USB camera drivers wedge under frequent open/close (MF Shutdown /
@@ -1523,6 +1527,58 @@ faceImg.onload = function() {
     }, 350);
   }
 };
+
+function previewMessage(status) {
+  if (status === 'loading_models') return t('console.camera.loadingModels');
+  if (status === 'waiting_first_frame') return t('console.camera.waitingFirstFrame');
+  return t('console.camera.starting');
+}
+
+function pollPreviewStatus() {
+  clearTimeout(previewStatusTimer);
+  if (!viewing) return;
+  try {
+    var status = JSON.parse(H.GetPreviewStatus());
+    var overlay = document.getElementById('cam-loading');
+    var text = document.getElementById('cam-loading-text');
+    var spinner = overlay.querySelector('.spinner-dark');
+    var retry = document.getElementById('cam-retry');
+    if (status.state === 'failed') {
+      overlay.style.display = 'flex';
+      overlay.classList.remove('fade');
+      spinner.style.display = 'none';
+      retry.style.display = 'block';
+      text.textContent = t('console.camera.' + (status.errorCode || 'openFailed'));
+      return;
+    }
+    if (status.state !== 'running') {
+      overlay.style.display = 'flex';
+      overlay.classList.remove('fade');
+      spinner.style.display = 'inline-block';
+      retry.style.display = 'none';
+      text.textContent = previewMessage(status.state);
+    }
+  } catch(e) {}
+  previewStatusTimer = setTimeout(pollPreviewStatus, 250);
+}
+
+function requestPreviewStart() {
+  camReady = false;
+  try {
+    if (H.StartPreview()) {
+      renderFrame();
+      pollPreviewStatus();
+    }
+  } catch(e) {
+    var text = document.getElementById('cam-loading-text');
+    if (text) text.textContent = t('console.camera.openFailed');
+  }
+}
+
+function retryPreview() {
+  try { H.StopPreview(); } catch(e) {}
+  requestPreviewStart();
+}
 
 // Compute the contain-fit mapping for the video frame inside the viewport:
 // scale = min(cw/sw, ch/sh), then center the scaled image. Returns {sx,sy,ox,oy}
@@ -1824,7 +1880,7 @@ function switchTab(name) {
     clearTimeout(previewStopTimer);
     if (!viewing && !captureActive) {
       viewing = true;
-      try { if (H.StartPreview()) renderFrame(); } catch(e) {}
+      requestPreviewStart();
     }
   } else {
     if (viewing && !captureActive) {
@@ -2732,7 +2788,7 @@ function onAppendConfirm() {
       showBanner('cam', '新脸已添加成功！可按 Win+L 锁定屏幕测试人脸登录。', 'ok');
       viewing = true;
       renderFrame();
-      try { H.StartPreview(); } catch(e) {}
+      requestPreviewStart();
     } else {
       showBanner('append', '追加失败（已达人脸上限或身份校验失败）。', 'error');
     }
@@ -2744,7 +2800,7 @@ function onAppendCancel() {
   currentTab = 'cam';
   viewing = true;
   renderFrame();
-  try { H.StartPreview(); } catch(e) {}
+  requestPreviewStart();
 }
 
 function showBanner(screen, text, type, durationMs) {
@@ -2805,7 +2861,7 @@ function onSave() {
       showBanner('cam', '录入成功！可按 Win+L 锁定屏幕测试人脸登录。', 'ok');
       viewing = true;
       renderFrame();
-      try { H.StartPreview(); } catch(e) {}
+      requestPreviewStart();
     } else {
       // MSA password validation only checks the locally cached credential.
       // If the user changed their Microsoft password elsewhere, the cache is
@@ -3255,7 +3311,7 @@ function onCamPickerConfirm() {
       // Restart preview with the newly chosen camera.
       try { H.StopPreview(); } catch(e) {}
       setTimeout(function() {
-        try { if (H.StartPreview()) renderFrame(); } catch(e) {}
+        requestPreviewStart();
       }, 100);
     } else {
       showBanner('cam', '保存摄像头设置失败，请重试。', 'error');
@@ -3281,7 +3337,7 @@ function onCamPickerSkip() {
   })();
 
   setTimeout(function() {
-    try { if (H.StartPreview()) renderFrame(); } catch(e) {}
+    requestPreviewStart();
   }, 100);
 
   // Detect pre-1.6.0 (V4) face data that can no longer be matched by the new
