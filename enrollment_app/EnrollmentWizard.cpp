@@ -260,6 +260,15 @@ bool EnrollmentWizard::StartPreview() {
     if (m_previewRunning.exchange(true)) return true;
     if (m_frameThread.joinable()) m_frameThread.join();
 
+    // A new camera session must not expose the previous session's JPEG to the
+    // UI. Otherwise a static first frame can compare equal to the old frame,
+    // skip Image.onload in WebView2, and leave the loading layer visible.
+    {
+        std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+        m_latestFrameB64.clear();
+        m_latestFacesJson = "[]";
+        m_latestFrame = dlib::matrix<dlib::rgb_pixel>();
+    }
     m_frameRunning = true;
     m_frameReinitCount = 0;
     SetPreviewState(PreviewState::StartingCamera);
@@ -642,6 +651,13 @@ void EnrollmentWizard::StopPreview() {
     // neither can retain this EnrollmentWizard past destruction.
     JoinPreviewThread(m_captureThread);
     JoinPreviewThread(m_frameThread);
+
+    {
+        std::lock_guard<std::mutex> lock(m_frameCacheMutex);
+        m_latestFrameB64.clear();
+        m_latestFacesJson = "[]";
+        m_latestFrame = dlib::matrix<dlib::rgb_pixel>();
+    }
 
     // Normal-path completion marker: lets log triage confirm a teardown went
     // through cleanly (any timeout above would emit its own WARN instead).

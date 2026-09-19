@@ -1564,6 +1564,20 @@ function pollPreviewStatus() {
 
 function requestPreviewStart() {
   camReady = false;
+  // A preview restart is a new image session. Clear both the previous JPEG
+  // fingerprint and the HTML image source so an identical first camera frame
+  // still fires Image.onload and dismisses the loading layer.
+  lastB64 = '';
+  lastFacesJson = '[]';
+  faceImg.removeAttribute('src');
+  var overlay = document.getElementById('cam-loading');
+  var spinner = overlay.querySelector('.spinner-dark');
+  var retry = document.getElementById('cam-retry');
+  overlay.style.display = 'flex';
+  overlay.classList.remove('fade');
+  spinner.style.display = 'inline-block';
+  retry.style.display = 'none';
+  document.getElementById('cam-loading-text').textContent = previewMessage('starting_camera');
   try {
     if (H.StartPreview()) {
       renderFrame();
