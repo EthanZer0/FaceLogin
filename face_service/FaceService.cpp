@@ -632,8 +632,8 @@ void FaceService::StartBackgroundModelLoad() {
         bool ok = false;
         try {
             ok = LoadHeavyModels();
-        } catch (const std::exception& e) {
-            FACELOGIN_ERROR(L"Model loader threw: %hs", e.what());
+        } catch (const std::exception&) {
+            FACELOGIN_ERROR(L"Model loader failed with an exception");
         }
         LoadGuard guard{ this, ok };
     });
@@ -1360,7 +1360,6 @@ bool FaceService::ProcessAuthRequest() {
             // LSA rejects at submission time and the user falls back to PIN.
             if (match->passwordless) {
                 match->password.clear();  // defensive; store already returns empty
-                FACELOGIN_INFO(L"Matched passwordless account — issuing blank-password unlock");
             }
 
             std::wstring domain = L".";
@@ -1702,8 +1701,7 @@ bool FaceService::ProcessAuthRequest() {
             }
 
             authSent = true;
-            FACELOGIN_INFO(L"AuthTerminal: outcome=success delivered=1 accountKind=%s",
-                           match->upn.empty() ? L"local_or_domain" : L"online");
+            FACELOGIN_INFO(L"AuthTerminal: outcome=success delivered=1");
 
             // Stop the capture graph now. The graph keeps streaming during auth; pausing
             // it immediately after success frees the camera without waiting for

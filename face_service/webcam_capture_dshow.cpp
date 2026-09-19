@@ -186,8 +186,7 @@ std::vector<CameraDeviceInfo> WebcamCaptureDS::ListCameras() {
     pDevEnum->Release();
 
     if (FAILED(hr) || pEnum == nullptr) {
-        FACELOGIN_WARN(L"DS: no video capture devices found (pEnum=%p, hr=0x%08X)",
-                       (void*)pEnum, hr);
+        FACELOGIN_WARN(L"DS: no video capture devices found (hr=0x%08X)", hr);
         return devices;
     }
 
@@ -236,8 +235,7 @@ bool WebcamCaptureDS::FindCamera(const std::wstring& devicePath,
     pDevEnum->Release();
 
     if (FAILED(hr) || pEnum == nullptr) {
-        FACELOGIN_WARN(L"DS: no video capture devices found (pEnum=%p, hr=0x%08X)",
-                       (void*)pEnum, hr);
+        FACELOGIN_WARN(L"DS: no video capture devices found (hr=0x%08X)", hr);
         return false;
     }
 

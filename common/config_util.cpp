@@ -201,10 +201,10 @@ AppConfig LoadConfig(const std::wstring& dataDir) {
     file.close();
 
     AppConfig cfg = ConfigFromJson(buf.str());
-    FACELOGIN_INFO(L"Loaded config.json: rec=%hs det=%hs live=%hs thr=%.2f camera=%hs rotation=%d",
+    FACELOGIN_INFO(L"Loaded config.json: rec=%hs det=%hs live=%hs thr=%.2f cameraConfigured=%d rotation=%d",
                   cfg.recognition_model.c_str(), cfg.detector.c_str(),
                   LivenessMethodToString(cfg.liveness_method).c_str(),
-                  cfg.match_threshold, cfg.camera_device.c_str(),
+                  cfg.match_threshold, cfg.camera_device.empty() ? 0 : 1,
                   cfg.camera_rotation);
     return cfg;
 }

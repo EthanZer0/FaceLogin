@@ -1185,7 +1185,7 @@ bool EnrollmentWizard::SaveEnrollmentNoPassword(const std::wstring& label) {
         FACELOGIN_ERROR(L"Passwordless enrollment refused: session identity mismatch");
         return false;
     }
-    FACELOGIN_INFO(L"Passwordless enrollment confirmed by session identity");
+    FACELOGIN_INFO(L"Enrollment session identity confirmed");
     return SaveEnrollmentImpl(L"", /*passwordless=*/true, label);
 }
 
@@ -1235,7 +1235,7 @@ int EnrollmentWizard::GetPasswordlessState() const {
     // online password), so a SAM probe can falsely report "no password" for an
     // MSA account whose local cache was never written. Ask the user instead.
     if (m_accountType == "msa") {
-        FACELOGIN_INFO(L"GetPasswordlessState: MSA account → state=2 (user confirm)");
+        FACELOGIN_INFO(L"Enrollment credential confirmation required");
         return 2;
     }
 
@@ -1253,11 +1253,10 @@ int EnrollmentWizard::GetPasswordlessState() const {
         bool noPw = (ui1003->usri1003_password == nullptr ||
                      ui1003->usri1003_password[0] == L'\0');
         NetApiBufferFree(ui1003);
-        if (noPw) { FACELOGIN_INFO(L"GetPasswordlessState: SAM password empty → state=1"); return 1; }
+        if (noPw) { return 1; }
     }
 
     // 5) Local account with a non-empty SAM password → has a password.
-    FACELOGIN_INFO(L"GetPasswordlessState: local account with password → state=0");
     return 0;
 }
 
@@ -1336,7 +1335,6 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
         std::vector<uint8_t> protectedPassword;
         if (passwordless) {
             protectedPassword = { facelogin::kPasswordlessSentinelByte };
-            FACELOGIN_INFO(L"Storing passwordless enrollment sentinel");
         } else {
             protectedPassword = DpapiUtil::Protect(
                 reinterpret_cast<const uint8_t*>(password.c_str()),
@@ -1694,8 +1692,7 @@ bool EnrollmentWizard::RefreshAccountIdentity(const std::wstring& password) {
     }
 
     NotifyServiceReload();
-    FACELOGIN_INFO(L"RefreshAccountIdentity: identity refreshed (upnPresent=%d accountKind=%s, faces preserved)",
-                   newUpn.empty() ? 0 : 1, state == 2 ? L"online" : L"local");
+    FACELOGIN_INFO(L"RefreshAccountIdentity: identity refreshed (faces preserved)");
     return true;
 }
 
@@ -1734,7 +1731,7 @@ bool EnrollmentWizard::ClearStaleAccountUpn() {
     }
     const auto& rec = m_store.GetUsers()[idx];
     if (rec.upn.find(L'@') == std::wstring::npos) {
-        FACELOGIN_INFO(L"ClearStaleAccountUpn: record already has no MSA email, no-op");
+        FACELOGIN_INFO(L"ClearStaleAccountUpn: record already current, no-op");
         return false;
     }
 
@@ -1750,7 +1747,7 @@ bool EnrollmentWizard::ClearStaleAccountUpn() {
     }
 
     NotifyServiceReload();
-    FACELOGIN_INFO(L"ClearStaleAccountUpn: cleared stale MSA UPN (faces=%zu, password untouched)",
+    FACELOGIN_INFO(L"ClearStaleAccountUpn: stale identity metadata cleared (faces=%zu)",
                    rec.faces.size());
     return true;
 }

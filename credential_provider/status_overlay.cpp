@@ -113,8 +113,8 @@ bool StatusOverlay::Create(
         EnterCriticalSection(&m_cs);
         m_creating = false;
         LeaveCriticalSection(&m_cs);
-        FACELOGIN_WARN(L"StatusOverlay: action=create reason=%s result=owner_failed hr=0x%08X owner=%p",
-                       reason ? reason : L"unknown", ownerHr, owner);
+        FACELOGIN_WARN(L"StatusOverlay: action=create reason=%s result=owner_failed hr=0x%08X",
+                       reason ? reason : L"unknown", ownerHr);
         return false;
     }
 
@@ -130,23 +130,9 @@ bool StatusOverlay::Create(
         EnterCriticalSection(&m_cs);
         m_creating = false;
         LeaveCriticalSection(&m_cs);
-        FACELOGIN_WARN(L"StatusOverlay: action=create reason=%s result=window_failed error=%lu owner=%p",
-                       reason ? reason : L"unknown", error, owner);
+        FACELOGIN_WARN(L"StatusOverlay: action=create reason=%s result=window_failed error=%lu",
+                       reason ? reason : L"unknown", error);
         return false;
-    }
-
-    wchar_t desktopName[128] = {};
-    wchar_t stationName[128] = {};
-    DWORD needed = 0;
-    const HDESK desktop = GetThreadDesktop(GetCurrentThreadId());
-    const HWINSTA station = GetProcessWindowStation();
-    if (desktop) {
-        GetUserObjectInformationW(desktop, UOI_NAME, desktopName,
-                                  sizeof(desktopName), &needed);
-    }
-    if (station) {
-        GetUserObjectInformationW(station, UOI_NAME, stationName,
-                                  sizeof(stationName), &needed);
     }
 
     EnterCriticalSection(&m_cs);
@@ -163,10 +149,8 @@ bool StatusOverlay::Create(
         return false;
     }
 
-    FACELOGIN_INFO(L"StatusOverlay: action=create reason=%s result=success hwnd=%p owner=%p station='%s' desktop='%s'",
-                   reason ? reason : L"unknown", overlay, owner,
-                   stationName[0] ? stationName : L"<unknown>",
-                   desktopName[0] ? desktopName : L"<unknown>");
+    FACELOGIN_INFO(L"StatusOverlay: action=create reason=%s result=success",
+                   reason ? reason : L"unknown");
     return true;
 }
 
@@ -220,8 +204,8 @@ void StatusOverlay::Destroy(const wchar_t* reason) {
     } else {
         PostMessageW(overlay, WM_CLOSE, 0, 0);
     }
-    FACELOGIN_INFO(L"StatusOverlay: action=destroy reason=%s hwnd=%p",
-                   reason ? reason : L"unknown", overlay);
+    FACELOGIN_INFO(L"StatusOverlay: action=destroy reason=%s",
+                   reason ? reason : L"unknown");
 }
 
 bool StatusOverlay::IsCreated() const {

@@ -37,8 +37,8 @@ bool OnnxLandmarkDetector::Initialize(const std::wstring& modelPath) {
         FACELOGIN_INFO(L"OnnxLandmarkDetector initialized");
         m_initialized = true;
         return true;
-    } catch (const std::exception& e) {
-        FACELOGIN_ERROR(L"OnnxLandmarkDetector init failed: %hs", e.what());
+    } catch (const std::exception&) {
+        FACELOGIN_ERROR(L"OnnxLandmarkDetector init failed");
         return false;
     }
 }
@@ -179,8 +179,8 @@ bool OnnxLandmarkDetector::DetectLandmarks(
 
         outLandmarks = dlib::full_object_detection(faceBox, m_parts);
         return true;
-    } catch (const std::exception& e) {
-        FACELOGIN_WARN(L"OnnxLandmarkDetector::DetectLandmarks error: %hs", e.what());
+    } catch (const std::exception&) {
+        FACELOGIN_WARN(L"OnnxLandmarkDetector::DetectLandmarks failed");
         return false;
     }
 }

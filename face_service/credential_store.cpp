@@ -138,7 +138,7 @@ bool CredentialStore::LoadDatabase() {
         uint32_t nameLen = 0;
         file.read(reinterpret_cast<char*>(&nameLen), sizeof(nameLen));
         if (nameLen == 0 || nameLen > 256) {
-            FACELOGIN_ERROR(L"Invalid username length: %u", nameLen);
+            FACELOGIN_ERROR(L"Invalid credential database identity field");
             return false;
         }
         std::vector<wchar_t> nameBuf(nameLen + 1, 0);
@@ -150,7 +150,7 @@ bool CredentialStore::LoadDatabase() {
             uint32_t upnLen = 0;
             file.read(reinterpret_cast<char*>(&upnLen), sizeof(upnLen));
             if (upnLen > 256) {
-                FACELOGIN_ERROR(L"Invalid UPN length: %u", upnLen);
+                FACELOGIN_ERROR(L"Invalid credential database identity field");
                 return false;
             }
             if (upnLen > 0) {
@@ -163,7 +163,7 @@ bool CredentialStore::LoadDatabase() {
             uint32_t sidLen = 0;
             file.read(reinterpret_cast<char*>(&sidLen), sizeof(sidLen));
             if (sidLen > 512) {
-                FACELOGIN_ERROR(L"Invalid SID length: %u", sidLen);
+                FACELOGIN_ERROR(L"Invalid credential database identity field");
                 return false;
             }
             if (sidLen > 0) {
@@ -180,7 +180,7 @@ bool CredentialStore::LoadDatabase() {
         // sentinel byte. Old versions only accepted >= 1; a 0-length record
         // would have failed their check, so we accept both here.
         if (passLen > 4096) {
-            FACELOGIN_ERROR(L"Invalid password length: %u", passLen);
+            FACELOGIN_ERROR(L"Invalid credential database secret field");
             return false;
         }
         rec.encryptedPassword.resize(passLen);

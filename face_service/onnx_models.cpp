@@ -58,8 +58,8 @@ bool OnnxRecognizer::Initialize(const std::wstring& modelPath) {
 
         m_initialized = true;
         return true;
-    } catch (const std::exception& e) {
-        FACELOGIN_ERROR(L"OnnxRecognizer init failed: %hs", e.what());
+    } catch (const std::exception&) {
+        FACELOGIN_ERROR(L"OnnxRecognizer init failed");
         return false;
     }
 }
@@ -118,8 +118,8 @@ std::vector<float> OnnxRecognizer::ComputeEmbedding(
         }
 
         return m_embedding;
-    } catch (const std::exception& e) {
-        FACELOGIN_WARN(L"OnnxRecognizer::ComputeEmbedding error: %hs", e.what());
+    } catch (const std::exception&) {
+        FACELOGIN_WARN(L"OnnxRecognizer::ComputeEmbedding failed");
         return {};
     }
 }
@@ -251,8 +251,8 @@ bool OnnxDetector::Initialize(const std::wstring& modelPath) {
         FACELOGIN_INFO(L"Model ready: face detector");
         m_initialized = true;
         return true;
-    } catch (const std::exception& e) {
-        FACELOGIN_ERROR(L"OnnxDetector init failed: %hs", e.what());
+    } catch (const std::exception&) {
+        FACELOGIN_ERROR(L"OnnxDetector init failed");
         return false;
     }
 }
@@ -473,8 +473,8 @@ std::vector<OnnxDetector::Detection> OnnxDetector::Detect(
 
         results = m_results;   // copy out under the lock
 
-    } catch (const std::exception& e) {
-        FACELOGIN_WARN(L"OnnxDetector::Detect error: %hs", e.what());
+    } catch (const std::exception&) {
+        FACELOGIN_WARN(L"OnnxDetector::Detect failed");
     }
 
     return results;
@@ -543,12 +543,12 @@ bool OnnxHeadPose::Initialize(const std::wstring& modelPath) {
         FACELOGIN_DEBUG(L"Head-pose tensors: input=%hs [1,3,224,224] output=%hs [1,3,3]",
                        m_inputName.c_str(), m_outputName.c_str());
         return true;
-    } catch (const std::exception& e) {
+    } catch (const std::exception&) {
         m_session.reset();
         m_env.reset();
         m_memoryInfo.reset();
         m_initialized = false;
-        FACELOGIN_WARN(L"Head-pose model init failed: %hs", e.what());
+        FACELOGIN_WARN(L"Head-pose model init failed");
         return false;
     }
 }
@@ -655,8 +655,8 @@ HeadPoseStats OnnxHeadPose::Estimate(
             result.range = HeadPoseRange::Invalid;
         }
         return result;
-    } catch (const std::exception& e) {
-        FACELOGIN_WARN(L"Head-pose inference failed: %hs", e.what());
+    } catch (const std::exception&) {
+        FACELOGIN_WARN(L"Head-pose inference failed");
         return result;
     }
 }
@@ -730,8 +730,8 @@ bool OnnxAntiSpoof::Initialize(const std::wstring& modelPath) {
                       m_inputSize, numOutputs);
         m_initialized = true;
         return true;
-    } catch (const std::exception& e) {
-        FACELOGIN_ERROR(L"OnnxAntiSpoof init failed: %hs", e.what());
+    } catch (const std::exception&) {
+        FACELOGIN_ERROR(L"OnnxAntiSpoof init failed");
         return false;
     }
 }
@@ -813,8 +813,8 @@ float OnnxAntiSpoof::Predict(const dlib::matrix<dlib::rgb_pixel>& faceChip) {
         double sum = 0;
         for (size_t i = 0; i < dim; i++) sum += data[i];
         return static_cast<float>(sum / dim);
-    } catch (const std::exception& e) {
-        FACELOGIN_WARN(L"OnnxAntiSpoof::Predict error: %hs", e.what());
+    } catch (const std::exception&) {
+        FACELOGIN_WARN(L"OnnxAntiSpoof::Predict failed");
         return -1.0f;
     }
 }

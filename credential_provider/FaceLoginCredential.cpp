@@ -142,9 +142,8 @@ unsigned __stdcall InputDetectionThreadProc(void* pParam) {
             previousDown[virtualKey] = currentDown;
             if (risingEdge && nowTick >= baselineGraceUntil) {
                 const bool mouseButton = IsMouseButtonVirtualKey(virtualKey);
-                FACELOGIN_INFO(L"Input trigger: %s vk=0x%02X",
-                               mouseButton ? L"mouse-button" : L"keyboard",
-                               virtualKey);
+                FACELOGIN_INFO(L"Input trigger: %s",
+                               mouseButton ? L"mouse-button" : L"keyboard");
                 inputDetected = true;
                 break;
             }
@@ -704,8 +703,8 @@ STDMETHODIMP_(ULONG) FaceLoginCredential::Release() {
 // ============================================================================
 
 STDMETHODIMP FaceLoginCredential::Advise(ICredentialProviderCredentialEvents* pcpce) {
-    FACELOGIN_DEBUG(L"Advise enter: state=%d events=%p",
-                   static_cast<int>(GetState()), pcpce);
+    FACELOGIN_DEBUG(L"Advise enter: state=%d eventsPresent=%d",
+                   static_cast<int>(GetState()), pcpce ? 1 : 0);
 
     ICredentialProviderCredentialEvents2* advisedEvents2 = nullptr;
     if (!pcpce || FAILED(pcpce->QueryInterface(
@@ -1622,18 +1621,14 @@ HRESULT FaceLoginCredential::PackCredentials(
     std::wstring upn;
     std::wstring password;
     facelogin::ScopedWStringWipe passwordWipe(password);
-    bool sidPresent = false;
     EnterCriticalSection(&m_cs);
     domain = m_domain;
     username = m_username;
     upn = m_upn;
     password = m_password;
-    sidPresent = !m_sid.empty();
     LeaveCriticalSection(&m_cs);
 
-    FACELOGIN_INFO(L"Serialization: identity sidPresent=%d upnPresent=%d accountKind=%s",
-                   sidPresent ? 1 : 0, upn.empty() ? 0 : 1,
-                   upn.empty() ? L"local_or_domain" : L"online");
+    FACELOGIN_INFO(L"Serialization: credential identity ready");
 
     // Auth package: MSV1_0 for LOGON/UNLOCK.
     // (CredUI/PLAP never reach here — they're filtered in SetUsageScenario.)
@@ -1797,9 +1792,7 @@ void FaceLoginCredential::OnPipeResponse(AuthAttemptId attemptId,
     if (transport == facelogin::PipeTerminalTransport::Message) {
         auto result = facelogin::ipc::ParseAuthMessage(message);
         if (result.status == facelogin::ipc::AuthResult::Status::Success) {
-            FACELOGIN_INFO(L"Auth result: success attempt=%llu sid=%d upn=%d",
-                           attemptId, result.sid.empty() ? 0 : 1,
-                           result.upn.empty() ? 0 : 1);
+            FACELOGIN_INFO(L"Auth result: success attempt=%llu", attemptId);
             EnterCriticalSection(&m_cs);
             if (m_state != State::Authenticating || m_activeAttemptId != attemptId) {
                 LeaveCriticalSection(&m_cs);

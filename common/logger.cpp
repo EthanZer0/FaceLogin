@@ -4,12 +4,71 @@
 #include <ctime>
 #include <cwctype>
 #include <iterator>
-#include <string_view>
 #include <vector>
 
 namespace facelogin {
 
 namespace {
+
+bool IsIdentityTokenChar(wchar_t ch) {
+    return iswalnum(ch) || ch == L'.' || ch == L'_' || ch == L'-' ||
+           ch == L'+';
+}
+
+void RedactEmailAddresses(std::wstring& line) {
+    size_t searchFrom = 0;
+    while (true) {
+        const size_t at = line.find(L'@', searchFrom);
+        if (at == std::wstring::npos) return;
+
+        size_t begin = at;
+        while (begin > 0 && IsIdentityTokenChar(line[begin - 1])) --begin;
+        size_t end = at + 1;
+        while (end < line.size() && IsIdentityTokenChar(line[end])) ++end;
+
+        if (begin < at && end > at + 1) {
+            static constexpr wchar_t replacement[] = L"<redacted-identity>";
+            line.replace(begin, end - begin, replacement);
+            searchFrom = begin + std::size(replacement) - 1;
+        } else {
+            searchFrom = at + 1;
+        }
+    }
+}
+
+void RedactSidValues(std::wstring& line) {
+    std::wstring folded = line;
+    for (wchar_t& ch : folded) ch = static_cast<wchar_t>(towlower(ch));
+
+    size_t searchFrom = 0;
+    while (true) {
+        const size_t begin = folded.find(L"s-1-", searchFrom);
+        if (begin == std::wstring::npos) return;
+        size_t end = begin + 4;
+        while (end < line.size() && (iswdigit(line[end]) || line[end] == L'-')) ++end;
+        if (end > begin + 4) {
+            static constexpr wchar_t replacement[] = L"<redacted-sid>";
+            line.replace(begin, end - begin, replacement);
+            folded.replace(begin, end - begin, replacement);
+            searchFrom = begin + std::size(replacement) - 1;
+        } else {
+            searchFrom = end;
+        }
+    }
+}
+
+void RedactDeviceIdentifiers(std::wstring& line) {
+    size_t searchFrom = 0;
+    while (true) {
+        const size_t begin = line.find(L"\\\\?\\", searchFrom);
+        if (begin == std::wstring::npos) return;
+        size_t end = begin + 4;
+        while (end < line.size() && !iswspace(line[end]) && line[end] != L')') ++end;
+        static constexpr wchar_t replacement[] = L"<redacted-device>";
+        line.replace(begin, end - begin, replacement);
+        searchFrom = begin + std::size(replacement) - 1;
+    }
+}
 
 // Last-line defence for every logger sink. Call sites must still avoid passing
 // secrets, but this prevents an accidentally logged authentication payload from
@@ -22,7 +81,15 @@ std::wstring SanitizeLogLine(std::wstring line) {
         L"auth_success:",
         L"password=",
         L"password:",
-        L"\"password\":"
+        L"\"password\":",
+        L"username=",
+        L"username:",
+        L"upn=",
+        L"upn:",
+        L"sid=",
+        L"sid:",
+        L"email=",
+        L"email:"
     };
     for (const wchar_t* marker : markers) {
         const std::wstring foldedMarker(marker);
@@ -35,6 +102,9 @@ std::wstring SanitizeLogLine(std::wstring line) {
         line.replace(valueBegin, lineEnd - valueBegin, L"<redacted>");
         break;
     }
+    RedactEmailAddresses(line);
+    RedactSidValues(line);
+    RedactDeviceIdentifiers(line);
     return line;
 }
 
@@ -69,9 +139,9 @@ void Logger::SetLogFile(const std::wstring& path) {
         CloseHandle(m_hFile);
         m_hFile = INVALID_HANDLE_VALUE;
     }
-    // Builds prior to 2.0.0 briefly logged the raw AUTH_SUCCESS pipe message,
-    // which includes the Windows password. Remove only logs that contain that
-    // marker before opening them for append; unaffected diagnostics survive.
+    // Remove legacy logs that contain authentication secrets or account
+    // identifiers before opening them for append. Unaffected diagnostics
+    // survive.
     PurgeUnsafeLegacyLog(path);
 
     m_logPath = path;
@@ -104,8 +174,8 @@ void Logger::PurgeUnsafeLegacyLog(const std::wstring& path) {
         SetFilePointer(file, 0, nullptr, FILE_BEGIN);
         if (ReadFile(file, content.data(), static_cast<DWORD>(size.QuadPart),
                      &bytesRead, nullptr)) {
-            const std::wstring_view view(content.data(), bytesRead / sizeof(wchar_t));
-            unsafe = view.find(L"AUTH_SUCCESS:") != std::wstring_view::npos;
+            const std::wstring original(content.data(), bytesRead / sizeof(wchar_t));
+            unsafe = SanitizeLogLine(original) != original;
         }
         if (!content.empty()) {
             SecureZeroMemory(content.data(), content.size() * sizeof(wchar_t));
