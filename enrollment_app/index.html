@@ -455,30 +455,119 @@ button{font-family:inherit}
 .face-item.legacy:hover{background:var(--lite)}
 .face-item.legacy .face-name{color:#6B7280;text-decoration:line-through}
 .face-item .legacy-tag{font-size:10px;color:#9AA1AC;background:var(--lite);border:1px solid var(--hair);border-radius:999px;padding:1px 8px;flex-shrink:0}
-.face-node{flex-shrink:0;border:1px solid var(--hair);border-radius:var(--radius);background:var(--face);overflow:hidden}
+.face-node{flex-shrink:0;border:1px solid var(--hair);border-radius:var(--radius);background:var(--face);overflow:hidden;transition:border-color .2s ease,box-shadow .2s ease}
 .face-node .face-item{border:0;border-radius:0}
-.face-expand{position:relative;width:100%;display:flex;align-items:center;min-height:34px;padding:8px 40px 8px 14px;border:0;border-top:1px solid var(--hair);background:var(--face);color:#687181;font-size:11px;line-height:1.45;cursor:pointer;text-align:left}
-.face-expand:hover{background:var(--lite)}
-.face-expand .face-expand-arrow{position:absolute;right:16px;top:50%;width:7px;height:7px;border-right:1.5px solid #8A919E;border-bottom:1.5px solid #8A919E;transform:translateY(-70%) rotate(45deg);transition:transform .16s ease}
-.face-expand.open .face-expand-arrow{transform:translateY(-30%) rotate(225deg)}
-.face-learning-panel{display:none;padding:10px 12px 12px;border-top:1px solid var(--hair);background:var(--lite)}
-.face-learning-panel.active{display:block}
-.learning-summary{font-size:11px;color:#687181;line-height:1.55}
-.learning-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
-.learning-actions .btn{width:auto;padding:5px 10px;margin:0;font-size:11px}
-.learning-samples{display:grid;grid-template-columns:repeat(auto-fill,minmax(54px,1fr));gap:6px;margin-top:10px}
-.learning-sample{position:relative;aspect-ratio:1;border-radius:5px;overflow:hidden;border:1px solid var(--hair);background:#E9EDF2}
-.learning-sample-state{position:absolute;bottom:0;left:0;right:0;background:rgba(32,38,47,.78);color:#fff;font-size:11px;text-align:center;line-height:1.5;padding:3px}
-.learning-group{margin-top:14px;padding:12px;border:1px solid var(--hair);border-radius:6px}
-.learning-group-title{font-weight:600;font-size:13px;line-height:1.6}
-.learning-analysis-note,.learning-group-status{font-size:12px;color:var(--fog);line-height:1.6;margin-top:4px}
-.learning-group .learning-samples{grid-template-columns:repeat(auto-fill,minmax(90px,1fr))}
-.learning-representative{position:absolute;top:4px;left:4px;background:rgba(32,38,47,.78);color:#fff;font-size:11px;padding:2px 5px;border-radius:3px}
-.learning-group details{margin-top:10px;font-size:12px;color:var(--fog);line-height:1.8}
-.learning-group summary{cursor:pointer}
-.learning-distance-row{display:flex;justify-content:space-between;gap:12px}
-.learning-sample img{width:100%;height:100%;object-fit:cover;display:block}
-.learning-empty{display:flex;align-items:center;min-height:44px;padding:0;font-size:11px;line-height:1.4;color:#8A919E}
+.face-expand{
+  position:relative;width:100%;display:flex;align-items:center;min-height:42px;
+  padding:8px 44px 8px 14px;border:0;border-top:1px solid var(--hair);
+  background:var(--face);color:var(--fog);font-size:11px;line-height:1.45;
+  cursor:pointer;text-align:left;transition:background .18s ease,color .18s ease;
+}
+.face-expand:hover,.face-expand.open{background:#F8F9FB;color:var(--ink)}
+.face-expand:focus-visible{outline:2px solid var(--live);outline-offset:-2px}
+.learning-heading{display:flex;align-items:center;flex-wrap:wrap;gap:7px;min-width:0}
+.learning-heading-title{font-weight:500;letter-spacing:.02em}
+.learning-heading-count{color:#778091;font:10px var(--font-data);white-space:nowrap}
+.learning-state{
+  display:inline-flex;align-items:center;gap:5px;min-height:19px;padding:1px 7px;
+  border:1px solid var(--hair);border-radius:999px;background:#FFFFFF;
+  color:#707887;font-size:10px;line-height:1.3;white-space:nowrap;
+}
+.learning-state::before{content:"";width:5px;height:5px;border-radius:50%;background:#AAB1BC}
+.learning-state[data-state="active"]{border-color:rgba(14,159,110,.2);color:#087C56;background:#F0F8F4}
+.learning-state[data-state="active"]::before{background:var(--live)}
+.learning-state[data-state="pending"]{border-color:rgba(183,121,31,.22);color:#9A6818;background:#FCF8EF}
+.learning-state[data-state="pending"]::before{background:#C18A31}
+.learning-state[data-state="paused"]{background:#F1F3F6}
+.face-expand-arrow{
+  position:absolute;right:15px;top:50%;width:8px;height:8px;
+  border-right:1.5px solid #8A919E;border-bottom:1.5px solid #8A919E;
+  transform:translateY(-72%) rotate(45deg);transition:transform .24s cubic-bezier(.2,.75,.25,1),border-color .18s ease;
+}
+.face-expand:hover .face-expand-arrow,.face-expand.open .face-expand-arrow{border-color:var(--live)}
+.face-expand.open .face-expand-arrow{transform:translateY(-28%) rotate(225deg)}
+.face-learning-panel{
+  display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;pointer-events:none;
+  border-top:0 solid transparent;background:#F4F6F8;
+  transition:grid-template-rows .34s cubic-bezier(.2,.75,.25,1),opacity .2s ease,border-color .2s ease,visibility 0s linear .34s;
+}
+.face-learning-panel.active{
+  grid-template-rows:1fr;opacity:1;visibility:visible;pointer-events:auto;border-top-color:var(--hair);
+  transition:grid-template-rows .34s cubic-bezier(.2,.75,.25,1),opacity .2s ease,border-color .2s ease,visibility 0s;
+}
+.learning-panel-inner{min-height:0;overflow:hidden}
+.learning-panel-content{padding:13px 14px 14px}
+.learning-overview{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:10px 11px;border:1px solid var(--hair);border-radius:var(--radius);background:var(--face);
+}
+.learning-overview-copy{display:flex;flex-direction:column;gap:5px;min-width:0}
+.learning-overview-line{display:flex;align-items:center;flex-wrap:wrap;gap:7px}
+.learning-summary{font-size:11px;color:#687181;line-height:1.5}
+.learning-usage{font:10px var(--font-data);color:#9299A5;line-height:1.4}
+.learning-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px;flex-shrink:0}
+.learning-actions .btn{width:auto;min-height:29px;padding:6px 10px;margin:0;font-size:10px;letter-spacing:.025em}
+.learning-analysis-note{
+  margin-top:12px;padding:1px 0 1px 9px;border-left:2px solid #C8CED8;
+  font-size:10px;color:#858D9A;line-height:1.55;
+}
+.learning-group{
+  margin-top:9px;padding:11px 12px;border:1px solid var(--hair);border-radius:var(--radius);
+  background:rgba(255,255,255,.72);transition:border-color .18s ease,box-shadow .18s ease;
+  animation:learning-group-in .24s ease both;
+}
+.learning-group[data-state="ready"]{border-left:3px solid var(--live);padding-left:10px}
+.learning-group[data-state="ungrouped"]{border-left:3px solid #C18A31;padding-left:10px}
+@keyframes learning-group-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+.learning-group-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.learning-group-title{font-weight:500;font-size:11px;line-height:1.5;color:var(--ink)}
+.learning-group-status{flex-shrink:0;font-size:10px;color:var(--fog);line-height:1.4;text-align:right}
+.learning-group[data-state="ready"] .learning-group-status{color:#087C56}
+.learning-group[data-state="ungrouped"] .learning-group-status{color:#9A6818}
+.learning-samples{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:8px;margin-top:10px}
+.learning-sample{
+  position:relative;aspect-ratio:1;border-radius:4px;overflow:hidden;
+  border:1px solid #DDE1E7;background:#E9EDF2;transition:transform .2s cubic-bezier(.2,.75,.25,1),border-color .18s ease,box-shadow .18s ease;
+}
+.learning-sample:hover{transform:translateY(-2px);border-color:#BAC3CE;box-shadow:0 4px 12px rgba(32,36,44,.1)}
+.learning-sample[data-state="used"]{border-color:rgba(14,159,110,.35)}
+.learning-sample img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .28s cubic-bezier(.2,.75,.25,1)}
+.learning-sample:hover img{transform:scale(1.035)}
+.learning-sample-state{
+  position:absolute;bottom:0;left:0;right:0;padding:4px 3px;
+  background:linear-gradient(transparent,rgba(25,30,38,.84));color:#fff;
+  font-size:9px;text-align:center;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.learning-representative{
+  position:absolute;top:5px;left:5px;padding:2px 6px;border-radius:999px;
+  background:rgba(14,159,110,.94);color:#fff;font-size:9px;line-height:1.3;
+}
+.learning-details{margin-top:10px;border-top:1px solid var(--hair);padding-top:8px;color:var(--fog);font-size:10px;line-height:1.65}
+.learning-details summary{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;list-style:none;color:#687181;transition:color .15s ease}
+.learning-details summary::-webkit-details-marker{display:none}
+.learning-details summary:hover{color:var(--ink)}
+.learning-details summary::after{
+  content:"";width:6px;height:6px;flex:none;border-right:1px solid #8A919E;border-bottom:1px solid #8A919E;
+  transform:rotate(45deg);transition:transform .2s cubic-bezier(.2,.75,.25,1);
+}
+.learning-details[open] summary::after{transform:rotate(225deg)}
+.learning-detail-body{padding-top:7px;animation:learning-detail-in .2s ease both}
+@keyframes learning-detail-in{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:translateY(0)}}
+.learning-distance-row{display:flex;justify-content:space-between;gap:12px;padding:3px 0;border-bottom:1px solid rgba(226,229,234,.65)}
+.learning-distance-row span:last-child{font-family:var(--font-data);text-align:right}
+.learning-detail-note{margin-top:5px;color:#9299A5}
+.learning-empty{display:flex;align-items:center;justify-content:center;gap:9px;min-height:70px;padding:14px;font-size:11px;line-height:1.5;color:#858D9A}
+.learning-empty-mark{width:20px;height:20px;position:relative;flex:none;border:1px dashed #C4CBD5;border-radius:50%}
+.learning-empty-mark::before,.learning-empty-mark::after{content:"";position:absolute;left:50%;top:50%;background:#AEB6C2;transform:translate(-50%,-50%);border-radius:1px}
+.learning-empty-mark::before{width:7px;height:1px}
+.learning-empty-mark::after{width:1px;height:7px}
+@media(max-width:520px){
+  .learning-overview{align-items:flex-start;flex-direction:column}
+  .learning-actions{justify-content:flex-start;width:100%}
+  .learning-actions .btn{flex:1}
+  .learning-group-head{align-items:flex-start;flex-direction:column;gap:3px}
+  .learning-group-status{text-align:left}
+}
 .faces-actions{display:flex;gap:8px;flex-shrink:0}
 .faces-actions .btn{margin-top:0;flex:1}
 .face-empty{text-align:center;color:var(--fog);font-size:13px;padding:40px 0;flex:1}
@@ -2280,7 +2369,7 @@ function loadFaces() {
           + '<button class="btn btn-secondary" onclick="onRenameFace(' + f.id + ')">' + t('console.faces.rename') + '</button>'
           + '<button class="btn btn-secondary" onclick="onDeleteFace(' + f.id + ')">' + t('console.faces.delete') + '</button>'
         + '</div>'
-        + (f.legacy ? '' : '<button type="button" class="face-expand" id="learning-toggle-' + f.id + '" onclick="toggleLearningArchive(' + f.id + ')"><span>' + t('console.learning.archive') + ' · ' + t('console.learning.samples', { count: sampleCount }) + (sampleCount > 0 ? ' · ' + state : '') + '</span><span class="face-expand-arrow" aria-hidden="true"></span></button><div class="face-learning-panel" id="learning-panel-' + f.id + '"></div>')
+        + (f.legacy ? '' : '<button type="button" class="face-expand" id="learning-toggle-' + f.id + '" aria-expanded="false" aria-controls="learning-panel-' + f.id + '" onclick="toggleLearningArchive(' + f.id + ')"><span class="learning-heading"><span class="learning-heading-title">' + t('console.learning.archive') + '</span><span class="learning-heading-count">' + t('console.learning.samples', { count: sampleCount }) + '</span>' + (sampleCount > 0 ? '<span class="learning-state" data-state="' + (prototypeCount > 0 ? (learning.enabled ? 'active' : 'paused') : 'pending') + '">' + state + '</span>' : '') + '</span><span class="face-expand-arrow" aria-hidden="true"></span></button><div class="face-learning-panel" id="learning-panel-' + f.id + '" aria-hidden="true"><div class="learning-panel-inner"></div></div>')
         + '</div>';
     }
     list.innerHTML = html;
@@ -2294,6 +2383,8 @@ function toggleLearningArchive(id) {
   var opening = !panel.classList.contains('active');
   panel.classList.toggle('active', opening);
   toggle.classList.toggle('open', opening);
+  toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  panel.setAttribute('aria-hidden', opening ? 'false' : 'true');
   if (opening) loadLearningArchive(id);
 }
 
@@ -2311,28 +2402,32 @@ function loadLearningArchive(id) {
     var sampleCount = archive ? Number(archive.sampleCount || 0) : 0;
     var prototypeCount = archive ? Number(archive.prototypeCount || 0) : 0;
     var enabled = !!(archive && archive.enabled);
-    var html = '';
+    var html = '<div class="learning-panel-inner"><div class="learning-panel-content">';
     if (sampleCount > 0) {
-      var summary = t('console.learning.samples', { count: sampleCount }) + ' · '
-        + (prototypeCount > 0 ? (enabled ? t('console.learning.active') : t('console.learning.paused'))
-          : t('console.learning.pending', { count: sampleCount }));
-      summary += ' · ' + t('console.learning.usage', {
+      var summaryState = prototypeCount > 0
+        ? (enabled ? t('console.learning.active') : t('console.learning.paused'))
+        : t('console.learning.pending', { count: sampleCount });
+      var summaryStateKey = prototypeCount > 0 ? (enabled ? 'active' : 'paused') : 'pending';
+      var usage = t('console.learning.usage', {
         used: Number(archive.usedSampleCount || 0),
         remaining: sampleCount - Number(archive.usedSampleCount || 0)
       });
-      html += '<div class="learning-summary">' + escapeHtml(summary) + '</div>';
+      html += '<div class="learning-overview"><div class="learning-overview-copy">'
+        + '<div class="learning-overview-line"><span class="learning-summary">' + escapeHtml(t('console.learning.samples', { count: sampleCount })) + '</span>'
+        + '<span class="learning-state" data-state="' + summaryStateKey + '">' + escapeHtml(summaryState) + '</span></div>'
+        + '<div class="learning-usage">' + escapeHtml(usage) + '</div></div>';
       html += '<div class="learning-actions">';
       html += '<button class="btn btn-primary" id="learning-update-' + id + '" onclick="onRebuildAdaptiveArchive(' + id + ')">' + t('console.learning.update') + '</button>';
       if (prototypeCount > 0) html += '<button class="btn btn-secondary" onclick="onToggleAdaptiveArchive(' + id + ',' + (enabled ? 'false' : 'true') + ')">' + t(enabled ? 'console.learning.pause' : 'console.learning.resume') + '</button>';
       html += '<button class="btn btn-secondary" onclick="openDeleteDialog(' + id + ',\'learning\')">' + t('console.learning.clear') + '</button>';
-      html += '</div>';
+      html += '</div></div>';
       html += renderLearningAnalysis(archive);
     } else {
-      html += '<div class="learning-empty">' + t('console.learning.noSamples') + '</div>';
+      html += '<div class="learning-empty"><span class="learning-empty-mark" aria-hidden="true"></span><span>' + t('console.learning.noSamples') + '</span></div>';
     }
-    panel.innerHTML = html;
+    panel.innerHTML = html + '</div></div>';
   } catch (e) {
-    panel.innerHTML = '<div class="learning-empty">' + escapeHtml(t('console.learning.rebuildFailed')) + '</div>';
+    panel.innerHTML = '<div class="learning-panel-inner"><div class="learning-panel-content"><div class="learning-empty"><span class="learning-empty-mark" aria-hidden="true"></span><span>' + escapeHtml(t('console.learning.rebuildFailed')) + '</span></div></div></div>';
   }
 }
 
@@ -2351,13 +2446,14 @@ function renderLearningAnalysis(archive) {
     var status = count < analysis.minimumSamples
       ? t('console.learning.groupMissing', { count: analysis.minimumSamples - count })
       : t(group.selected ? 'console.learning.groupReady' : 'console.learning.groupNotSelected');
-    html += '<section class="learning-group"><div class="learning-group-title">'
+    var groupState = group.selected ? 'ready' : count < analysis.minimumSamples ? 'pending' : 'unused';
+    html += '<section class="learning-group" data-state="' + groupState + '"><div class="learning-group-head"><div class="learning-group-title">'
       + escapeHtml(t('console.learning.groupTitle', { number: number, count: count }))
-      + '</div><div class="learning-group-status">' + escapeHtml(status) + '</div><div class="learning-samples">';
+      + '</div><div class="learning-group-status">' + escapeHtml(status) + '</div></div><div class="learning-samples">';
     group.members.forEach(function(member) {
       html += renderLearningSample(byId[String(member.id)], member.id === group.representativeSampleId);
     });
-    html += '</div><details><summary>' + escapeHtml(t('console.learning.groupDetails')) + '</summary>'
+    html += '</div><details class="learning-details"><summary>' + escapeHtml(t('console.learning.groupDetails')) + '</summary><div class="learning-detail-body">'
       + '<div>' + escapeHtml(t('console.learning.distanceLimits', {
         representative: Number(analysis.representativeLimit).toFixed(3),
         pair: Number(analysis.pairLimit).toFixed(3)
@@ -2370,27 +2466,27 @@ function renderLearningAnalysis(archive) {
           distance: Number(member.distance).toFixed(3)
         })) + '</span></div>';
     });
-    html += '<div>' + escapeHtml(t('console.learning.distanceNote')) + '</div></details></section>';
+    html += '<div class="learning-detail-note">' + escapeHtml(t('console.learning.distanceNote')) + '</div></div></details></section>';
   });
   if (isolated.length) {
-    html += '<section class="learning-group"><div class="learning-group-title">'
+    html += '<section class="learning-group" data-state="ungrouped"><div class="learning-group-head"><div class="learning-group-title">'
       + escapeHtml(t('console.learning.ungrouped', { count: isolated.length }))
       + '</div><div class="learning-group-status">' + escapeHtml(t('console.learning.noSimilarSamples'))
-      + '</div><div class="learning-samples">';
+      + '</div></div><div class="learning-samples">';
     isolated.forEach(function(member) { html += renderLearningSample(byId[String(member.id)], false); });
-    html += '</div><details><summary>' + escapeHtml(t('console.learning.groupDetails')) + '</summary>'
+    html += '</div><details class="learning-details"><summary>' + escapeHtml(t('console.learning.groupDetails')) + '</summary><div class="learning-detail-body">'
       + '<div>' + escapeHtml(t('console.learning.distanceLimits', {
         representative: Number(analysis.representativeLimit).toFixed(3),
         pair: Number(analysis.pairLimit).toFixed(3)
       })) + '</div>';
     isolated.forEach(function(member) {
       if (member.nearestSampleId === undefined) return;
-      html += '<div>' + escapeHtml(t('console.learning.nearestSample', {
+      html += '<div class="learning-distance-row"><span>' + escapeHtml(t('console.learning.nearestSample', {
         id: member.id, nearest: member.nearestSampleId,
         distance: Number(member.nearestDistance).toFixed(3)
-      })) + '</div>';
+      })) + '</span></div>';
     });
-    html += '<div>' + escapeHtml(t('console.learning.distanceNote')) + '</div></details></section>';
+    html += '<div class="learning-detail-note">' + escapeHtml(t('console.learning.distanceNote')) + '</div></div></details></section>';
   }
   return html;
 }
@@ -2399,7 +2495,7 @@ function renderLearningSample(sample, representative) {
   var file = String(sample.file || '');
   if (!/^[A-Za-z0-9._-]+$/.test(file)) return '';
   var stateKey = sample.state === 'used' ? 'used' : sample.state === 'unused' ? 'unused' : 'pendingSample';
-  return '<div class="learning-sample"><img src="' + LEARNING_BASE + encodeURIComponent(file)
+  return '<div class="learning-sample" data-state="' + stateKey + '"><img src="' + LEARNING_BASE + encodeURIComponent(file)
     + '" loading="lazy" alt="' + escapeHtml(t('console.learning.sampleId', { id: sample.id })) + '">'
     + (representative ? '<span class="learning-representative">' + escapeHtml(t('console.learning.representative')) + '</span>' : '')
     + '<span class="learning-sample-state">' + escapeHtml(t('console.learning.sampleId', { id: sample.id }))
