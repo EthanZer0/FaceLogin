@@ -1497,50 +1497,72 @@ std::string EnrollmentWizard::GetAdaptiveArchiveJson(int faceId) {
 }
 
 bool EnrollmentWizard::ClaimUnknownFaceForLearning(const std::string& file, int faceId) {
-    if (faceId <= 0 || file.empty() || file.find_first_of("/\\\\:") != std::string::npos) {
-        return false;
+    return ClaimUnknownFacesForLearning(file, faceId) == 1;
+}
+
+int EnrollmentWizard::ClaimUnknownFacesForLearning(const std::string& files, int faceId) {
+    if (faceId <= 0 || files.empty()) return 0;
+
+    std::vector<std::string> fileNames;
+    std::istringstream input(files);
+    for (std::string file; std::getline(input, file);) {
+        if (file.empty() || file.find_first_of("/\\\\:") != std::string::npos ||
+            std::find(fileNames.begin(), fileNames.end(), file) != fileNames.end()) {
+            continue;
+        }
+        fileNames.push_back(std::move(file));
     }
+    if (fileNames.empty()) return 0;
+
     m_store.LoadDatabase();
     const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
-    if (userIndex >= m_store.GetUsers().size()) return false;
+    if (userIndex >= m_store.GetUsers().size()) return 0;
     const auto& faces = m_store.GetUsers()[userIndex].faces;
     const auto faceIt = std::find_if(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
         return face.id == static_cast<uint32_t>(faceId) && !face.legacy;
     });
-    if (faceIt == faces.end()) return false;
-
-    const std::wstring sourceName = Utf8ToWstr(file);
-    const std::wstring sourcePath = m_dataDir + L"\\data\\unknown\\" + sourceName;
-    const DWORD attrs = GetFileAttributesW(sourcePath.c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    if (faceIt == faces.end()) return 0;
 
     // A historical failed frame is never accepted blindly. Re-run the current
-    // detector, landmarks and recognizer against the stored source frame.
-    if (!EnsureModelsLoaded()) return false;
-    dlib::matrix<dlib::rgb_pixel> image;
-    if (!DecodeJpegWithWic(sourcePath, image) || image.size() == 0) return false;
-    const auto detections = m_onnxDetector->Detect(image);
-    if (detections.size() != 1) return false;
-    const auto& detection = detections.front();
-    dlib::rectangle rect(static_cast<long>(detection.x1), static_cast<long>(detection.y1),
-                         static_cast<long>(detection.x2), static_cast<long>(detection.y2));
-    if (rect.is_empty() || rect.width() < 80 || rect.height() < 80) return false;
-    dlib::full_object_detection landmarks;
-    if (!m_detector->DetectLandmarks(image, rect, landmarks) || landmarks.num_parts() != 106) return false;
-    const auto embedding = m_onnxRecognizer->ComputeEmbedding(image, landmarks);
-    if (embedding.empty()) return false;
+    // detector, landmarks and recognizer against every stored source frame.
+    if (!EnsureModelsLoaded() || !m_adaptiveLearning.Load()) return 0;
 
-    if (!m_adaptiveLearning.Load()) return false;
-    const std::wstring sampleName = AdaptiveSampleName(static_cast<uint32_t>(faceId));
-    const std::wstring samplePath = m_dataDir + L"\\data\\adaptive\\samples\\" + sampleName;
-    if (!CopyFileW(sourcePath.c_str(), samplePath.c_str(), TRUE)) return false;
-    if (!m_adaptiveLearning.AddSample(m_sid, static_cast<uint32_t>(faceId), sampleName,
-                                      embedding, CurrentFileTimeTicks())) {
-        DeleteFileW(samplePath.c_str());
-        return false;
+    int added = 0;
+    for (const auto& file : fileNames) {
+        const std::wstring sourcePath = m_dataDir + L"\\data\\unknown\\" + Utf8ToWstr(file);
+        const DWORD attrs = GetFileAttributesW(sourcePath.c_str());
+        if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) continue;
+
+        dlib::matrix<dlib::rgb_pixel> image;
+        if (!DecodeJpegWithWic(sourcePath, image) || image.size() == 0) continue;
+        const auto detections = m_onnxDetector->Detect(image);
+        if (detections.size() != 1) continue;
+        const auto& detection = detections.front();
+        dlib::rectangle rect(static_cast<long>(detection.x1), static_cast<long>(detection.y1),
+                             static_cast<long>(detection.x2), static_cast<long>(detection.y2));
+        if (rect.is_empty() || rect.width() < 80 || rect.height() < 80) continue;
+        dlib::full_object_detection landmarks;
+        if (!m_detector->DetectLandmarks(image, rect, landmarks) || landmarks.num_parts() != 106) continue;
+        const auto embedding = m_onnxRecognizer->ComputeEmbedding(image, landmarks);
+        if (embedding.empty()) continue;
+
+        std::wstring sampleName;
+        std::wstring samplePath;
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            sampleName = AdaptiveSampleName(static_cast<uint32_t>(faceId));
+            samplePath = m_dataDir + L"\\data\\adaptive\\samples\\" + sampleName;
+            if (GetFileAttributesW(samplePath.c_str()) == INVALID_FILE_ATTRIBUTES) break;
+        }
+        if (sampleName.empty() || !CopyFileW(sourcePath.c_str(), samplePath.c_str(), TRUE)) continue;
+        if (!m_adaptiveLearning.AddSample(m_sid, static_cast<uint32_t>(faceId), sampleName,
+                                          embedding, CurrentFileTimeTicks())) {
+            DeleteFileW(samplePath.c_str());
+            continue;
+        }
+        ++added;
     }
-    NotifyServiceReload();
-    return true;
+    if (added > 0) NotifyServiceReload();
+    return added;
 }
 
 std::string EnrollmentWizard::RebuildAdaptiveArchive(int faceId) {

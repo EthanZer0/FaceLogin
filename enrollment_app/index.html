@@ -402,11 +402,19 @@ button{font-family:inherit}
   gap:10px;padding:2px;white-space:normal;
 }
 .face-card{
-  display:flex;flex-direction:column;overflow:hidden;
+  position:relative;display:flex;flex-direction:column;overflow:hidden;
   border:1px solid var(--hair);border-radius:var(--radius);
   background:var(--face);cursor:pointer;transition:border-color .15s,transform .15s;
 }
 .face-card:hover{border-color:var(--live);transform:translateY(-1px)}
+.face-card.selected{border-color:var(--live);box-shadow:0 0 0 2px rgba(0,182,137,.14)}
+.unknown-select{
+  position:absolute;top:8px;right:8px;z-index:1;width:20px;height:20px;
+  display:grid;place-items:center;border:1px solid rgba(255,255,255,.72);border-radius:5px;
+  background:rgba(15,17,21,.58);cursor:pointer;
+}
+.unknown-select input{width:14px;height:14px;margin:0;accent-color:var(--live);cursor:pointer}
+.unknown-selection-count{font:11px var(--font-data);color:#687083;white-space:nowrap}
 .face-card img{
   width:100%;aspect-ratio:16/9;object-fit:cover;display:block;
   background:#0F1115;
@@ -1239,6 +1247,9 @@ button{font-family:inherit}
           <div class="cs-list" role="listbox"></div>
         </div>
         <button class="btn btn-secondary" id="btn-clear-logs" onclick="clearLogs()">清空日志</button>
+        <span class="unknown-selection-count" id="unknown-selection-count" style="display:none"></span>
+        <button class="btn btn-secondary" id="btn-claim-selected" onclick="openSelectedLearningClaimDialog()" style="display:none"></button>
+        <button class="btn btn-secondary" id="btn-clear-selection" onclick="clearUnknownSelection()" style="display:none"></button>
         <button class="btn btn-secondary" id="btn-clear-faces" onclick="onClearUnknownFaces()" style="display:none">清空记录</button>
       </div>
     </div>
@@ -2329,7 +2340,7 @@ var renamePreviousFocus = null;
 var deleteFaceId = null;
 var deleteMode = 'face';
 var deletePreviousFocus = null;
-var learningClaimFile = '';
+var learningClaimFiles = [];
 var learningClaimPreviousFocus = null;
 var LEARNING_BASE = 'https://facelogin-learning/';
 
@@ -2587,16 +2598,35 @@ function onDeleteConfirm() {
   } catch(e) { showBanner('faces', mode === 'learning' ? t('console.learning.rebuildFailed') : t('console.faces.deleteFailedDetail', { error: e.message }), 'error'); }
 }
 
-function openLearningClaimDialog(file) {
+function getLearningClaimFaces() {
+  if (Object.keys(faceRecordsById).length === 0) {
+    try {
+      var faces = JSON.parse(H.GetFacesJson());
+      for (var i = 0; i < faces.length; i++) faceRecordsById[String(faces[i].id)] = faces[i];
+    } catch (e) {}
+  }
   var selectable = [];
   Object.keys(faceRecordsById).forEach(function(id) {
     if (!faceRecordsById[id].legacy) selectable.push(faceRecordsById[id]);
   });
-  if (selectable.length === 0) {
-    showBanner('faces', t('console.learning.claimFailed'), 'error');
+  return selectable;
+}
+
+function openLearningClaimDialog(files) {
+  var selectedFiles = Array.isArray(files) ? files : [files];
+  selectedFiles = selectedFiles.filter(function(file, index, all) {
+    return typeof file === 'string' && file.length > 0 && all.indexOf(file) === index;
+  });
+  if (!selectedFiles.length) {
+    showBanner('logs', t('console.learning.selectSamples'), 'error');
     return;
   }
-  learningClaimFile = file;
+  var selectable = getLearningClaimFaces();
+  if (selectable.length === 0) {
+    showBanner('logs', t('console.learning.claimFailed'), 'error');
+    return;
+  }
+  learningClaimFiles = selectedFiles;
   learningClaimPreviousFocus = document.activeElement;
   var select = document.getElementById('learning-claim-face');
   var options = '';
@@ -2609,10 +2639,13 @@ function openLearningClaimDialog(file) {
   error.textContent = '';
   error.classList.remove('show');
   document.getElementById('learning-claim-title').textContent = t('console.learning.claimTitle');
-  document.getElementById('learning-claim-description').textContent = t('console.learning.claimDescription');
+  document.getElementById('learning-claim-description').textContent = selectedFiles.length === 1
+    ? t('console.learning.claimDescription')
+    : t('console.learning.claimSelectedDescription', { count: selectedFiles.length });
   document.getElementById('learning-claim-label').textContent = t('console.learning.targetFace');
   document.getElementById('learning-claim-cancel').textContent = t('console.faces.renameCancel');
-  document.getElementById('learning-claim-confirm').textContent = t('console.learning.claimConfirm');
+  document.getElementById('learning-claim-confirm').textContent = selectedFiles.length === 1
+    ? t('console.learning.claimConfirm') : t('console.learning.claimSelected');
   document.getElementById('learning-claim-overlay').classList.add('active');
   requestAnimationFrame(function() { select.focus(); });
 }
@@ -2620,35 +2653,38 @@ function openLearningClaimDialog(file) {
 function closeLearningClaimDialog() {
   var overlay = document.getElementById('learning-claim-overlay');
   if (overlay) overlay.classList.remove('active');
-  learningClaimFile = '';
+  learningClaimFiles = [];
   var previousFocus = learningClaimPreviousFocus;
   learningClaimPreviousFocus = null;
   if (previousFocus && previousFocus.focus) previousFocus.focus();
 }
 
 function onLearningClaimConfirm() {
-  if (!learningClaimFile) return;
+  if (!learningClaimFiles.length) return;
   var select = document.getElementById('learning-claim-face');
   var faceId = parseInt(select.value, 10);
   if (!faceId) return;
-  var file = learningClaimFile;
+  var files = learningClaimFiles.slice();
   var confirm = document.getElementById('learning-claim-confirm');
   confirm.disabled = true;
-  try {
-    if (!H.ClaimUnknownFaceForLearning(file, faceId)) throw new Error('claim');
-    closeLearningClaimDialog();
-    renderUnknownFaces();
-    switchTab('faces');
-    loadFaces();
-    showBanner('faces', t('console.learning.claimed'), 'ok', 7000);
-    setTimeout(function() { toggleLearningArchive(faceId); }, 0);
-  } catch (e) {
-    var error = document.getElementById('learning-claim-error');
-    error.textContent = t('console.learning.claimFailed');
-    error.classList.add('show');
-  } finally {
-    confirm.disabled = false;
-  }
+  setTimeout(function() {
+    try {
+      var added = Number(H.ClaimUnknownFacesForLearning(files.join('\n'), faceId));
+      if (added <= 0) throw new Error('claim');
+      closeLearningClaimDialog();
+      unknownFaceSelection.clear();
+      renderUnknownFaces();
+      showBanner('logs', t('console.learning.claimedBatch', {
+        added: added, failed: files.length - added
+      }), 'ok', 7000);
+    } catch (e) {
+      var error = document.getElementById('learning-claim-error');
+      error.textContent = t('console.learning.claimFailed');
+      error.classList.add('show');
+    } finally {
+      confirm.disabled = false;
+    }
+  }, 0);
 }
 
 function onRenameFace(id) {
@@ -2999,6 +3035,7 @@ function refreshLogs() {
     (src === 'unknown') ? 'none' : 'inline-block';
   document.getElementById('btn-clear-faces').style.display =
     (src === 'unknown') ? 'inline-block' : 'none';
+  updateUnknownSelectionControls(src === 'unknown');
   if (src === 'unknown') {
     renderUnknownFaces();
     return;
@@ -3062,15 +3099,54 @@ function clearLogs() {
 // side ("facelogin-captures" → <dataDir>\data\unknown), so cards use plain
 // <img> tags and no bytes cross the COM boundary.
 var FACES_BASE = 'https://facelogin-captures/';
+var unknownFaceSelection = new Set();
+
+function updateUnknownSelectionControls(visible) {
+  var count = unknownFaceSelection.size;
+  var countEl = document.getElementById('unknown-selection-count');
+  var claim = document.getElementById('btn-claim-selected');
+  var clear = document.getElementById('btn-clear-selection');
+  countEl.style.display = visible ? 'inline' : 'none';
+  claim.style.display = visible ? 'inline-block' : 'none';
+  clear.style.display = visible ? 'inline-block' : 'none';
+  countEl.textContent = t('console.learning.selectedCount', { count: count });
+  claim.textContent = t('console.learning.claimSelected');
+  clear.textContent = t('console.learning.clearSelection');
+  claim.disabled = count === 0;
+  clear.disabled = count === 0;
+}
+
+function toggleUnknownSelection(file, checked) {
+  if (checked) unknownFaceSelection.add(file);
+  else unknownFaceSelection.delete(file);
+  updateUnknownSelectionControls(document.getElementById('log-source').value === 'unknown');
+  var card = document.querySelector('.face-card[data-unknown-file="' + file + '"]');
+  if (card) card.classList.toggle('selected', checked);
+}
+
+function clearUnknownSelection() {
+  unknownFaceSelection.clear();
+  renderUnknownFaces();
+}
+
+function openSelectedLearningClaimDialog() {
+  openLearningClaimDialog(Array.from(unknownFaceSelection));
+}
 
 function renderUnknownFaces() {
   var viewer = document.getElementById('log-viewer');
   try {
     var events = JSON.parse(H.GetUnknownFaceEvents());
     if (!events.length) {
+      unknownFaceSelection.clear();
       viewer.innerHTML = '<div class="log-warn">' + t('console.logs.noFailedRecords') + '</div>';
+      updateUnknownSelectionControls(true);
       return;
     }
+    var available = new Set(events.map(function(event) { return String(event.file).replace(/["'<>\\]/g, ''); }));
+    unknownFaceSelection.forEach(function(file) {
+      if (!available.has(file)) unknownFaceSelection.delete(file);
+    });
     var html = '<div class="faces-grid">';
     for (var i = 0; i < events.length; i++) {
       var e = events[i];
@@ -3078,8 +3154,12 @@ function renderUnknownFaces() {
       var dist = t('console.logs.distance', {
         distance: (typeof e.distance === 'number' && e.distance >= 0) ? e.distance.toFixed(3) : '-'
       });
-      html += '<div class="face-card" onclick="viewUnknownFace(\'' + file + '\')" '
+      var selected = unknownFaceSelection.has(file);
+      html += '<div class="face-card' + (selected ? ' selected' : '') + '" data-unknown-file="' + file + '" onclick="viewUnknownFace(\'' + file + '\')" '
         + 'oncontextmenu="return onFaceCardCtx(event,\'' + file + '\')">'
+        + '<label class="unknown-select" title="' + t('console.learning.selectSample') + '" onclick="event.stopPropagation()">'
+        + '<input type="checkbox" ' + (selected ? 'checked ' : '')
+        + 'onchange="toggleUnknownSelection(\'' + file + '\', this.checked)"></label>'
         + '<img src="' + FACES_BASE + file + '" alt="' + t('console.unknown.alt') + '" loading="lazy">'
         + '<div class="face-card-info">'
         + '<span class="face-card-ts">' + escapeHtml(String(e.ts || '')) + '</span>'
@@ -3089,6 +3169,7 @@ function renderUnknownFaces() {
     }
     html += '</div>';
     viewer.innerHTML = html;
+    updateUnknownSelectionControls(true);
   } catch(e) {
     viewer.innerHTML = '<div class="log-error">' + escapeHtml(t('console.logs.readFailed', { error: e.message })) + '</div>';
   }
@@ -3113,6 +3194,7 @@ function onFaceCardCtx(ev, file) {
     if (!confirm('确定删除这条识别失败记录吗？')) return;
     try {
       if (H.DeleteUnknownFace(fileInput.value)) {
+        unknownFaceSelection.delete(fileInput.value);
         renderUnknownFaces();
       } else {
         alert('删除失败，请重试。');
@@ -3134,6 +3216,7 @@ function onClearUnknownFaces() {
   if (!confirm('确定清空全部识别失败记录吗？照片与记录将全部删除，不可恢复。')) return;
   try {
     H.ClearUnknownFaces();
+    unknownFaceSelection.clear();
     renderUnknownFaces();
   } catch(e) { alert(t('console.logs.clearFailedDetail', { error: e.message })); }
 }

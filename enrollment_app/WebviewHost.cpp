@@ -466,6 +466,7 @@ STDMETHODIMP HostObject::GetIDsOfNames(REFIID, LPOLESTR* names, UINT cNames, LCI
     else if (n == L"SetAdaptiveArchiveEnabled") *ids = 50;
     else if (n == L"DeleteAdaptiveArchive") *ids = 51;
     else if (n == L"GetPreviewStatus")    *ids = 52;
+    else if (n == L"ClaimUnknownFacesForLearning") *ids = 53;
     else return DISP_E_UNKNOWNNAME;
     return S_OK;
 }
@@ -637,6 +638,13 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
             if (p->cArgs < 2 || p->rgvarg[0].vt != VT_I4) return DISP_E_BADPARAMCOUNT;
             const std::string file = OptionalArgUtf8(p, 1);
             if (res) *res = MakeBool(m_wizard->ClaimUnknownFaceForLearning(file, p->rgvarg[0].lVal));
+            break;
+        }
+        case 53: {
+            // ClaimUnknownFacesForLearning(files, faceId): COM arguments are reversed.
+            if (p->cArgs < 2 || p->rgvarg[0].vt != VT_I4) return DISP_E_BADPARAMCOUNT;
+            const std::string files = OptionalArgUtf8(p, 1);
+            if (res) *res = MakeInt(m_wizard->ClaimUnknownFacesForLearning(files, p->rgvarg[0].lVal));
             break;
         }
         case 49: {
