@@ -52,6 +52,7 @@ endif()
 
 add_subdirectory(common)
 add_subdirectory(credential_provider)
+add_subdirectory(diag_app)
 if(FACELOGIN_BUILD_VISION_COMPONENTS)
     add_subdirectory(face_service)
     add_subdirectory(enrollment_app)

@@ -88,9 +88,12 @@ private:
 // Main window + WebView2 host
 class WebviewHost {
 public:
-    WebviewHost(HINSTANCE hInstance, facelogin::EnrollmentWizard* wizard);
+    WebviewHost(HINSTANCE hInstance, facelogin::EnrollmentWizard* wizard,
+                bool diagnosticOnly = false);
     ~WebviewHost();
     int Run();
+    int RunStartupProbe();
+    void FinishStartupProbe(bool passed);
     void ResizeWebView(HWND hWnd);
     // (Re)build the page: re-read the embedded HTML, inject the current
     // locale pack and navigate. The initial load and the JS-triggered
@@ -101,6 +104,8 @@ public:
     HINSTANCE m_hInstance;
     HWND     m_hWnd = nullptr;
     facelogin::EnrollmentWizard* m_wizard;
+    bool m_diagnosticOnly = false;
+    bool m_startupProbePassed = false;
     LONG m_fixedW = 0;   // fixed window size (pixels), captured at creation
     LONG m_fixedH = 0;
 

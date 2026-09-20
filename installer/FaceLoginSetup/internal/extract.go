@@ -153,6 +153,8 @@ func RemoveInstalledFiles(destDir string, removeUserData bool) (int, error) {
 			"FaceLoginService.exe",
 			"FaceLoginCredentialProvider.dll",
 			"FaceLoginConsole.exe",
+			"FaceLoginDiag.exe",
+			"FaceLoginModelProbe.exe",
 			"Uninstall.exe",
 		} {
 			p := filepath.Join(destDir, name)
@@ -277,6 +279,8 @@ func removeKnownInstalledFiles(destDir string, removeUserData bool) (int, error)
 
 	for _, name := range []string{
 		"FaceLoginConsole.exe",
+		"FaceLoginDiag.exe",
+		"FaceLoginModelProbe.exe",
 		"FaceLoginCredentialProvider.dll",
 		"FaceLoginService.exe",
 		"abseil_dll.dll",

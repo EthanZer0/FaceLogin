@@ -63,8 +63,17 @@ static HANDLE AcquireSingleInstanceMutex() {
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                      LPWSTR lpCmdLine, int nCmdShow) {
     UNREFERENCED_PARAMETER(hPrevInstance);
-    UNREFERENCED_PARAMETER(lpCmdLine);
     UNREFERENCED_PARAMETER(nCmdShow);
+
+    if (lpCmdLine && wcscmp(lpCmdLine, L"--diagnostic-startup") == 0) {
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        if (FAILED(comResult)) return 2;
+        WebviewHost host(hInstance, nullptr, true);
+        const int result = host.RunStartupProbe();
+        CoUninitialize();
+        return result;
+    }
 
     // Keep WebView2 and the native window in the same physical-pixel space.
     // The manifest is the primary declaration; this call also makes the

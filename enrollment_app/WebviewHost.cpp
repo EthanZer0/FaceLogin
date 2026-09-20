@@ -11,6 +11,8 @@
 #pragma comment(lib, "wtsapi32.lib")
 
 static const wchar_t* WND_CLASS = L"FaceloginWv2Wnd";
+static constexpr UINT_PTR STARTUP_PROBE_TIMER_ID = 0xF1A0;
+static constexpr UINT STARTUP_PROBE_TIMEOUT_MS = 20000;
 
 // ==========================================================================
 // EnvCallback
@@ -29,6 +31,79 @@ STDMETHODIMP EnvCallback::Invoke(HRESULT hr, ICoreWebView2Environment* env) {
     env->CreateCoreWebView2Controller(hWnd, cb);
     return S_OK;
 }
+
+class StartupProbeScriptCallback final : public ICoreWebView2ExecuteScriptCompletedHandler {
+public:
+    explicit StartupProbeScriptCallback(WebviewHost* host) : m_host(host) {}
+    STDMETHOD(QueryInterface)(REFIID iid, void** object) override {
+        if (!object) return E_POINTER;
+        if (iid == IID_IUnknown || iid == __uuidof(ICoreWebView2ExecuteScriptCompletedHandler)) {
+            *object = this;
+            AddRef();
+            return S_OK;
+        }
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHOD_(ULONG, AddRef)() override { return InterlockedIncrement(&m_refs); }
+    STDMETHOD_(ULONG, Release)() override {
+        const ULONG count = InterlockedDecrement(&m_refs);
+        if (!count) delete this;
+        return count;
+    }
+    STDMETHOD(Invoke)(HRESULT hr, LPCWSTR result) override {
+        m_host->FinishStartupProbe(SUCCEEDED(hr) && result && wcscmp(result, L"true") == 0);
+        return S_OK;
+    }
+private:
+    volatile LONG m_refs = 1;
+    WebviewHost* m_host;
+};
+
+class StartupProbeNavigationCallback final : public ICoreWebView2NavigationCompletedEventHandler {
+public:
+    StartupProbeNavigationCallback(WebviewHost* host, ICoreWebView2* webview)
+        : m_host(host), m_webview(webview) {}
+    STDMETHOD(QueryInterface)(REFIID iid, void** object) override {
+        if (!object) return E_POINTER;
+        if (iid == IID_IUnknown || iid == __uuidof(ICoreWebView2NavigationCompletedEventHandler)) {
+            *object = this;
+            AddRef();
+            return S_OK;
+        }
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHOD_(ULONG, AddRef)() override { return InterlockedIncrement(&m_refs); }
+    STDMETHOD_(ULONG, Release)() override {
+        const ULONG count = InterlockedDecrement(&m_refs);
+        if (!count) delete this;
+        return count;
+    }
+    STDMETHOD(Invoke)(ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) override {
+        BOOL success = FALSE;
+        if (!args || FAILED(args->get_IsSuccess(&success)) || !success) {
+            m_host->FinishStartupProbe(false);
+            return S_OK;
+        }
+        static constexpr wchar_t script[] =
+            L"(() => {"
+            L"const h=window.chrome?.webview?.hostObjects?.sync?.host;"
+            L"const tabs=document.querySelectorAll('.tab[data-tab]').length;"
+            L"if(!h||tabs<4||!document.getElementById('cam-loading')||window.__FACELOGIN_PROBE_ERRORS__?.length)return false;"
+            L"try{return h.StartPreview()===false&&JSON.parse(h.GetConfig())!==null;}catch(e){return false;}"
+            L"})()";
+        auto* callback = new StartupProbeScriptCallback(m_host);
+        const HRESULT hr = m_webview->ExecuteScript(script, callback);
+        callback->Release();
+        if (FAILED(hr)) m_host->FinishStartupProbe(false);
+        return S_OK;
+    }
+private:
+    volatile LONG m_refs = 1;
+    WebviewHost* m_host;
+    ICoreWebView2* m_webview;
+};
 
 // ==========================================================================
 // CtrlCallback
@@ -69,6 +144,17 @@ STDMETHODIMP CtrlCallback::Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) {
         ICoreWebView2ProcessFailedEventHandler* pf = new ProcessFailedCallback();
         self->m_webview->add_ProcessFailed(pf, &self->m_processFailedToken);
         pf->Release();
+    }
+
+    if (self->m_diagnosticOnly) {
+        auto* startupProbe = new StartupProbeNavigationCallback(self, self->m_webview);
+        EventRegistrationToken startupToken{};
+        const HRESULT probeHr = self->m_webview->add_NavigationCompleted(startupProbe, &startupToken);
+        startupProbe->Release();
+        if (FAILED(probeHr)) {
+            self->FinishStartupProbe(false);
+            return S_OK;
+        }
     }
 
     // Map the unknown-face capture folder to a virtual host so the log page
@@ -179,6 +265,16 @@ void WebviewHost::ReloadUi() {
         }
     }
 
+    if (m_diagnosticOnly) {
+        static const std::string probeBootstrap =
+            "<script>window.__FACELOGIN_PROBE_ERRORS__=[];"
+            "window.addEventListener('error',function(){window.__FACELOGIN_PROBE_ERRORS__.push('error');},true);"
+            "window.addEventListener('unhandledrejection',function(){window.__FACELOGIN_PROBE_ERRORS__.push('rejection');});"
+            "</script>";
+        const size_t head = htmlContent.find("<head>");
+        htmlContent.insert(head == std::string::npos ? 0 : head + 6, probeBootstrap);
+    }
+
     int wlen = MultiByteToWideChar(CP_UTF8, 0, htmlContent.c_str(), -1, nullptr, 0);
     std::wstring whtml(wlen, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, htmlContent.c_str(), -1, &whtml[0], wlen);
@@ -189,8 +285,8 @@ void WebviewHost::ReloadUi() {
 // WebviewHost
 // ==========================================================================
 
-WebviewHost::WebviewHost(HINSTANCE hInst, facelogin::EnrollmentWizard* w)
-    : m_hInstance(hInst), m_wizard(w) {
+WebviewHost::WebviewHost(HINSTANCE hInst, facelogin::EnrollmentWizard* w, bool diagnosticOnly)
+    : m_hInstance(hInst), m_wizard(w), m_diagnosticOnly(diagnosticOnly) {
     // Fallback HTML in case file can't be read
     m_html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><style>"
         "body{display:flex;align-items:center;justify-content:center;"
@@ -255,19 +351,37 @@ int WebviewHost::Run() {
         nullptr, nullptr, m_hInstance, this);
     if (!m_hWnd) return 1;
 
-    ShowWindow(m_hWnd, SW_SHOW);
-    UpdateWindow(m_hWnd);
+    if (m_diagnosticOnly) {
+        SetTimer(m_hWnd, STARTUP_PROBE_TIMER_ID, STARTUP_PROBE_TIMEOUT_MS, nullptr);
+    } else {
+        ShowWindow(m_hWnd, SW_SHOW);
+        UpdateWindow(m_hWnd);
+    }
 
     // Register for session notifications (lock/unlock) to handle camera contention
-    WTSRegisterSessionNotification(m_hWnd, NOTIFY_FOR_THIS_SESSION);
-    m_sessionNotifRegistered = true;
+    if (!m_diagnosticOnly) {
+        WTSRegisterSessionNotification(m_hWnd, NOTIFY_FOR_THIS_SESSION);
+        m_sessionNotifRegistered = true;
+    }
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-    return 0;
+    return m_diagnosticOnly && !m_startupProbePassed ? 1 : 0;
+}
+
+int WebviewHost::RunStartupProbe() {
+    m_diagnosticOnly = true;
+    return Run();
+}
+
+void WebviewHost::FinishStartupProbe(bool passed) {
+    if (!m_diagnosticOnly || !m_hWnd || !IsWindow(m_hWnd)) return;
+    m_startupProbePassed = passed;
+    KillTimer(m_hWnd, STARTUP_PROBE_TIMER_ID);
+    PostMessageW(m_hWnd, WM_CLOSE, 0, 0);
 }
 
 LRESULT CALLBACK WebviewHost::WndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -296,7 +410,8 @@ LRESULT WebviewHost::HandleMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         // polluting the EXE directory with a .WebView2 folder.
         wchar_t tempPath[MAX_PATH];
         GetTempPathW(MAX_PATH, tempPath);
-        std::wstring wv2DataDir = std::wstring(tempPath) + L"FaceLoginConsole.WebView2";
+        std::wstring wv2DataDir = std::wstring(tempPath) +
+            (m_diagnosticOnly ? L"FaceLoginConsole.Diagnostic.WebView2" : L"FaceLoginConsole.WebView2");
         CreateDirectoryW(wv2DataDir.c_str(), nullptr);
 
         EnvCallback* cb = new EnvCallback(hWnd);
@@ -353,6 +468,13 @@ LRESULT WebviewHost::HandleMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
         return 0;
+
+    case WM_TIMER:
+        if (m_diagnosticOnly && wp == STARTUP_PROBE_TIMER_ID) {
+            FinishStartupProbe(false);
+            return 0;
+        }
+        break;
 
     case WM_CLOSE:
         DestroyWindow(hWnd);
@@ -508,7 +630,6 @@ static VARIANT MakeBool(bool v) { VARIANT var; VariantInit(&var); var.vt = VT_BO
 static VARIANT MakeInt(int v)  { VARIANT var; VariantInit(&var); var.vt = VT_I4; var.lVal = v; return var; }
 
 STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS* p, VARIANT* res, EXCEPINFO*, UINT*) {
-    if (!m_wizard) return E_FAIL;
     if (res) VariantInit(res);
 
     // In sync mode, WebView2 calls DISPATCH_PROPERTYGET first to get the
@@ -526,6 +647,48 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
     if (wFlags & DISPATCH_METHOD) {
         // DISPID_VALUE means "invoke the previously resolved method"
         if (id == DISPID_VALUE) id = m_lastDispId;
+
+        if (!m_wizard) {
+            switch (id) {
+            case 1: case 5: case 6: case 7: case 10: case 11: case 12:
+            case 14: case 28: case 33: case 35: case 38: case 39: case 45:
+                if (res) *res = MakeBool(false);
+                break;
+            case 3: case 22: case 24: case 53:
+                if (res) *res = MakeInt(0);
+                break;
+            case 4: case 8: case 18: case 37:
+                if (res) *res = MakeStr("");
+                break;
+            case 9: case 15: case 16: case 21: case 25: case 43:
+                if (res) *res = MakeStr("[]");
+                break;
+            case 13:
+                if (res) *res = MakeStr("{\"camera_device\":\"\",\"camera_rotation\":0,\"liveness_method\":\"none\"}");
+                break;
+            case 19:
+                if (res) *res = MakeStr("local");
+                break;
+            case 20:
+                if (res) *res = MakeStr("");
+                break;
+            case 30:
+                if (res) *res = MakeStr("{\"state\":0}");
+                break;
+            case 47:
+                if (res) *res = MakeStr("{\"enabled\":false,\"sampleCount\":0,\"groups\":[],\"samples\":[]}");
+                break;
+            case 49:
+                if (res) *res = MakeStr("{\"status\":\"no_samples\"}");
+                break;
+            case 52:
+                if (res) *res = MakeStr("{\"state\":\"idle\"}");
+                break;
+            default:
+                break;
+            }
+            return S_OK;
+        }
 
         switch (id) {
         case 1:  if (res) *res = MakeBool(m_wizard->StartPreview()); break;
