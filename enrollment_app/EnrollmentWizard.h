@@ -77,7 +77,8 @@ public:
     std::string GetFacesJson();
     // Append a new face for the current account without re-entering a password
     // (identity proven by the session token SID). label may be empty.
-    bool SaveEnrollmentAppend(const std::wstring& label = L"");
+    // 0 = saved, 1 = face limit, 2 = identity mismatch, 3 = save failed.
+    int SaveEnrollmentAppend(const std::wstring& label = L"");
     // Delete one face of the current account (removes the account if it was
     // the last face). Returns false on unknown id / not enrolled.
     bool DeleteFace(int faceId);
@@ -203,6 +204,7 @@ private:
 
     bool SaveEnrollmentImpl(const std::wstring& password, bool passwordless,
                             const std::wstring& label);
+    void RepairLegacyLocalSid();
     static std::wstring GetCurrentProcessUserSid();
 
     // Camera & face processing
@@ -285,6 +287,7 @@ private:
     std::wstring m_username;
     std::wstring m_upn;       // UserPrincipalName (e.g. "john@outlook.com") or empty for local
     std::wstring m_sid;       // Security Identifier string
+    bool m_identityRepairBlocked = false;
     std::string m_accountType; // "local" or "msa"
     std::wstring m_dataDir;
 };

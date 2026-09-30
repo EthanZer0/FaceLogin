@@ -71,6 +71,9 @@ public:
     bool SetArchiveEnabled(const std::wstring& sid, uint32_t faceId, bool enabled);
     bool DeleteArchive(const std::wstring& sid, uint32_t faceId);
     bool DeleteAllForSid(const std::wstring& sid);
+    // Move archives that were keyed by the erroneous local machine-domain SID.
+    // Sample files and face IDs remain unchanged. Safe to retry on next launch.
+    bool ReassignSid(const std::wstring& oldSid, const std::wstring& newSid);
 
     // Returns the nearest active representative for one base face.  It never
     // searches another account or another base face.

@@ -1520,7 +1520,6 @@ var RUNTIME_TEXT_KEYS = {
   '账号信息已刷新，人脸已保留。': 'console.refresh.success',
   '已暂不处理。下次进入“人脸”页仍会提示刷新账号信息。': 'console.refresh.dismissed',
   '新脸已添加成功！可按 Win+L 锁定屏幕测试人脸登录。': 'console.enroll.appendSuccess',
-  '追加失败（已达人脸上限或身份校验失败）。': 'console.enroll.appendFailed',
   '请输入密码。': 'console.password.required',
   '录入成功！可按 Win+L 锁定屏幕测试人脸登录。': 'console.enroll.success',
   '密码错误，请确认是你的 Windows 登录密码。': 'console.password.incorrect',
@@ -2145,6 +2144,12 @@ function onSaveSettings() {
 }
 
 function onCapture() {
+  try {
+    if (H.GetFaceCount() < 0) {
+      showBanner('cam', t('console.enroll.identityRepairFailed'), 'error', 8000);
+      return;
+    }
+  } catch(e) {}
   var btn = document.getElementById('btn-capture');
   var spinner = document.getElementById('cap-spinner');
   var prog = document.getElementById('cap-progress');
@@ -2242,6 +2247,15 @@ function onCapture() {
           // (no password needed — the session identity is the proof).
           var faceCount = 0;
           try { faceCount = H.GetFaceCount(); } catch(e) {}
+
+          if (faceCount < 0) {
+            activateScreen('screen-cam');
+            viewing = true;
+            renderFrame();
+            requestPreviewStart();
+            showBanner('cam', t('console.enroll.identityRepairFailed'), 'error', 8000);
+            return;
+          }
 
           if (faceCount > 0) {
             // If the record is a stale account-type one (state 1: MSA→local,
@@ -2356,6 +2370,11 @@ function loadFaces() {
       faceRecordsById[String(faces[j].id)] = faces[j];
     }
     var list = document.getElementById('face-list');
+    if (count < 0) {
+      list.innerHTML = '<div class="face-empty">' + t('console.enroll.identityRepairFailed') + '</div>';
+      document.getElementById('faces-count').textContent = '';
+      return;
+    }
     document.getElementById('faces-count').textContent = t('console.faces.count', { count: count });
     try { document.getElementById('faces-user').textContent = H.GetUsername(); } catch(e) {}
 
@@ -2921,13 +2940,13 @@ function onAppendConfirm() {
 
   // Defer the synchronous COM call so the spinner paints first.
   setTimeout(function() {
-    var ok = false;
-    try { ok = H.SaveEnrollmentAppend(label); } catch(e) { ok = false; }
+    var result = 3;
+    try { result = H.SaveEnrollmentAppend(label); } catch(e) { result = 3; }
     btn.disabled = false;
     cancelBtn.disabled = false;
     spinner.style.display = 'none';
 
-    if (ok) {
+    if (result === 0) {
       activateScreen('screen-cam');
       currentTab = 'cam';
       document.getElementById('samples-tag').textContent = '0 / 10';
@@ -2936,7 +2955,10 @@ function onAppendConfirm() {
       renderFrame();
       requestPreviewStart();
     } else {
-      showBanner('append', '追加失败（已达人脸上限或身份校验失败）。', 'error');
+      var reason = result === 1 ? 'console.enroll.appendLimit' :
+                   result === 2 ? 'console.enroll.appendIdentity' :
+                                  'console.enroll.appendSaveFailed';
+      showBanner('append', t(reason), 'error');
     }
   }, 50);
 }

@@ -48,21 +48,26 @@ static void LookupUserIdentity(const std::wstring& username,
     outSid.clear();
     outUpn.clear();
 
-    // Get SID via LookupAccountNameW
-    DWORD sidSize = 0, domainSize = 0;
-    SID_NAME_USE sidType;
-    LookupAccountNameW(nullptr, username.c_str(),
-                       nullptr, &sidSize, nullptr, &domainSize, &sidType);
-    if (sidSize > 0) {
+    // Prefer the local SAM account. A bare name can resolve to the machine
+    // domain SID when the user and computer names coincide.
+    const std::wstring qualifiedName = L".\\" + username;
+    for (const auto& candidate : {qualifiedName, username}) {
+        DWORD sidSize = 0, domainSize = 0;
+        SID_NAME_USE sidType{};
+        LookupAccountNameW(nullptr, candidate.c_str(),
+                           nullptr, &sidSize, nullptr, &domainSize, &sidType);
+        if (sidSize == 0) continue;
         std::vector<BYTE> sidBuf(sidSize);
         std::vector<wchar_t> domainBuf(domainSize > 0 ? domainSize : 1);
-        if (LookupAccountNameW(nullptr, username.c_str(),
+        if (LookupAccountNameW(nullptr, candidate.c_str(),
                                sidBuf.data(), &sidSize,
-                               domainBuf.data(), &domainSize, &sidType)) {
+                               domainBuf.data(), &domainSize, &sidType) &&
+            sidType == SidTypeUser) {
             LPWSTR sidStr = nullptr;
             if (ConvertSidToStringSidW(reinterpret_cast<PSID>(sidBuf.data()), &sidStr)) {
                 outSid = sidStr;
                 LocalFree(sidStr);
+                break;
             }
         }
     }
@@ -384,6 +389,10 @@ bool CredentialStore::SaveDatabase() {
     }
 
     file.close();
+    if (!file) {
+        FACELOGIN_ERROR(L"Failed to finish writing credential database");
+        return false;
+    }
     // A successful save writes V5 (new alignment) data, so any prior
     // "old alignment, needs re-enrollment" flag is now resolved.
     m_needsReenrollment = false;
@@ -414,6 +423,33 @@ size_t CredentialStore::FindUserIndex(const std::wstring& sid,
     return m_users.size();
 }
 
+CredentialStore::SidRepairResult CredentialStore::RepairLocalAccountSid(
+    const std::wstring& username, const std::wstring& oldDomainSid,
+    const std::wstring& userSid) {
+    if (username.empty() || oldDomainSid.empty() || userSid.empty()) {
+        return SidRepairResult::NotNeeded;
+    }
+
+    size_t legacyIndex = m_users.size();
+    bool currentSidExists = false;
+    for (size_t i = 0; i < m_users.size(); ++i) {
+        const auto& record = m_users[i];
+        if (record.sid == userSid) currentSidExists = true;
+        if (record.sid != oldDomainSid || !record.upn.empty() ||
+            CompareStringOrdinal(record.username.c_str(), -1,
+                                 username.c_str(), -1, TRUE) != CSTR_EQUAL) {
+            continue;
+        }
+        if (legacyIndex != m_users.size()) return SidRepairResult::Conflict;
+        legacyIndex = i;
+    }
+    if (legacyIndex == m_users.size()) return SidRepairResult::NotNeeded;
+    if (currentSidExists) return SidRepairResult::Conflict;
+
+    m_users[legacyIndex].sid = userSid;
+    return SidRepairResult::Repaired;
+}
+
 bool CredentialStore::AddFace(const std::wstring& username,
                               const std::wstring& upn,
                               const std::wstring& sid,
@@ -421,7 +457,10 @@ bool CredentialStore::AddFace(const std::wstring& username,
                               const std::vector<float>& embedding,
                               const std::wstring& label,
                               uint32_t* outFaceId) {
-    size_t idx = FindUserIndex(sid, upn, username);
+    // A supplied SID identifies the account. Falling back to an equal short
+    // name could append a face to another account and retain its password.
+    size_t idx = sid.empty() ? FindUserIndex(L"", upn, username)
+                             : FindUserIndex(sid, L"", L"");
 
     if (idx < m_users.size()) {
         // Account exists → append a face, never touch stored password/faces.

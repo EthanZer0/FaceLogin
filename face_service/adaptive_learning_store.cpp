@@ -207,6 +207,30 @@ bool AdaptiveLearningStore::Reload() {
     return Load();
 }
 
+bool AdaptiveLearningStore::ReassignSid(const std::wstring& oldSid,
+                                       const std::wstring& newSid) {
+    if (oldSid.empty() || newSid.empty() || !Load()) return false;
+    std::vector<size_t> affected;
+    for (size_t i = 0; i < m_archives.size(); ++i) {
+        if (m_archives[i].sid == oldSid) affected.push_back(i);
+    }
+    if (affected.empty()) return true;
+
+    for (size_t index : affected) {
+        if (FindArchive(newSid, m_archives[index].faceId)) return false;
+    }
+
+    const std::wstring path = StorePath();
+    const std::wstring backup = path + L".sid-repair-" +
+        std::to_wstring(GetTickCount64()) + L".bak";
+    if (!CopyFileW(path.c_str(), backup.c_str(), TRUE)) return false;
+
+    for (size_t index : affected) m_archives[index].sid = newSid;
+    if (Save()) return true;
+    for (size_t index : affected) m_archives[index].sid = oldSid;
+    return false;
+}
+
 bool AdaptiveLearningStore::Save() const {
     if (!EnsureDirectories()) return false;
     const std::wstring path = StorePath();

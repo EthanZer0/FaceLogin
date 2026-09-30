@@ -129,6 +129,49 @@ static std::wstring GetSessionUpn() {
     return upn;
 }
 
+static void NotifyServiceReload();
+
+// Only a local SAM user can have the machine-domain SID written by the old
+// unqualified-name lookup. Derive that domain SID from the process token and
+// verify that the token resolves to this computer and this SAM name.
+static std::wstring LocalAccountDomainSid(const std::wstring& userSid,
+                                          const std::wstring& username) {
+    PSID sid = nullptr;
+    if (userSid.empty() || !ConvertStringSidToSidW(userSid.c_str(), &sid)) return {};
+
+    DWORD nameSize = 0, domainSize = 0;
+    SID_NAME_USE use{};
+    LookupAccountSidW(nullptr, sid, nullptr, &nameSize, nullptr, &domainSize, &use);
+    std::vector<wchar_t> name(nameSize ? nameSize : 1);
+    std::vector<wchar_t> domain(domainSize ? domainSize : 1);
+    wchar_t computer[MAX_COMPUTERNAME_LENGTH + 1] = {};
+    DWORD computerSize = ARRAYSIZE(computer);
+    const bool localUser = nameSize > 0 && domainSize > 0 &&
+        LookupAccountSidW(nullptr, sid, name.data(), &nameSize,
+                          domain.data(), &domainSize, &use) &&
+        GetComputerNameW(computer, &computerSize) && use == SidTypeUser &&
+        CompareStringOrdinal(name.data(), -1, username.c_str(), -1, TRUE) == CSTR_EQUAL &&
+        CompareStringOrdinal(domain.data(), -1, computer, -1, TRUE) == CSTR_EQUAL;
+
+    std::wstring result;
+    if (localUser) {
+        DWORD size = 0;
+        GetWindowsAccountDomainSid(sid, nullptr, &size);
+        if (size > 0) {
+            std::vector<BYTE> domainSid(size);
+            if (GetWindowsAccountDomainSid(sid, domainSid.data(), &size)) {
+                LPWSTR value = nullptr;
+                if (ConvertSidToStringSidW(domainSid.data(), &value)) {
+                    result = value;
+                    LocalFree(value);
+                }
+            }
+        }
+    }
+    LocalFree(sid);
+    return result;
+}
+
 EnrollmentWizard::EnrollmentWizard() {
     std::wstring regData = ReadRegString(REGVAL_DATA_PATH, L"");
     if (!regData.empty()) {
@@ -183,54 +226,10 @@ EnrollmentWizard::EnrollmentWizard() {
         m_accountType = "msa";
     }
 
-    // Get SID via LookupAccountNameW
-    {
-        DWORD sidSize = 0, domainSize = 0;
-        SID_NAME_USE sidType;
-        std::wstring lookupName = m_upn.empty() ? m_username : m_upn;
-
-        LookupAccountNameW(nullptr, lookupName.c_str(),
-                           nullptr, &sidSize, nullptr, &domainSize, &sidType);
-        if (sidSize > 0) {
-            std::vector<BYTE> sidBuf(sidSize);
-            std::vector<wchar_t> domainBuf(domainSize > 0 ? domainSize : 1);
-            if (LookupAccountNameW(nullptr, lookupName.c_str(),
-                                   sidBuf.data(), &sidSize,
-                                   domainBuf.data(), &domainSize, &sidType)) {
-                LPWSTR sidStr = nullptr;
-                if (ConvertSidToStringSidW(reinterpret_cast<PSID>(sidBuf.data()), &sidStr)) {
-                    m_sid = sidStr;
-                    LocalFree(sidStr);
-                }
-            } else {
-                DWORD err = GetLastError();
-                FACELOGIN_WARN(L"LookupAccountNameW(UPN) FAILED: err=%lu", err);
-            }
-        }
-
-        if (m_sid.empty()) {
-            DWORD sidSize2 = 0, domainSize2 = 0;
-            SID_NAME_USE sidType2;
-            LookupAccountNameW(nullptr, m_username.c_str(),
-                               nullptr, &sidSize2, nullptr, &domainSize2, &sidType2);
-            if (sidSize2 > 0) {
-                std::vector<BYTE> sidBuf2(sidSize2);
-                std::vector<wchar_t> domainBuf2(domainSize2 > 0 ? domainSize2 : 1);
-                if (LookupAccountNameW(nullptr, m_username.c_str(),
-                                       sidBuf2.data(), &sidSize2,
-                                       domainBuf2.data(), &domainSize2, &sidType2)) {
-                    LPWSTR sidStr = nullptr;
-                    if (ConvertSidToStringSidW(reinterpret_cast<PSID>(sidBuf2.data()), &sidStr)) {
-                        m_sid = sidStr;
-                        LocalFree(sidStr);
-                    }
-                } else {
-                    DWORD err = GetLastError();
-                    FACELOGIN_WARN(L"LookupAccountNameW(SAM) FAILED: err=%lu", err);
-                }
-            }
-        }
-    }
+    // The process token is the authority for the account represented by this
+    // Console process. Name lookup is ambiguous when user and computer match.
+    m_sid = GetCurrentProcessUserSid();
+    if (m_sid.empty()) FACELOGIN_ERROR(L"Cannot determine enrollment account SID");
 
     m_webcam     = std::make_unique<WebcamCapture>();
     m_detector   = std::make_unique<OnnxLandmarkDetector>();
@@ -239,6 +238,7 @@ EnrollmentWizard::EnrollmentWizard() {
     if (!m_adaptiveLearning.Load()) {
         FACELOGIN_WARN(L"Adaptive learning archive unavailable; it will be retried on demand");
     }
+    RepairLegacyLocalSid();
 
     m_config = LoadConfig(m_dataDir);
     m_livenessMethod = m_config.liveness_method;
@@ -1230,6 +1230,60 @@ std::wstring EnrollmentWizard::GetCurrentProcessUserSid() {
     return result;
 }
 
+void EnrollmentWizard::RepairLegacyLocalSid() {
+    if (m_sid.empty() || m_username.empty()) {
+        m_identityRepairBlocked = true;
+        return;
+    }
+    if (!m_upn.empty()) return;
+
+    const std::wstring domainSid = LocalAccountDomainSid(m_sid, m_username);
+    if (domainSid.empty()) return;
+    if (!m_store.LoadDatabase()) {
+        m_identityRepairBlocked = true;
+        return;
+    }
+
+    const auto repair = m_store.RepairLocalAccountSid(m_username, domainSid, m_sid);
+    if (repair == CredentialStore::SidRepairResult::Conflict) {
+        FACELOGIN_ERROR(L"Local account SID repair refused: conflicting records");
+        m_identityRepairBlocked = true;
+        return;
+    }
+    if (repair == CredentialStore::SidRepairResult::Repaired) {
+        const std::wstring path = m_dataDir + L"\\data\\users.dat";
+        const std::wstring backup = path + L".sid-repair-" +
+            std::to_wstring(CurrentFileTimeTicks()) + L".bak";
+        if (!CopyFileW(path.c_str(), backup.c_str(), TRUE)) {
+            FACELOGIN_ERROR(L"Local account SID repair backup failed (err=%lu)", GetLastError());
+            m_store.ReloadDatabase();
+            m_identityRepairBlocked = true;
+            return;
+        }
+
+        if (!m_store.SaveDatabase() || !m_store.ReloadDatabase() ||
+            m_store.GetFaceCount(m_sid) == 0) {
+            FACELOGIN_ERROR(L"Local account SID repair save failed");
+            if (!CopyFileW(backup.c_str(), path.c_str(), FALSE)) {
+                FACELOGIN_ERROR(L"Local account SID repair restore failed (err=%lu)", GetLastError());
+            }
+            m_store.ReloadDatabase();
+            m_identityRepairBlocked = true;
+            return;
+        }
+        FACELOGIN_INFO(L"Corrected legacy local account SID; enrolled faces preserved");
+        NotifyServiceReload();
+    }
+
+    // An earlier launch may have saved users.dat but failed to save the
+    // separate learning archive. Retry its SID change when the face record is
+    // already identified by the real user SID.
+    if (m_store.GetFaceCount(m_sid) > 0 &&
+        !m_adaptiveLearning.ReassignSid(domainSid, m_sid)) {
+        FACELOGIN_WARN(L"Adaptive learning SID repair deferred");
+    }
+}
+
 // Detect whether the enrolled account is passwordless (no password — PIN/Hello
 // only). Layered, conservative:
 //   1. The current session identity must be the enrolled account.
@@ -1278,6 +1332,10 @@ int EnrollmentWizard::GetPasswordlessState() const {
 
 bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool passwordless,
                                           const std::wstring& label) {
+    if (m_identityRepairBlocked || m_sid.empty()) {
+        FACELOGIN_ERROR(L"Enrollment refused: account identity unavailable");
+        return false;
+    }
     if (m_embeddings.empty()) { FACELOGIN_ERROR(L"No face samples"); return false; }
 
     // Embedding consistency check: verify all samples are from the same person.
@@ -1332,7 +1390,10 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
         if (avgNorm > 1e-8f) avgEmbedding /= avgNorm;
     }
 
-    m_store.LoadDatabase();
+    if (!m_store.LoadDatabase()) {
+        FACELOGIN_ERROR(L"Enrollment refused: credential database could not be loaded");
+        return false;
+    }
 
     // Copy the average embedding into a plain float vector (full dimensionality —
     // 512-D for ONNX, 128-D for dlib). Never truncate.
@@ -1344,7 +1405,7 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
     // First-time enrollment stores the (protected) password and face #1;
     // subsequent enrollments APPEND a face and leave the stored password
     // untouched (the user is the logged-on session owner, already trusted).
-    size_t idx = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    size_t idx = m_store.FindUserIndex(m_sid, L"", L"");
     uint32_t newFaceId = 0;
     if (idx >= m_store.GetUsers().size()) {
         // First face for this account — protect the password now.
@@ -1400,7 +1461,8 @@ bool EnrollmentWizard::SaveEnrollmentImpl(const std::wstring& password, bool pas
 // ============================================================================
 
 int EnrollmentWizard::GetFaceCount() {
-    m_store.LoadDatabase();
+    if (m_identityRepairBlocked || m_sid.empty()) return -1;
+    if (!m_store.LoadDatabase()) return -1;
     return static_cast<int>(m_store.GetFaceCount(m_sid));
 }
 
@@ -1412,7 +1474,7 @@ bool EnrollmentWizard::NeedsReenrollment() {
 std::string EnrollmentWizard::GetFacesJson() {
     m_store.LoadDatabase();
     m_adaptiveLearning.Load();
-    size_t idx = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    size_t idx = m_store.FindUserIndex(m_sid, L"", L"");
     if (idx >= m_store.GetUsers().size()) return "[]";
 
     std::ostringstream js;
@@ -1438,16 +1500,20 @@ std::string EnrollmentWizard::GetFacesJson() {
     return js.str();
 }
 
-bool EnrollmentWizard::SaveEnrollmentAppend(const std::wstring& label) {
+int EnrollmentWizard::SaveEnrollmentAppend(const std::wstring& label) {
     // The appended face belongs to the logged-on session owner — the session
     // token SID must match the enrolled account (same self-proof as the
     // passwordless flow). No password is required for an append.
     std::wstring tokenSid = GetCurrentProcessUserSid();
-    if (tokenSid.empty() || tokenSid != m_sid) {
+    if (m_identityRepairBlocked || tokenSid.empty() || tokenSid != m_sid) {
         FACELOGIN_ERROR(L"Face append refused: session identity mismatch");
-        return false;
+        return 2;
     }
-    return SaveEnrollmentImpl(L"", /*passwordless=*/false, label);
+    if (!m_store.LoadDatabase()) return 3;
+    const size_t index = m_store.FindUserIndex(m_sid, L"", L"");
+    if (index >= m_store.GetUsers().size()) return 2;
+    if (m_store.GetUsers()[index].faces.size() >= facelogin::kMaxFacesPerUser) return 1;
+    return SaveEnrollmentImpl(L"", /*passwordless=*/false, label) ? 0 : 3;
 }
 
 bool EnrollmentWizard::DeleteFace(int faceId) {
@@ -1481,7 +1547,7 @@ bool EnrollmentWizard::RenameFace(int faceId, const std::wstring& label) {
 std::string EnrollmentWizard::GetAdaptiveArchiveJson(int faceId) {
     if (faceId <= 0) return "[]";
     m_store.LoadDatabase();
-    const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    const size_t userIndex = m_store.FindUserIndex(m_sid, L"", L"");
     if (userIndex >= m_store.GetUsers().size()) {
         return "[]";
     }
@@ -1515,7 +1581,7 @@ int EnrollmentWizard::ClaimUnknownFacesForLearning(const std::string& files, int
     if (fileNames.empty()) return 0;
 
     m_store.LoadDatabase();
-    const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    const size_t userIndex = m_store.FindUserIndex(m_sid, L"", L"");
     if (userIndex >= m_store.GetUsers().size()) return 0;
     const auto& faces = m_store.GetUsers()[userIndex].faces;
     const auto faceIt = std::find_if(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
@@ -1569,7 +1635,7 @@ std::string EnrollmentWizard::RebuildAdaptiveArchive(int faceId) {
     AdaptiveBuildResult result;
     if (faceId <= 0) return result.ToJson();
     m_store.LoadDatabase();
-    const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    const size_t userIndex = m_store.FindUserIndex(m_sid, L"", L"");
     if (userIndex >= m_store.GetUsers().size()) return result.ToJson();
     const auto& faces = m_store.GetUsers()[userIndex].faces;
     const bool found = std::any_of(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
@@ -1584,7 +1650,7 @@ std::string EnrollmentWizard::RebuildAdaptiveArchive(int faceId) {
 bool EnrollmentWizard::SetAdaptiveArchiveEnabled(int faceId, bool enabled) {
     if (faceId <= 0) return false;
     m_store.LoadDatabase();
-    const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    const size_t userIndex = m_store.FindUserIndex(m_sid, L"", L"");
     if (userIndex >= m_store.GetUsers().size()) return false;
     const auto& faces = m_store.GetUsers()[userIndex].faces;
     const bool found = std::any_of(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
@@ -1599,7 +1665,7 @@ bool EnrollmentWizard::SetAdaptiveArchiveEnabled(int faceId, bool enabled) {
 bool EnrollmentWizard::DeleteAdaptiveArchive(int faceId) {
     if (faceId <= 0) return false;
     m_store.LoadDatabase();
-    const size_t userIndex = m_store.FindUserIndex(m_sid, m_upn, m_username);
+    const size_t userIndex = m_store.FindUserIndex(m_sid, L"", L"");
     if (userIndex >= m_store.GetUsers().size()) return false;
     const auto& faces = m_store.GetUsers()[userIndex].faces;
     const bool found = std::any_of(faces.begin(), faces.end(), [faceId](const FaceRecord& face) {
@@ -1629,11 +1695,10 @@ int EnrollmentWizard::GetAccountTypeChanged() {
     std::wstring curUpn = GetSessionUpn();
     bool sessionIsMsa = !curUpn.empty() && curUpn.find(L'@') != std::wstring::npos;
 
-    // Match the current identity against stored records (same priority as
-    // FindUserIndex: SID > UPN > username).
+    // Match only the current token SID; names are not unique identities.
     m_store.LoadDatabase();
     std::wstring tokenSid = GetCurrentProcessUserSid();
-    size_t idx = m_store.FindUserIndex(tokenSid, m_upn, m_username);
+    size_t idx = m_store.FindUserIndex(tokenSid, L"", L"");
     if (idx >= m_store.GetUsers().size()) return 0;  // not enrolled → normal first-time flow
 
     const auto& rec = m_store.GetUsers()[idx];
@@ -1665,7 +1730,7 @@ std::string EnrollmentWizard::CheckAccountTypeChanged() {
     // state 2 the current MSA email so the prompt can show what will be written.
     m_store.LoadDatabase();
     std::wstring tokenSid = GetCurrentProcessUserSid();
-    size_t idx = m_store.FindUserIndex(tokenSid, m_upn, m_username);
+    size_t idx = m_store.FindUserIndex(tokenSid, L"", L"");
     size_t faces = (idx < m_store.GetUsers().size()) ? m_store.GetUsers()[idx].faces.size() : 0;
 
     if (state == 2) {
@@ -1705,7 +1770,7 @@ bool EnrollmentWizard::RefreshAccountIdentity(const std::wstring& password) {
 
     std::wstring tokenSid = GetCurrentProcessUserSid();
     m_store.LoadDatabase();
-    size_t idx = m_store.FindUserIndex(tokenSid, m_upn, m_username);
+    size_t idx = m_store.FindUserIndex(tokenSid, L"", L"");
     if (idx >= m_store.GetUsers().size()) {
         FACELOGIN_WARN(L"RefreshAccountIdentity: record vanished before update");
         return false;
@@ -1753,16 +1818,11 @@ bool EnrollmentWizard::ClearStaleAccountUpn() {
         return false;
     }
 
-    // FindUserIndex tries SID first, then UPN, then username. We pass an
-    // EMPTY upn on purpose: m_upn is the value we are about to clear (the
-    // stale MSA email that a buggy build wrote into a local record), so
-    // matching by it would be circular and could pick another account's
-    // record if SIDs ever collided. The process-token SID is the trusted
-    // identity proof here (same source as passwordless enrollment), and
-    // username is kept as a last-resort fallback. See docs/todo.md bug1.
+    // Match only the process-token SID. The UPN being cleared is stale, and
+    // a short username could identify another account.
     std::wstring tokenSid = GetCurrentProcessUserSid();
     m_store.LoadDatabase();
-    size_t idx = m_store.FindUserIndex(tokenSid, L"", m_username);
+    size_t idx = m_store.FindUserIndex(tokenSid, L"", L"");
     if (idx >= m_store.GetUsers().size()) {
         FACELOGIN_WARN(L"ClearStaleAccountUpn: record vanished before update");
         return false;

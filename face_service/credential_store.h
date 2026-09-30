@@ -115,6 +115,15 @@ public:
                          const std::wstring& upn = L"",
                          const std::wstring& username = L"") const;
 
+    enum class SidRepairResult { NotNeeded, Repaired, Conflict };
+    // Correct the old local-account bug where a machine-domain SID was stored
+    // for a user whose name matches the computer name. Only one exact legacy
+    // record may be changed; faces and the encrypted password stay untouched.
+    // Call SaveDatabase() to persist a Repaired result.
+    SidRepairResult RepairLocalAccountSid(const std::wstring& username,
+                                          const std::wstring& oldDomainSid,
+                                          const std::wstring& userSid);
+
     // Add a face to a user account (create-or-append):
     //   - Account not found: creates it with the given encrypted password and
     //     the first face (id = 1).

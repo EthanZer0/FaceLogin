@@ -657,6 +657,9 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
             case 3: case 22: case 24: case 53:
                 if (res) *res = MakeInt(0);
                 break;
+            case 26:
+                if (res) *res = MakeInt(3);
+                break;
             case 4: case 8: case 18: case 37:
                 if (res) *res = MakeStr("");
                 break;
@@ -764,7 +767,7 @@ STDMETHODIMP HostObject::Invoke(DISPID id, REFIID, LCID, WORD wFlags, DISPPARAMS
         case 25: if (res) *res = MakeStr(m_wizard->GetFacesJson()); break;
         case 26: {
             std::wstring label = OptionalArg(p, 0);  // face label
-            if (res) *res = MakeBool(m_wizard->SaveEnrollmentAppend(label));
+            if (res) *res = MakeInt(m_wizard->SaveEnrollmentAppend(label));
             break;
         }
         case 27: {
