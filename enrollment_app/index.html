@@ -56,6 +56,7 @@ button{font-family:inherit}
 .screen{
   display:flex;width:100%;height:100%;flex-direction:column;align-items:center;
   position:absolute;top:0;left:0;
+  padding:0 16px;overflow:hidden;
   opacity:0;pointer-events:none;
   transition:opacity .16s ease;
 }
@@ -118,9 +119,10 @@ button{font-family:inherit}
 .cam-body{
   flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;
   width:100%;max-width:640px;
+  overflow-y:auto;overflow-x:hidden;padding-bottom:12px;
 }
 .cam-viewport{
-  position:relative;width:100%;aspect-ratio:16/9;flex-shrink:0;
+  position:relative;width:100%;aspect-ratio:16/9;flex-shrink:1;min-height:120px;
   border:1px solid var(--hair);border-radius:var(--radius);
   background:var(--lens);overflow:hidden;
 }
@@ -222,7 +224,10 @@ button{font-family:inherit}
 /* ================================================================
    Password / append / settings forms
    ================================================================ */
-.pwd-body{width:100%;max-width:640px;padding:16px 0 20px;flex:1;min-height:0}
+.pwd-body{
+  width:100%;max-width:640px;padding:16px 12px 20px;flex:1;min-height:0;
+  overflow-y:auto;overflow-x:hidden;
+}
 .pwd-body h2{
   font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--ink);
   margin-bottom:16px;text-transform:uppercase;

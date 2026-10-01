@@ -120,7 +120,7 @@ public:
 private:
     static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT HandleMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
-    void ApplyDpiChange(HWND hWnd, const RECT& suggestedRect);
+    void ApplyWindowSize(HWND hWnd, UINT dpi, const RECT& placement, bool center);
 };
 
 class HostObject : public IDispatch {

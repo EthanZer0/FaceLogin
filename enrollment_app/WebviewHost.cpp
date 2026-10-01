@@ -6,6 +6,7 @@
 #include "../common/locale_util.h"
 #include <shellapi.h>
 #include <wtsapi32.h>
+#include <algorithm>
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "wtsapi32.lib")
@@ -13,6 +14,8 @@
 static const wchar_t* WND_CLASS = L"FaceloginWv2Wnd";
 static constexpr UINT_PTR STARTUP_PROBE_TIMER_ID = 0xF1A0;
 static constexpr UINT STARTUP_PROBE_TIMEOUT_MS = 20000;
+static constexpr int CONSOLE_CLIENT_WIDTH = 680;
+static constexpr int CONSOLE_CLIENT_HEIGHT = 660;
 
 // ==========================================================================
 // EnvCallback
@@ -312,32 +315,13 @@ int WebviewHost::Run() {
     wc.lpszClassName = WND_CLASS;
     RegisterClassExW(&wc);
 
-    // --- Compute window size with DPI-aware content fitting ---
+    // Bootstrap placement, then fit using the created window's monitor DPI.
     int scrW = GetSystemMetrics(SM_CXSCREEN), scrH = GetSystemMetrics(SM_CYSCREEN);
-
-    // CSS layout needs ~600 CSS px vertically (viewport 360 + chrome ~240).
-    // The process is PerMonitorV2-aware, so use the system DPI only for the
-    // initial placement. WM_DPICHANGED replaces the fixed size when the
-    // window moves to a monitor with a different scale.
     UINT dpi = GetDpiForSystem();
-    float dpiScale = static_cast<float>(dpi) / 96.0f;
-
-    // Desired client area in CSS pixels:
-    //   Width: just above content max-width (640px) for comfortable margin
-    //   Height: ~620 CSS px covers viewport(360) + chrome(234) + breathing room
-    int clientWCss = 680;
-
-    int clientHCss = 660;  // covers viewport + chrome + progress bar without scrollbars
-
-    // Convert to physical pixels for the window manager
-    int clientW = static_cast<int>(clientWCss * dpiScale);
-    int clientH = static_cast<int>(clientHCss * dpiScale);
-
-    RECT rc = {0, 0, clientW, clientH};
-    // Fixed-size window: no thick resize border (WS_THICKFRAME removed), no
-    // maximize box (already stripped above) — only minimize and close remain.
+    RECT rc = {0, 0, MulDiv(CONSOLE_CLIENT_WIDTH, dpi, 96),
+                    MulDiv(CONSOLE_CLIENT_HEIGHT, dpi, 96)};
     DWORD style = (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX);
-    AdjustWindowRect(&rc, style, FALSE);
+    AdjustWindowRectExForDpi(&rc, style, FALSE, 0, dpi);
     int actualWndW = rc.right - rc.left;
     int actualWndH = rc.bottom - rc.top;
     // Capture the fixed size once; WM_GETMINMAXINFO always uses this, so a
@@ -350,6 +334,9 @@ int WebviewHost::Run() {
         (scrW - actualWndW)/2, (scrH - actualWndH)/2, actualWndW, actualWndH,
         nullptr, nullptr, m_hInstance, this);
     if (!m_hWnd) return 1;
+    RECT placement{};
+    GetWindowRect(m_hWnd, &placement);
+    ApplyWindowSize(m_hWnd, GetDpiForWindow(m_hWnd), placement, true);
 
     if (m_diagnosticOnly) {
         SetTimer(m_hWnd, STARTUP_PROBE_TIMER_ID, STARTUP_PROBE_TIMEOUT_MS, nullptr);
@@ -431,7 +418,7 @@ LRESULT WebviewHost::HandleMessage(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DPICHANGED: {
         const RECT* suggested = reinterpret_cast<const RECT*>(lp);
         if (suggested) {
-            ApplyDpiChange(hWnd, *suggested);
+            ApplyWindowSize(hWnd, HIWORD(wp), *suggested, false);
         }
         return 0;
     }
@@ -502,14 +489,24 @@ void WebviewHost::ResizeWebView(HWND hWnd) {
     }
 }
 
-void WebviewHost::ApplyDpiChange(HWND hWnd, const RECT& suggestedRect) {
-    // Windows supplies a correctly scaled window rectangle. Use it instead
-    // of recomputing the non-client area, which keeps the title bar and the
-    // WebView2 client area aligned at 125/150/200% scaling.
-    m_fixedW = suggestedRect.right - suggestedRect.left;
-    m_fixedH = suggestedRect.bottom - suggestedRect.top;
+void WebviewHost::ApplyWindowSize(HWND hWnd, UINT dpi, const RECT& placement,
+                                  bool center) {
+    MONITORINFO monitor{sizeof(MONITORINFO)};
+    if (!GetMonitorInfoW(MonitorFromRect(&placement, MONITOR_DEFAULTTONEAREST), &monitor)) return;
+
+    RECT size{0, 0, MulDiv(CONSOLE_CLIENT_WIDTH, dpi, 96),
+                    MulDiv(CONSOLE_CLIENT_HEIGHT, dpi, 96)};
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE));
+    AdjustWindowRectExForDpi(&size, style, FALSE, 0, dpi);
+    const RECT& work = monitor.rcWork;
+    m_fixedW = (std::min)(size.right - size.left, work.right - work.left);
+    m_fixedH = (std::min)(size.bottom - size.top, work.bottom - work.top);
+    const LONG x = center ? work.left + (work.right - work.left - m_fixedW) / 2
+                         : (std::max)(work.left, (std::min)(placement.left, work.right - m_fixedW));
+    const LONG y = center ? work.top + (work.bottom - work.top - m_fixedH) / 2
+                         : (std::max)(work.top, (std::min)(placement.top, work.bottom - m_fixedH));
     SetWindowPos(hWnd, nullptr,
-                 suggestedRect.left, suggestedRect.top,
+                 x, y,
                  m_fixedW, m_fixedH,
                  SWP_NOZORDER | SWP_NOACTIVATE);
     ResizeWebView(hWnd);
