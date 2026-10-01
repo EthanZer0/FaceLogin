@@ -1,0 +1,98 @@
+name: Windows source build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'dev-*']
+    paths:
+      - '**.cpp'
+      - '**.h'
+      - '**.rc'
+      - '**/CMakeLists.txt'
+      - 'vcpkg.json'
+      - 'enrollment_app/index.html'
+      - 'installer/FaceLoginSetup/**'
+      - 'scripts/build-windows.ps1'
+      - '.github/scripts/**'
+      - '.github/workflows/windows-build.yml'
+      - 'locales/**'
+  pull_request:
+    paths:
+      - '**.cpp'
+      - '**.h'
+      - '**.rc'
+      - '**/CMakeLists.txt'
+      - 'vcpkg.json'
+      - 'enrollment_app/index.html'
+      - 'installer/FaceLoginSetup/**'
+      - 'scripts/build-windows.ps1'
+      - '.github/scripts/**'
+      - '.github/workflows/windows-build.yml'
+      - 'locales/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      VCPKG_DISABLE_METRICS: '1'
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Read pinned dependency baseline
+        id: baseline
+        run: |
+          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
+          "sha=$($manifest.'builtin-baseline')" >> $env:GITHUB_OUTPUT
+      - name: Checkout vcpkg at the manifest baseline
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ steps.baseline.outputs.sha }}
+          path: build-tools/vcpkg
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bootstrap vcpkg
+        run: |
+          & ./build-tools/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
+          "VCPKG_ROOT=$env:GITHUB_WORKSPACE\build-tools\vcpkg" >> $env:GITHUB_ENV
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.25.0'
+          cache-dependency-path: installer/FaceLoginSetup/go.sum
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: installer/FaceLoginSetup/frontend/package-lock.json
+      - name: Build native components and standalone uninstaller
+        run: |
+          ./.github/scripts/build-windows-ci.ps1 `
+            -CacheRoot "$env:RUNNER_TEMP\FaceLoginCache" `
+            -OutputDir "$env:RUNNER_TEMP\FaceLogin-review"
+      - name: Upload unsigned review artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: FaceLogin-unsigned-review-${{ github.sha }}
+          path: ${{ runner.temp }}/FaceLogin-review
+          if-no-files-found: error
+          retention-days: 14
+
+# No secrets, signing requests or public releases in this workflow.
+# Model licensing must be resolved before producing a signed full installer.

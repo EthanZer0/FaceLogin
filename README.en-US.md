@@ -214,4 +214,6 @@ Issues and Pull Requests are welcome!
 
 ## Disclaimer
 
+Code signing is in application preparation; SignPath Foundation approval has not been granted. See the [Code signing policy](CODE_SIGNING.md), [privacy statement](PRIVACY.md), and [third-party dependency/model review](THIRD_PARTY.md). The project's MIT license does not automatically cover pretrained models or other third-party components.
+
 This software assists Windows sign-in through face recognition but **does not replace** your password. Face recognition is a convenience feature; the system always keeps password sign-in as a fallback. Do not rely on face recognition alone in environments with high security requirements.

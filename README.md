@@ -214,4 +214,6 @@ cd installer/FaceLoginSetup
 
 ## 免责声明
 
+代码签名仍处于申请准备阶段，尚未获得 SignPath Foundation 批准。参见 [Code signing policy](CODE_SIGNING.md)、[隐私说明](PRIVACY.md) 和 [第三方依赖与模型许可核查](THIRD_PARTY.md)。本项目的 MIT 协议不自动覆盖预训练模型及其他第三方组件。
+
 本软件通过人脸识别辅助 Windows 登录，但 **不能替代** 密码。人脸识别为便捷方式，系统始终保留密码登录作为后备。请勿在安全要求极高的环境中单独依赖人脸识别。
